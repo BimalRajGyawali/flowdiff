@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlowDiff</title>
+  <link rel="stylesheet" href="src/styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prism-themes@1.9.0/themes/prism-ghcolors.min.css">
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <input type="url" id="pr-url" placeholder="Paste GitHub PR URL (e.g. https://github.com/owner/repo/pull/123)" />
+      <button id="analyze-btn">Analyze</button>
+      <span id="status" class="status"></span>
+    </header>
+    <div id="loading-overlay" class="loading-overlay" aria-hidden="true">
+      <div class="loading-content">
+        <span class="spinner"></span>
+        <span id="loading-text" class="loading-text">Fetching diff…</span>
+      </div>
+    </div>
+    <main class="main">
+      <section id="code-pane" class="pane code-pane"></section>
+      <section id="flow-tree-pane" class="pane flow-tree-pane"></section>
+      <section id="flow-list-pane" class="pane flow-list-pane"></section>
+    </main>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

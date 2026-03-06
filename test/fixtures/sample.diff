@@ -1,0 +1,27 @@
+diff --git a/src/example.py b/src/example.py
+index 123..456 100644
+--- a/src/example.py
++++ b/src/example.py
+@@ -5,25 +5,35 @@
+ 
++def func1():
++    x = 1
++    func2()
++    func5()
++    return x
++
++def func2():
++    y = 2
++    func3()
++    func4()
++    return y
++
++def func3():
++    return 3
++
++def func4():
++    return 4
++
++def func5():
++    return 5
++
