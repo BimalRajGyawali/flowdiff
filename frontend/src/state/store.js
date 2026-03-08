@@ -60,6 +60,29 @@ function getDescendantIds(functionId) {
   return ids;
 }
 
+/**
+ * Returns all ancestor function IDs on the path from the selected flow root to the given node.
+ * Ensures the flow tree can show the path to a node when it is expanded from the code view.
+ */
+function getAncestorIds(functionId) {
+  const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId);
+  if (!selectedFlow?.rootId) return new Set();
+  if (functionId === selectedFlow.rootId) return new Set();
+  const ids = new Set();
+  let current = new Set([functionId]);
+  while (current.size > 0) {
+    const next = new Set();
+    for (const e of flowPayload.edges) {
+      if (current.has(e.calleeId)) {
+        ids.add(e.callerId);
+        next.add(e.callerId);
+      }
+    }
+    current = next;
+  }
+  return ids;
+}
+
 export function toggleExpanded(functionId) {
   if (uiState.expandedIds.has(functionId)) {
     uiState.expandedIds.delete(functionId);
@@ -68,6 +91,9 @@ export function toggleExpanded(functionId) {
     }
   } else {
     uiState.expandedIds.add(functionId);
+    for (const ancId of getAncestorIds(functionId)) {
+      uiState.expandedIds.add(ancId);
+    }
   }
   notify();
 }

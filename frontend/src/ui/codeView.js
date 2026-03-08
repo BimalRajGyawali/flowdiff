@@ -268,10 +268,18 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       if (!callee || !uiState.expandedIds.has(site.calleeId)) continue;
 
       const inlineBlock = document.createElement('div');
-      inlineBlock.className = 'inline-callee';
+      inlineBlock.className = 'inline-callee function-block';
+      if (uiState.activeFunctionId === site.calleeId) inlineBlock.classList.add('active');
       inlineBlock.dataset.functionId = site.calleeId;
+      const label = document.createElement('div');
+      label.className = 'inline-callee-label';
+      label.textContent = `↳ ${callee.name}`;
+      inlineBlock.appendChild(label);
+      const innerContainer = document.createElement('div');
+      innerContainer.className = 'inline-callee-body';
       const innerIndent = indent + '    ';
-      renderFunctionBody(inlineBlock, payload, uiState, callee, sourceLinesByFile, diffLinesByFile, calleesByCaller, innerIndent);
+      renderFunctionBody(innerContainer, payload, uiState, callee, sourceLinesByFile, diffLinesByFile, calleesByCaller, innerIndent);
+      inlineBlock.appendChild(innerContainer);
       container.appendChild(inlineBlock);
     }
   }
@@ -329,4 +337,9 @@ export function renderCodeView(container) {
   renderFunctionBody(rootBlock, flowPayload, uiState, root, sourceLinesByFile, diffLinesByFile, calleesByCaller, '');
   fileSection.appendChild(rootBlock);
   container.appendChild(fileSection);
+
+  if (uiState.activeFunctionId) {
+    const el = container.querySelector(`[data-function-id="${uiState.activeFunctionId}"]`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
 }

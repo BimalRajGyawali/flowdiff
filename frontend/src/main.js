@@ -29,8 +29,8 @@ async function handleAnalyze() {
   statusEl.classList.remove('error');
   analyzeBtn.disabled = true;
   try {
-    await fetchAndAnalyze(url);
-    statusEl.textContent = 'Done';
+    const result = await fetchAndAnalyze(url);
+    statusEl.textContent = result?.source === 'cache' ? 'Loaded from cache' : 'Done';
   } catch (err) {
     statusEl.textContent = err.message || 'Failed to analyze PR';
     statusEl.classList.add('error');
