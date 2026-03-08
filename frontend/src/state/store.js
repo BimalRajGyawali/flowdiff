@@ -9,11 +9,12 @@ import { emptyFlowPayload } from '../flowSchema.js';
 /** @type {import('../flowSchema.js').FlowPayload} */
 let flowPayload = { ...emptyFlowPayload };
 
-/** @type {{ selectedFlowId: string | null, expandedIds: Set<string>, activeFunctionId: string | null }} */
+/** @type {{ selectedFlowId: string | null, expandedIds: Set<string>, activeFunctionId: string | null, hoveredFunctionId: string | null }} */
 let uiState = {
   selectedFlowId: null,
   expandedIds: new Set(),
-  activeFunctionId: null
+  activeFunctionId: null,
+  hoveredFunctionId: null
 };
 
 /** @type {(() => void)[]} */
@@ -29,7 +30,8 @@ export function setFlowPayload(payload) {
   uiState = {
     selectedFlowId: firstFlow?.id ?? null,
     expandedIds: firstFlow?.rootId ? new Set([firstFlow.rootId]) : new Set(),
-    activeFunctionId: null
+    activeFunctionId: null,
+    hoveredFunctionId: null
   };
   notify();
 }
@@ -38,6 +40,7 @@ export function setSelectedFlow(flowId, rootId) {
   uiState.selectedFlowId = flowId;
   uiState.expandedIds = rootId ? new Set([rootId]) : new Set();
   uiState.activeFunctionId = null;
+  uiState.hoveredFunctionId = null;
   notify();
 }
 
@@ -103,6 +106,13 @@ export function setActiveFunction(functionId) {
   notify();
 }
 
+export function setHoveredFunction(functionId) {
+  if (uiState.hoveredFunctionId !== functionId) {
+    uiState.hoveredFunctionId = functionId;
+    notify();
+  }
+}
+
 export function subscribe(cb) {
   subscribers.push(cb);
   return () => {
@@ -120,6 +130,7 @@ export function initStore() {
   uiState = {
     selectedFlowId: null,
     expandedIds: new Set(),
-    activeFunctionId: null
+    activeFunctionId: null,
+    hoveredFunctionId: null
   };
 }

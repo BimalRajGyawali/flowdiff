@@ -142,10 +142,25 @@ body {
   padding: 16px;
 }
 
+.flow-tree {
+  font-size: 13px;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.flow-tree-item {
+  position: relative;
+}
+
 .flow-tree-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 4px 8px;
+  margin-left: 0;
   cursor: pointer;
   border-radius: 4px;
+  position: relative;
 }
 
 .flow-tree-node:hover {
@@ -154,6 +169,45 @@ body {
 
 .flow-tree-node.active {
   background: #ddf4ff;
+}
+
+.flow-tree-icon {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  color: #57606a;
+  font-size: 10px;
+}
+
+.flow-tree-node.active .flow-tree-icon {
+  color: #0969da;
+}
+
+.flow-tree-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Tree branch lines - vertical connector for each level */
+.flow-tree-branch {
+  position: relative;
+  margin-left: 8px;
+  padding-left: 10px;
+  border-left: 1px solid #d0d7de;
+}
+
+/* Horizontal connector from vertical line to each node */
+.flow-tree-branch > .flow-tree-item > .flow-tree-node::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  width: 10px;
+  height: 1px;
+  background: #d0d7de;
+  margin-top: -1px;
 }
 
 .flow-list-item {
@@ -328,6 +382,12 @@ body {
   background: #f0f6ff;
 }
 
+.function-block.hovered {
+  outline: 2px solid #0969da;
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.2);
+}
+
 .function-header {
   padding: 4px 8px;
   font-family: ui-monospace, monospace;
@@ -390,6 +450,14 @@ body {
 .inline-callee.active .inline-callee-label {
   background: #eaeef2;
   color: #24292f;
+}
+
+.inline-callee.hovered {
+  outline: 2px solid #0969da;
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.2);
+  border-left-width: 3px;
+  border-left-color: #0969da;
 }
 
 .code-line {

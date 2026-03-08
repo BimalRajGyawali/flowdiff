@@ -6,6 +6,8 @@
 
 import { getState, toggleExpanded, setActiveFunction } from '../state/store.js';
 
+let lastScrolledToActiveId = null;
+
 function makePlaceholder(index) {
   return `__flowdiff_ph_${index}__`;
 }
@@ -270,6 +272,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       const inlineBlock = document.createElement('div');
       inlineBlock.className = 'inline-callee function-block';
       if (uiState.activeFunctionId === site.calleeId) inlineBlock.classList.add('active');
+      if (uiState.hoveredFunctionId === site.calleeId) inlineBlock.classList.add('hovered');
       inlineBlock.dataset.functionId = site.calleeId;
       const label = document.createElement('div');
       label.className = 'inline-callee-label';
@@ -333,13 +336,18 @@ export function renderCodeView(container) {
   rootBlock.className = 'function-block root';
   rootBlock.dataset.functionId = root.id;
   if (uiState.activeFunctionId === root.id) rootBlock.classList.add('active');
+  if (uiState.hoveredFunctionId === root.id) rootBlock.classList.add('hovered');
 
   renderFunctionBody(rootBlock, flowPayload, uiState, root, sourceLinesByFile, diffLinesByFile, calleesByCaller, '');
   fileSection.appendChild(rootBlock);
   container.appendChild(fileSection);
 
-  if (uiState.activeFunctionId) {
+  if (uiState.activeFunctionId && uiState.activeFunctionId !== lastScrolledToActiveId) {
     const el = container.querySelector(`[data-function-id="${uiState.activeFunctionId}"]`);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      lastScrolledToActiveId = uiState.activeFunctionId;
+    }
   }
+  if (!uiState.activeFunctionId) lastScrolledToActiveId = null;
 }
