@@ -9,10 +9,11 @@ import { emptyFlowPayload } from '../flowSchema.js';
 /** @type {import('../flowSchema.js').FlowPayload} */
 let flowPayload = { ...emptyFlowPayload };
 
-/** @type {{ selectedFlowId: string | null, expandedIds: Set<string>, activeFunctionId: string | null, hoveredFunctionId: string | null }} */
+/** @type {{ selectedFlowId: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, activeFunctionId: string | null, hoveredFunctionId: string | null }} */
 let uiState = {
   selectedFlowId: null,
   expandedIds: new Set(),
+  expandedTreeNodeIds: new Set(),
   activeFunctionId: null,
   hoveredFunctionId: null
 };
@@ -30,6 +31,7 @@ export function setFlowPayload(payload) {
   uiState = {
     selectedFlowId: firstFlow?.id ?? null,
     expandedIds: firstFlow?.rootId ? new Set([firstFlow.rootId]) : new Set(),
+    expandedTreeNodeIds: firstFlow?.rootId ? new Set([`root:${firstFlow.rootId}`]) : new Set(),
     activeFunctionId: null,
     hoveredFunctionId: null
   };
@@ -39,6 +41,7 @@ export function setFlowPayload(payload) {
 export function setSelectedFlow(flowId, rootId) {
   uiState.selectedFlowId = flowId;
   uiState.expandedIds = rootId ? new Set([rootId]) : new Set();
+  uiState.expandedTreeNodeIds = rootId ? new Set([`root:${rootId}`]) : new Set();
   uiState.activeFunctionId = null;
   uiState.hoveredFunctionId = null;
   notify();
@@ -86,6 +89,48 @@ function getAncestorIds(functionId) {
   return ids;
 }
 
+/**
+ * Returns expanded tree node keys that are descendants of the given path-based key.
+ * Descendants have keys that start with treeNodeKey + "/".
+ */
+function getDescendantTreeNodeKeys(treeNodeKey) {
+  const prefix = treeNodeKey + '/';
+  const keys = new Set();
+  for (const k of uiState.expandedTreeNodeIds) {
+    if (k.startsWith(prefix)) keys.add(k);
+  }
+  return keys;
+}
+
+/**
+ * Ensures one path in the flow tree from root to the given function is expanded (for code-view sync).
+ */
+function ensurePathToFunctionInTree(functionId) {
+  const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId);
+  if (!selectedFlow?.rootId) return;
+  const rootId = selectedFlow.rootId;
+  let pathKey = `root:${rootId}`;
+  uiState.expandedTreeNodeIds.add(pathKey);
+  if (functionId === rootId) return;
+  const path = [];
+  const parent = new Map();
+  for (const e of flowPayload.edges) {
+    parent.set(e.calleeId, { callerId: e.callerId, callIndex: e.callIndex, calleeId: e.calleeId });
+  }
+  let node = functionId;
+  while (node && node !== rootId) {
+    const edge = parent.get(node);
+    if (!edge) break;
+    path.push(edge);
+    node = edge.callerId;
+  }
+  for (let i = path.length - 1; i >= 0; i--) {
+    const { callerId, callIndex, calleeId } = path[i];
+    pathKey = `${pathKey}/e:${callerId}:${callIndex}:${calleeId}`;
+    uiState.expandedTreeNodeIds.add(pathKey);
+  }
+}
+
 export function toggleExpanded(functionId) {
   if (uiState.expandedIds.has(functionId)) {
     uiState.expandedIds.delete(functionId);
@@ -97,6 +142,34 @@ export function toggleExpanded(functionId) {
     for (const ancId of getAncestorIds(functionId)) {
       uiState.expandedIds.add(ancId);
     }
+    ensurePathToFunctionInTree(functionId);
+  }
+  notify();
+}
+
+/**
+ * Ensures the path from root to the given tree node is expanded so the node is visible.
+ * For path-based keys (root:id or root:id/e:.../e:...), adds all path prefixes.
+ */
+function ensurePathToTreeNode(treeNodeKey) {
+  const parts = treeNodeKey.split('/');
+  for (let i = 1; i <= parts.length; i++) {
+    uiState.expandedTreeNodeIds.add(parts.slice(0, i).join('/'));
+  }
+}
+
+/**
+ * Toggle expansion of a single tree node (one occurrence in the flow tree).
+ * Only that occurrence expands; code view uses expandedTreeNodeIds per call site.
+ */
+export function toggleExpandedTreeNode(treeNodeKey) {
+  if (uiState.expandedTreeNodeIds.has(treeNodeKey)) {
+    uiState.expandedTreeNodeIds.delete(treeNodeKey);
+    for (const k of getDescendantTreeNodeKeys(treeNodeKey)) {
+      uiState.expandedTreeNodeIds.delete(k);
+    }
+  } else {
+    ensurePathToTreeNode(treeNodeKey);
   }
   notify();
 }
@@ -130,6 +203,7 @@ export function initStore() {
   uiState = {
     selectedFlowId: null,
     expandedIds: new Set(),
+    expandedTreeNodeIds: new Set(),
     activeFunctionId: null,
     hoveredFunctionId: null
   };

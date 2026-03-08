@@ -4,7 +4,7 @@
  * Expansion syncs with the flow tree. Uses Prism for syntax highlighting.
  */
 
-import { getState, toggleExpanded, setActiveFunction } from '../state/store.js';
+import { getState, toggleExpandedTreeNode, setActiveFunction } from '../state/store.js';
 
 let lastScrolledToActiveId = null;
 
@@ -199,20 +199,28 @@ function findCallSitesInLine(line, callees) {
 
 /**
  * Renders a function body with clickable call sites and inline expansion.
+ * @param {string} pathPrefix - path-based tree key for this block (root:rootId or parentPath/e:caller:idx:callee)
  * @param {Record<string, string[]>} sourceLinesByFile - file path -> full current source lines
  * @param {Record<string, { type: string, oldLineNumber: number | null, newLineNumber: number | null, content: string }[]>} diffLinesByFile
  */
-function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, diffLinesByFile, calleesByCaller, indent = '') {
+function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, diffLinesByFile, calleesByCaller, indent, pathPrefix) {
   const sourceLines = sourceLinesByFile[fn.file] || [];
   const fnDiffLines = buildFunctionDisplayRows(fn, sourceLines, diffLinesByFile[fn.file] || []);
-  const callees = (calleesByCaller.get(fn.id) || [])
-    .sort((a, b) => a.callIndex - b.callIndex)
-    .map((e) => ({ calleeId: e.calleeId, name: payload.functionsById[e.calleeId]?.name }))
-    .filter((x) => x.name);
+  const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
+  const calleesForFind = [...new Map(calleesWithIndex.map((e) => [e.calleeId, { calleeId: e.calleeId, name: payload.functionsById[e.calleeId]?.name }])).values()].filter((x) => x.name);
+  const remainingByCallee = new Map();
+  for (const { calleeId, callIndex } of calleesWithIndex) {
+    if (!remainingByCallee.has(calleeId)) remainingByCallee.set(calleeId, []);
+    remainingByCallee.get(calleeId).push(callIndex);
+  }
 
   for (const rowData of fnDiffLines) {
     const line = rowData.content;
-    const sites = rowData.type === 'del' ? [] : findCallSitesInLine(line, callees);
+    const sites = rowData.type === 'del' ? [] : findCallSitesInLine(line, calleesForFind);
+    for (const site of sites) {
+      const indices = remainingByCallee.get(site.calleeId);
+      if (indices?.length) site.callIndex = indices.shift();
+    }
 
     let lineHtml;
     const placeholders = [];
@@ -227,15 +235,17 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
         lineWithPlaceholders += (lastEnd === 0 ? indent : '') + line.slice(lastEnd, site.start);
         const ph = makePlaceholder(si);
         lineWithPlaceholders += ph;
-        placeholders.push({ ...site, placeholder: ph });
+        const treeNodeKey = site.callIndex !== undefined ? `${pathPrefix}/e:${fn.id}:${site.callIndex}:${site.calleeId}` : '';
+        placeholders.push({ ...site, placeholder: ph, treeNodeKey });
         lastEnd = site.end;
       }
       lineWithPlaceholders += line.slice(lastEnd);
       lineHtml = highlightPython(lineWithPlaceholders);
 
-      for (const { placeholder, calleeId, start, end } of placeholders) {
+      for (const { placeholder, calleeId, start, end, treeNodeKey } of placeholders) {
         const callText = line.slice(start, end);
-        const callSpanHtml = `<span class="call-site" data-callee-id="${escapeHtml(calleeId)}" title="Click to expand">${escapeHtml(callText)}</span>`;
+        const dataKey = treeNodeKey ? ` data-tree-node-key="${escapeHtml(treeNodeKey)}"` : '';
+        const callSpanHtml = `<span class="call-site" data-callee-id="${escapeHtml(calleeId)}"${dataKey} title="Click to expand">${escapeHtml(callText)}</span>`;
         lineHtml = lineHtml.replace(new RegExp(escapeRegex(placeholder), 'g'), callSpanHtml);
       }
     }
@@ -251,23 +261,25 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
 
     row.querySelectorAll('.call-site').forEach((el) => {
       const calleeId = el.dataset.calleeId;
+      const treeNodeKey = el.dataset.treeNodeKey;
       const callee = payload.functionsById[calleeId];
-      const isExpanded = uiState.expandedIds.has(calleeId);
+      const isExpanded = treeNodeKey ? uiState.expandedTreeNodeIds.has(treeNodeKey) : false;
       const isActive = uiState.activeFunctionId === calleeId;
       if (isActive) el.classList.add('active');
       el.title = `Click to ${isExpanded ? 'collapse' : 'expand'} ${callee?.name || calleeId}`;
       el.addEventListener('click', (e) => {
         e.stopPropagation();
         setActiveFunction(calleeId);
-        toggleExpanded(calleeId);
+        if (treeNodeKey) toggleExpandedTreeNode(treeNodeKey);
       });
     });
 
     container.appendChild(row);
 
     for (const site of sites) {
+      const treeNodeKey = site.callIndex !== undefined ? `${pathPrefix}/e:${fn.id}:${site.callIndex}:${site.calleeId}` : '';
       const callee = payload.functionsById[site.calleeId];
-      if (!callee || !uiState.expandedIds.has(site.calleeId)) continue;
+      if (!callee || !treeNodeKey || !uiState.expandedTreeNodeIds.has(treeNodeKey)) continue;
 
       const inlineBlock = document.createElement('div');
       inlineBlock.className = 'inline-callee function-block';
@@ -281,7 +293,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       const innerContainer = document.createElement('div');
       innerContainer.className = 'inline-callee-body';
       const innerIndent = indent + '    ';
-      renderFunctionBody(innerContainer, payload, uiState, callee, sourceLinesByFile, diffLinesByFile, calleesByCaller, innerIndent);
+      renderFunctionBody(innerContainer, payload, uiState, callee, sourceLinesByFile, diffLinesByFile, calleesByCaller, innerIndent, treeNodeKey);
       inlineBlock.appendChild(innerContainer);
       container.appendChild(inlineBlock);
     }
@@ -309,9 +321,7 @@ export function renderCodeView(container) {
   for (const e of flowPayload.edges) {
     if (!flowFnIds.has(e.callerId) || !flowFnIds.has(e.calleeId)) continue;
     const list = calleesByCaller.get(e.callerId) || [];
-    if (!list.some((x) => x.calleeId === e.calleeId)) {
-      list.push({ calleeId: e.calleeId, callIndex: e.callIndex });
-    }
+    list.push({ calleeId: e.calleeId, callIndex: e.callIndex });
     calleesByCaller.set(e.callerId, list);
   }
 
@@ -338,7 +348,8 @@ export function renderCodeView(container) {
   if (uiState.activeFunctionId === root.id) rootBlock.classList.add('active');
   if (uiState.hoveredFunctionId === root.id) rootBlock.classList.add('hovered');
 
-  renderFunctionBody(rootBlock, flowPayload, uiState, root, sourceLinesByFile, diffLinesByFile, calleesByCaller, '');
+  const rootPath = `root:${root.id}`;
+  renderFunctionBody(rootBlock, flowPayload, uiState, root, sourceLinesByFile, diffLinesByFile, calleesByCaller, '', rootPath);
   fileSection.appendChild(rootBlock);
   container.appendChild(fileSection);
 
