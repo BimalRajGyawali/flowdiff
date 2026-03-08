@@ -420,6 +420,13 @@ body {
   border-radius: 2px;
 }
 
+.call-site.hovered {
+  background: rgba(9, 105, 218, 0.12);
+  border-radius: 2px;
+  outline: 1px solid #0969da;
+  outline-offset: 1px;
+}
+
 .inline-callee {
   margin: 4px 0 8px 16px;
   padding: 0;

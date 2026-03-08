@@ -265,7 +265,9 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       const callee = payload.functionsById[calleeId];
       const isExpanded = treeNodeKey ? uiState.expandedTreeNodeIds.has(treeNodeKey) : false;
       const isActive = uiState.activeFunctionId === calleeId;
+      const isHovered = treeNodeKey && uiState.hoveredTreeNodeKey === treeNodeKey;
       if (isActive) el.classList.add('active');
+      if (isHovered) el.classList.add('hovered');
       el.title = `Click to ${isExpanded ? 'collapse' : 'expand'} ${callee?.name || calleeId}`;
       el.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -284,7 +286,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       const inlineBlock = document.createElement('div');
       inlineBlock.className = 'inline-callee function-block';
       if (uiState.activeFunctionId === site.calleeId) inlineBlock.classList.add('active');
-      if (uiState.hoveredFunctionId === site.calleeId) inlineBlock.classList.add('hovered');
+      if (uiState.hoveredTreeNodeKey === treeNodeKey) inlineBlock.classList.add('hovered');
       inlineBlock.dataset.functionId = site.calleeId;
       const label = document.createElement('div');
       label.className = 'inline-callee-label';
@@ -335,6 +337,7 @@ export function renderCodeView(container) {
   const root = flowPayload.functionsById[selectedFlow.rootId];
   if (!root) return;
 
+  const rootPath = `root:${root.id}`;
   const fileSection = document.createElement('div');
   fileSection.className = 'file-section';
   const header = document.createElement('div');
@@ -346,9 +349,8 @@ export function renderCodeView(container) {
   rootBlock.className = 'function-block root';
   rootBlock.dataset.functionId = root.id;
   if (uiState.activeFunctionId === root.id) rootBlock.classList.add('active');
-  if (uiState.hoveredFunctionId === root.id) rootBlock.classList.add('hovered');
+  if (uiState.hoveredTreeNodeKey === rootPath) rootBlock.classList.add('hovered');
 
-  const rootPath = `root:${root.id}`;
   renderFunctionBody(rootBlock, flowPayload, uiState, root, sourceLinesByFile, diffLinesByFile, calleesByCaller, '', rootPath);
   fileSection.appendChild(rootBlock);
   container.appendChild(fileSection);

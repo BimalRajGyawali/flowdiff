@@ -9,13 +9,13 @@ import { emptyFlowPayload } from '../flowSchema.js';
 /** @type {import('../flowSchema.js').FlowPayload} */
 let flowPayload = { ...emptyFlowPayload };
 
-/** @type {{ selectedFlowId: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, activeFunctionId: string | null, hoveredFunctionId: string | null }} */
+/** @type {{ selectedFlowId: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, activeFunctionId: string | null, hoveredTreeNodeKey: string | null }} */
 let uiState = {
   selectedFlowId: null,
   expandedIds: new Set(),
   expandedTreeNodeIds: new Set(),
   activeFunctionId: null,
-  hoveredFunctionId: null
+  hoveredTreeNodeKey: null
 };
 
 /** @type {(() => void)[]} */
@@ -33,7 +33,7 @@ export function setFlowPayload(payload) {
     expandedIds: firstFlow?.rootId ? new Set([firstFlow.rootId]) : new Set(),
     expandedTreeNodeIds: firstFlow?.rootId ? new Set([`root:${firstFlow.rootId}`]) : new Set(),
     activeFunctionId: null,
-    hoveredFunctionId: null
+    hoveredTreeNodeKey: null
   };
   notify();
 }
@@ -43,7 +43,7 @@ export function setSelectedFlow(flowId, rootId) {
   uiState.expandedIds = rootId ? new Set([rootId]) : new Set();
   uiState.expandedTreeNodeIds = rootId ? new Set([`root:${rootId}`]) : new Set();
   uiState.activeFunctionId = null;
-  uiState.hoveredFunctionId = null;
+  uiState.hoveredTreeNodeKey = null;
   notify();
 }
 
@@ -179,9 +179,9 @@ export function setActiveFunction(functionId) {
   notify();
 }
 
-export function setHoveredFunction(functionId) {
-  if (uiState.hoveredFunctionId !== functionId) {
-    uiState.hoveredFunctionId = functionId;
+export function setHoveredTreeNodeKey(treeNodeKey) {
+  if (uiState.hoveredTreeNodeKey !== treeNodeKey) {
+    uiState.hoveredTreeNodeKey = treeNodeKey;
     notify();
   }
 }
@@ -205,6 +205,6 @@ export function initStore() {
     expandedIds: new Set(),
     expandedTreeNodeIds: new Set(),
     activeFunctionId: null,
-    hoveredFunctionId: null
+    hoveredTreeNodeKey: null
   };
 }

@@ -3,7 +3,7 @@
  * Preserves call order (func2, func5 under func1; func3, func4 under func2).
  */
 
-import { getState, toggleExpandedTreeNode, setActiveFunction, setHoveredFunction } from '../state/store.js';
+import { getState, toggleExpandedTreeNode, setActiveFunction, setHoveredTreeNodeKey } from '../state/store.js';
 
 /**
  * @param {HTMLElement} container
@@ -33,7 +33,7 @@ export function renderFlowTree(container) {
   tree.className = 'flow-tree';
   const rootKey = `root:${root.id}`;
   renderNode(tree, flowPayload, root, false, rootKey);
-  tree.addEventListener('mouseleave', () => setHoveredFunction(null));
+  tree.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));
   container.appendChild(tree);
 }
 
@@ -68,8 +68,8 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey) {
     setActiveFunction(fn.id);
     if (hasChildren) toggleExpandedTreeNode(treeNodeKey);
   });
-  row.addEventListener('mouseenter', () => setHoveredFunction(fn.id));
-  row.addEventListener('mouseleave', () => setHoveredFunction(null));
+  row.addEventListener('mouseenter', () => setHoveredTreeNodeKey(treeNodeKey));
+  row.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));
   item.appendChild(row);
 
   if (hasChildren && expanded) {
