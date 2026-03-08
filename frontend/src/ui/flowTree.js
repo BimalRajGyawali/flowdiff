@@ -47,7 +47,7 @@ export function renderFlowTree(container) {
 function renderNode(parent, payload, fn, isLast, treeNodeKey) {
   const { uiState } = getState();
   const expanded = uiState.expandedTreeNodeIds.has(treeNodeKey);
-  const isActive = uiState.activeFunctionId === fn.id;
+  const isActive = uiState.activeTreeNodeKey === treeNodeKey;
   const childEdges = payload.edges
     .filter((e) => e.callerId === fn.id)
     .sort((a, b) => a.callIndex - b.callIndex);
@@ -65,7 +65,7 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey) {
   row.dataset.treeNodeKey = treeNodeKey;
   row.addEventListener('click', (e) => {
     e.stopPropagation();
-    setActiveFunction(fn.id);
+    setActiveFunction(fn.id, treeNodeKey);
     if (hasChildren) toggleExpandedTreeNode(treeNodeKey);
   });
   row.addEventListener('mouseenter', () => setHoveredTreeNodeKey(treeNodeKey));

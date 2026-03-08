@@ -6,7 +6,8 @@
 
 import { getState, toggleExpandedTreeNode, setActiveFunction } from '../state/store.js';
 
-let lastScrolledToActiveId = null;
+let lastScrolledToActiveKey = null;
+let lastScrolledToHoveredKey = null;
 
 function makePlaceholder(index) {
   return `__flowdiff_ph_${index}__`;
@@ -264,14 +265,14 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       const treeNodeKey = el.dataset.treeNodeKey;
       const callee = payload.functionsById[calleeId];
       const isExpanded = treeNodeKey ? uiState.expandedTreeNodeIds.has(treeNodeKey) : false;
-      const isActive = uiState.activeFunctionId === calleeId;
+      const isActive = treeNodeKey ? uiState.activeTreeNodeKey === treeNodeKey : uiState.activeFunctionId === calleeId;
       const isHovered = treeNodeKey && uiState.hoveredTreeNodeKey === treeNodeKey;
       if (isActive) el.classList.add('active');
       if (isHovered) el.classList.add('hovered');
       el.title = `Click to ${isExpanded ? 'collapse' : 'expand'} ${callee?.name || calleeId}`;
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        setActiveFunction(calleeId);
+        setActiveFunction(calleeId, treeNodeKey);
         if (treeNodeKey) toggleExpandedTreeNode(treeNodeKey);
       });
     });
@@ -285,7 +286,8 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
 
       const inlineBlock = document.createElement('div');
       inlineBlock.className = 'inline-callee function-block';
-      if (uiState.activeFunctionId === site.calleeId) inlineBlock.classList.add('active');
+      inlineBlock.dataset.treeNodeKey = treeNodeKey;
+      if (uiState.activeTreeNodeKey === treeNodeKey) inlineBlock.classList.add('active');
       if (uiState.hoveredTreeNodeKey === treeNodeKey) inlineBlock.classList.add('hovered');
       inlineBlock.dataset.functionId = site.calleeId;
       const label = document.createElement('div');
@@ -348,19 +350,33 @@ export function renderCodeView(container) {
   const rootBlock = document.createElement('div');
   rootBlock.className = 'function-block root';
   rootBlock.dataset.functionId = root.id;
-  if (uiState.activeFunctionId === root.id) rootBlock.classList.add('active');
+  rootBlock.dataset.treeNodeKey = rootPath;
+  if (uiState.activeTreeNodeKey === rootPath) rootBlock.classList.add('active');
   if (uiState.hoveredTreeNodeKey === rootPath) rootBlock.classList.add('hovered');
 
   renderFunctionBody(rootBlock, flowPayload, uiState, root, sourceLinesByFile, diffLinesByFile, calleesByCaller, '', rootPath);
   fileSection.appendChild(rootBlock);
   container.appendChild(fileSection);
 
-  if (uiState.activeFunctionId && uiState.activeFunctionId !== lastScrolledToActiveId) {
-    const el = container.querySelector(`[data-function-id="${uiState.activeFunctionId}"]`);
+  if (uiState.activeTreeNodeKey && uiState.activeTreeNodeKey !== lastScrolledToActiveKey) {
+    const candidates = container.querySelectorAll('[data-tree-node-key]');
+    const el = [...candidates].find((c) => c.dataset.treeNodeKey === uiState.activeTreeNodeKey);
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      lastScrolledToActiveId = uiState.activeFunctionId;
+      lastScrolledToActiveKey = uiState.activeTreeNodeKey;
     }
   }
-  if (!uiState.activeFunctionId) lastScrolledToActiveId = null;
+  if (!uiState.activeTreeNodeKey) lastScrolledToActiveKey = null;
+
+  if (uiState.hoveredTreeNodeKey && uiState.hoveredTreeNodeKey !== lastScrolledToHoveredKey) {
+    const candidates = container.querySelectorAll('[data-tree-node-key]');
+    const el = [...candidates].find((c) => c.dataset.treeNodeKey === uiState.hoveredTreeNodeKey);
+    if (el) {
+      requestAnimationFrame(() => {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      });
+      lastScrolledToHoveredKey = uiState.hoveredTreeNodeKey;
+    }
+  }
+  if (!uiState.hoveredTreeNodeKey) lastScrolledToHoveredKey = null;
 }

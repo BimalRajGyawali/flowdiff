@@ -9,12 +9,13 @@ import { emptyFlowPayload } from '../flowSchema.js';
 /** @type {import('../flowSchema.js').FlowPayload} */
 let flowPayload = { ...emptyFlowPayload };
 
-/** @type {{ selectedFlowId: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, activeFunctionId: string | null, hoveredTreeNodeKey: string | null }} */
+/** @type {{ selectedFlowId: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null }} */
 let uiState = {
   selectedFlowId: null,
   expandedIds: new Set(),
   expandedTreeNodeIds: new Set(),
   activeFunctionId: null,
+  activeTreeNodeKey: null,
   hoveredTreeNodeKey: null
 };
 
@@ -33,6 +34,7 @@ export function setFlowPayload(payload) {
     expandedIds: firstFlow?.rootId ? new Set([firstFlow.rootId]) : new Set(),
     expandedTreeNodeIds: firstFlow?.rootId ? new Set([`root:${firstFlow.rootId}`]) : new Set(),
     activeFunctionId: null,
+    activeTreeNodeKey: null,
     hoveredTreeNodeKey: null
   };
   notify();
@@ -43,6 +45,7 @@ export function setSelectedFlow(flowId, rootId) {
   uiState.expandedIds = rootId ? new Set([rootId]) : new Set();
   uiState.expandedTreeNodeIds = rootId ? new Set([`root:${rootId}`]) : new Set();
   uiState.activeFunctionId = null;
+  uiState.activeTreeNodeKey = null;
   uiState.hoveredTreeNodeKey = null;
   notify();
 }
@@ -174,8 +177,9 @@ export function toggleExpandedTreeNode(treeNodeKey) {
   notify();
 }
 
-export function setActiveFunction(functionId) {
+export function setActiveFunction(functionId, treeNodeKey = null) {
   uiState.activeFunctionId = functionId;
+  uiState.activeTreeNodeKey = treeNodeKey;
   notify();
 }
 
@@ -205,6 +209,7 @@ export function initStore() {
     expandedIds: new Set(),
     expandedTreeNodeIds: new Set(),
     activeFunctionId: null,
+    activeTreeNodeKey: null,
     hoveredTreeNodeKey: null
   };
 }

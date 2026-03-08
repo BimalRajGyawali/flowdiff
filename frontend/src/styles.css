@@ -450,13 +450,18 @@ body {
 }
 
 .inline-callee.active {
-  border-left-color: #8c959f;
+  border-left-color: #0969da;
+  border-left-width: 3px;
   background: #f0f6ff;
+  outline: 1px solid #0969da;
+  outline-offset: 1px;
+  box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.15);
 }
 
 .inline-callee.active .inline-callee-label {
-  background: #eaeef2;
-  color: #24292f;
+  background: #ddf4ff;
+  color: #0969da;
+  font-weight: 500;
 }
 
 .inline-callee.hovered {
