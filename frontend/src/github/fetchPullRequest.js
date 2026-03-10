@@ -3,7 +3,7 @@
  * For scaffold: returns mock data until pipeline is implemented.
  */
 
-import { setFlowPayload } from '../state/store.js';
+import { setFlowPayload, setPrContext } from '../state/store.js';
 import { parsePrUrl } from './parsePrUrl.js';
 import { fetchDiff } from './fetchDiff.js';
 import { parseDiff } from '../parser/parseDiff.js';
@@ -79,6 +79,9 @@ export async function fetchAndAnalyze(prUrl) {
       cachedRawData.fileContentsByPath ?? {}
     );
     setFlowPayload(payload);
+    if (cachedRawData.headSha) {
+      setPrContext(cachedRawData.owner, cachedRawData.repo, String(cachedRawData.number), cachedRawData.headSha);
+    }
     return { source: 'cache' };
   }
 
@@ -110,6 +113,7 @@ export async function fetchAndAnalyze(prUrl) {
       fileContentsByPath
     });
     setFlowPayload(payload);
+    setPrContext(owner, repo, String(number), meta.head.sha);
     return { source: 'network' };
   } catch (error) {
     if (cachedRawData) {

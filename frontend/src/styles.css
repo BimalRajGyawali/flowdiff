@@ -161,14 +161,16 @@ body {
   cursor: pointer;
   border-radius: 4px;
   position: relative;
+  transition: background 120ms ease, box-shadow 120ms ease;
 }
 
 .flow-tree-node:hover {
-  background: #eaeef2;
+  background: #f3f4f6;
 }
 
 .flow-tree-node.active {
-  background: #ddf4ff;
+  background: #dbeafe;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.4);
 }
 
 .flow-tree-icon {
@@ -188,6 +190,26 @@ body {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.flow-tree-badge {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(27, 31, 35, 0.08);
+}
+
+.flow-tree-badge-added {
+  background: #2da44e;
+}
+
+.flow-tree-badge-modified {
+  background: #bf8700;
 }
 
 /* Tree branch lines - vertical connector for each level */
@@ -215,14 +237,74 @@ body {
   cursor: pointer;
   border-radius: 4px;
   margin-bottom: 4px;
+  transition: background 120ms ease, box-shadow 120ms ease, transform 80ms ease;
 }
 
 .flow-list-item:hover {
-  background: #eaeef2;
+  background: #f3f4f6;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 
 .flow-list-item.selected {
-  background: #ddf4ff;
+  background: #dbeafe;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.5);
+}
+
+.flow-list-item-name {
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flow-list-item-meta {
+  font-size: 11px;
+  color: #57606a;
+  margin-top: 2px;
+}
+
+.flow-list-badge {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(27, 31, 35, 0.08);
+}
+
+.flow-list-badge-added {
+  background: #2da44e;
+}
+
+.flow-list-badge-modified {
+  background: #bf8700;
+}
+
+.file-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.file-tab {
+  padding: 6px 12px;
+  font-size: 12px;
+  border: 1px solid #d0d7de;
+  background: #f6f8fa;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #57606a;
+}
+
+.file-tab:hover {
+  background: #eaeef2;
+  color: #24292f;
+}
+
+.file-tab.active {
+  background: #0969da;
+  color: white;
+  border-color: #0969da;
 }
 
 .file-section {
@@ -242,6 +324,8 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   font-size: 12px;
   line-height: 20px;
+  display: flex;
+  align-items: center;
 }
 
 .function-block.root {
@@ -285,6 +369,15 @@ body {
 .diff-num-del {
   background: #f2d28b;
   color: #24292f;
+}
+
+.diff-num-link {
+  color: #0969da;
+  text-decoration: none;
+}
+
+.diff-num-link:hover {
+  text-decoration: underline;
 }
 
 .diff-sign {
@@ -425,6 +518,32 @@ body {
   border-radius: 2px;
   outline: 1px solid #0969da;
   outline-offset: 1px;
+}
+
+.call-site-indicator {
+  font-size: 9px;
+  color: #57606a;
+  margin-left: 1px;
+  font-weight: 600;
+}
+
+.function-badge {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  margin-right: 6px;
+}
+
+.function-badge-added {
+  background: #dafbe1;
+  color: #1a7f37;
+}
+
+.function-badge-modified {
+  background: #fff8c5;
+  color: #9a6700;
 }
 
 .inline-callee {

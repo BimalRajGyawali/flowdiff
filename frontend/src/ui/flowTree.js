@@ -60,7 +60,8 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey) {
   row.className = 'flow-tree-node' + (isActive ? ' active' : '');
   const hasChildren = children.length > 0;
   const expandIcon = hasChildren ? (expanded ? '▾' : '▸') : '◦';
-  row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${escapeHtml(fn.name)}</span>`;
+  const changeBadge = fn.changeType ? `<span class="flow-tree-badge flow-tree-badge-${fn.changeType}" title="${fn.changeType}"></span>` : '';
+  row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${changeBadge}${escapeHtml(fn.name)}</span>`;
   row.dataset.functionId = fn.id;
   row.dataset.treeNodeKey = treeNodeKey;
   row.addEventListener('click', (e) => {

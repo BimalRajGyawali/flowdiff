@@ -9,9 +9,13 @@ import { emptyFlowPayload } from '../flowSchema.js';
 /** @type {import('../flowSchema.js').FlowPayload} */
 let flowPayload = { ...emptyFlowPayload };
 
-/** @type {{ selectedFlowId: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null }} */
+/** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
+let prContext = null;
+
+/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null }} */
 let uiState = {
   selectedFlowId: null,
+  selectedFileInFlow: null,
   expandedIds: new Set(),
   expandedTreeNodeIds: new Set(),
   activeFunctionId: null,
@@ -23,7 +27,12 @@ let uiState = {
 const subscribers = [];
 
 export function getState() {
-  return { flowPayload, uiState };
+  return { flowPayload, uiState, prContext };
+}
+
+export function setPrContext(owner, repo, number, headSha) {
+  prContext = owner && repo && number && headSha ? { owner, repo, number, headSha } : null;
+  notify();
 }
 
 export function setFlowPayload(payload) {
@@ -31,6 +40,7 @@ export function setFlowPayload(payload) {
   const firstFlow = payload.flows[0];
   uiState = {
     selectedFlowId: firstFlow?.id ?? null,
+    selectedFileInFlow: null,
     expandedIds: firstFlow?.rootId ? new Set([firstFlow.rootId]) : new Set(),
     expandedTreeNodeIds: firstFlow?.rootId ? new Set([`root:${firstFlow.rootId}`]) : new Set(),
     activeFunctionId: null,
@@ -42,11 +52,17 @@ export function setFlowPayload(payload) {
 
 export function setSelectedFlow(flowId, rootId) {
   uiState.selectedFlowId = flowId;
+  uiState.selectedFileInFlow = null;
   uiState.expandedIds = rootId ? new Set([rootId]) : new Set();
   uiState.expandedTreeNodeIds = rootId ? new Set([`root:${rootId}`]) : new Set();
   uiState.activeFunctionId = null;
   uiState.activeTreeNodeKey = null;
   uiState.hoveredTreeNodeKey = null;
+  notify();
+}
+
+export function setSelectedFileInFlow(filePath) {
+  uiState.selectedFileInFlow = filePath;
   notify();
 }
 
@@ -204,8 +220,12 @@ function notify() {
 
 export function initStore() {
   flowPayload = { ...emptyFlowPayload };
+  prContext = null;
   uiState = {
     selectedFlowId: null,
+    selectedFileInFlow: null,
+    flowListFilter: '',
+    flowListSort: 'name',
     expandedIds: new Set(),
     expandedTreeNodeIds: new Set(),
     activeFunctionId: null,

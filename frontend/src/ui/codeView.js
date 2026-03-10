@@ -4,7 +4,7 @@
  * Expansion syncs with the flow tree. Uses Prism for syntax highlighting.
  */
 
-import { getState, toggleExpandedTreeNode, setActiveFunction } from '../state/store.js';
+import { getState, toggleExpandedTreeNode, setActiveFunction, setSelectedFileInFlow } from '../state/store.js';
 
 let lastScrolledToActiveKey = null;
 let lastScrolledToHoveredKey = null;
@@ -204,7 +204,7 @@ function findCallSitesInLine(line, callees) {
  * @param {Record<string, string[]>} sourceLinesByFile - file path -> full current source lines
  * @param {Record<string, { type: string, oldLineNumber: number | null, newLineNumber: number | null, content: string }[]>} diffLinesByFile
  */
-function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, diffLinesByFile, calleesByCaller, indent, pathPrefix) {
+function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, diffLinesByFile, calleesByCaller, indent, pathPrefix, prContext) {
   const sourceLines = sourceLinesByFile[fn.file] || [];
   const fnDiffLines = buildFunctionDisplayRows(fn, sourceLines, diffLinesByFile[fn.file] || []);
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
@@ -243,19 +243,30 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       lineWithPlaceholders += line.slice(lastEnd);
       lineHtml = highlightPython(lineWithPlaceholders);
 
-      for (const { placeholder, calleeId, start, end, treeNodeKey } of placeholders) {
+      for (let pi = 0; pi < placeholders.length; pi++) {
+        const { placeholder, calleeId, start, end, treeNodeKey } = placeholders[pi];
         const callText = line.slice(start, end);
         const dataKey = treeNodeKey ? ` data-tree-node-key="${escapeHtml(treeNodeKey)}"` : '';
-        const callSpanHtml = `<span class="call-site" data-callee-id="${escapeHtml(calleeId)}"${dataKey} title="Click to expand">${escapeHtml(callText)}</span>`;
+        const idx = placeholders[pi].callIndex;
+        const indicator = idx !== undefined ? `<sup class="call-site-indicator" title="Call #${idx + 1}">${idx + 1}</sup>` : '';
+        const callSpanHtml = `<span class="call-site" data-callee-id="${escapeHtml(calleeId)}"${dataKey} title="Click to expand">${escapeHtml(callText)}${indicator}</span>`;
         lineHtml = lineHtml.replace(new RegExp(escapeRegex(placeholder), 'g'), callSpanHtml);
       }
     }
 
+    const lineNum = rowData.newLineNumber ?? rowData.oldLineNumber;
+    const lineLink = prContext && lineNum != null && rowData.type !== 'del'
+      ? `https://github.com/${prContext.owner}/${prContext.repo}/blob/${prContext.headSha}/${fn.file}#L${lineNum}`
+      : '';
+    const oldNumHtml = rowData.oldLineNumber != null ? String(rowData.oldLineNumber) : '';
+    const newNumHtml = rowData.newLineNumber != null
+      ? (lineLink ? `<a href="${escapeHtml(lineLink)}" target="_blank" rel="noopener" class="diff-num-link" title="Open on GitHub">${rowData.newLineNumber}</a>` : String(rowData.newLineNumber))
+      : '';
     const row = document.createElement('div');
     row.className = `diff-line diff-line-${rowData.type}`;
     row.innerHTML = `
-      <span class="diff-num diff-num-${rowData.type}">${rowData.oldLineNumber ?? ''}</span>
-      <span class="diff-num diff-num-${rowData.type}">${rowData.newLineNumber ?? ''}</span>
+      <span class="diff-num diff-num-${rowData.type}">${oldNumHtml}</span>
+      <span class="diff-num diff-num-${rowData.type}">${newNumHtml}</span>
       <span class="diff-sign diff-sign-${rowData.type}">${rowData.type === 'add' ? '+' : rowData.type === 'del' ? '-' : ''}</span>
       <pre class="diff-code diff-code-${rowData.type}"><code class="language-python">${lineHtml}</code></pre>
     `;
@@ -287,6 +298,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       const inlineBlock = document.createElement('div');
       inlineBlock.className = 'inline-callee function-block';
       inlineBlock.dataset.treeNodeKey = treeNodeKey;
+      inlineBlock.dataset.file = callee.file;
       if (uiState.activeTreeNodeKey === treeNodeKey) inlineBlock.classList.add('active');
       if (uiState.hoveredTreeNodeKey === treeNodeKey) inlineBlock.classList.add('hovered');
       inlineBlock.dataset.functionId = site.calleeId;
@@ -297,7 +309,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       const innerContainer = document.createElement('div');
       innerContainer.className = 'inline-callee-body';
       const innerIndent = indent + '    ';
-      renderFunctionBody(innerContainer, payload, uiState, callee, sourceLinesByFile, diffLinesByFile, calleesByCaller, innerIndent, treeNodeKey);
+      renderFunctionBody(innerContainer, payload, uiState, callee, sourceLinesByFile, diffLinesByFile, calleesByCaller, innerIndent, treeNodeKey, prContext);
       inlineBlock.appendChild(innerContainer);
       container.appendChild(inlineBlock);
     }
@@ -305,7 +317,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
 }
 
 export function renderCodeView(container) {
-  const { flowPayload, uiState } = getState();
+  const { flowPayload, uiState, prContext } = getState();
   container.innerHTML = '';
 
   if (!flowPayload.files?.length) {
@@ -320,6 +332,13 @@ export function renderCodeView(container) {
     container.textContent = 'Select a flow.';
     return;
   }
+
+  const flowFiles = new Set();
+  for (const id of flowFnIds) {
+    const fn = flowPayload.functionsById[id];
+    if (fn?.file) flowFiles.add(fn.file);
+  }
+  const flowFilesSorted = [...flowFiles].sort();
 
   const calleesByCaller = new Map();
   for (const e of flowPayload.edges) {
@@ -339,6 +358,27 @@ export function renderCodeView(container) {
   const root = flowPayload.functionsById[selectedFlow.rootId];
   if (!root) return;
 
+  if (flowFilesSorted.length > 1) {
+    const tabBar = document.createElement('div');
+    tabBar.className = 'file-tabs';
+    for (const filePath of flowFilesSorted) {
+      const tab = document.createElement('button');
+      tab.className = 'file-tab';
+      tab.type = 'button';
+      tab.textContent = filePath.split('/').pop();
+      tab.title = filePath;
+      tab.dataset.file = filePath;
+      if (filePath === (uiState.selectedFileInFlow || root.file)) tab.classList.add('active');
+      tab.addEventListener('click', () => {
+        setSelectedFileInFlow(filePath);
+        const el = [...container.querySelectorAll('[data-file]')].find((e) => e.dataset.file === filePath);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      });
+      tabBar.appendChild(tab);
+    }
+    container.appendChild(tabBar);
+  }
+
   const rootPath = `root:${root.id}`;
   const fileSection = document.createElement('div');
   fileSection.className = 'file-section';
@@ -351,10 +391,11 @@ export function renderCodeView(container) {
   rootBlock.className = 'function-block root';
   rootBlock.dataset.functionId = root.id;
   rootBlock.dataset.treeNodeKey = rootPath;
+  rootBlock.dataset.file = root.file;
   if (uiState.activeTreeNodeKey === rootPath) rootBlock.classList.add('active');
   if (uiState.hoveredTreeNodeKey === rootPath) rootBlock.classList.add('hovered');
 
-  renderFunctionBody(rootBlock, flowPayload, uiState, root, sourceLinesByFile, diffLinesByFile, calleesByCaller, '', rootPath);
+  renderFunctionBody(rootBlock, flowPayload, uiState, root, sourceLinesByFile, diffLinesByFile, calleesByCaller, '', rootPath, prContext);
   fileSection.appendChild(rootBlock);
   container.appendChild(fileSection);
 

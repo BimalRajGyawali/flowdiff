@@ -52,7 +52,7 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
     }
 
     for (let i = 0; i < defs.length; i++) {
-      const { name, lineNum, snippet, indent } = defs[i];
+      const { name, lineNum, snippet, indent, defAdded } = defs[i];
       let endLine = fileEndLine;
       for (let j = lineNum; j < sourceLines.length; j++) {
         const blockMatch = sourceLines[j].match(PY_BLOCK_START_REGEX);
@@ -70,8 +70,16 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
       const hasDeletedChange = visibleLines.some(
         (line) => line.lineNumber >= lineNum && line.lineNumber <= endLine && line.touchedByDeletion
       );
+      const hasAnyChange = hasAddedChange || hasDeletedChange;
 
-      if (!hasAddedChange) continue;
+      // Only keep functions whose body changed (added or deleted lines).
+      if (!hasAnyChange) continue;
+
+      // Classification:
+      // - "added": function is newly created (its def line is newly added and there are no deletions in its body)
+      // - "modified": function existed before and its body has added and/or deleted lines
+      const isNewFunction = defAdded && !hasDeletedChange;
+      const changeType = isNewFunction ? 'added' : 'modified';
 
       const id = `${pf.path}:${name}`;
       functionsById[id] = {
@@ -82,7 +90,7 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
         endLine,
         snippet: snippet ?? `def ${name}(`,
         changed: true,
-        changeType: hasDeletedChange ? 'modified' : 'added'
+        changeType
       };
     }
 
