@@ -67,7 +67,9 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey) {
   row.addEventListener('click', (e) => {
     e.stopPropagation();
     setActiveFunction(fn.id, treeNodeKey);
-    if (hasChildren) toggleExpandedTreeNode(treeNodeKey);
+    // Toggle this occurrence in the flow tree and code view,
+    // regardless of whether it has children (leaf nodes inline/collapse in code view).
+    toggleExpandedTreeNode(treeNodeKey);
   });
   row.addEventListener('mouseenter', () => setHoveredTreeNodeKey(treeNodeKey));
   row.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));

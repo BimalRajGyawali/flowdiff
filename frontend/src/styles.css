@@ -175,14 +175,27 @@ body {
 
 .flow-tree-icon {
   flex-shrink: 0;
-  width: 14px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid transparent;
   text-align: center;
-  color: #57606a;
-  font-size: 10px;
+  color: #4b5563;
+  font-size: 12px;
 }
 
 .flow-tree-node.active .flow-tree-icon {
-  color: #0969da;
+  color: #2563eb;
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.flow-tree-node:hover .flow-tree-icon {
+  border-color: #d0d7de;
+  background: #f9fafb;
 }
 
 .flow-tree-label {
