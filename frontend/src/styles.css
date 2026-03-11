@@ -380,7 +380,8 @@ body {
 }
 
 .diff-num-del {
-  background: #f2d28b;
+  /* GitHub removed line number gutter */
+  background: #ffcecb;
   color: #24292f;
 }
 
@@ -409,8 +410,9 @@ body {
 }
 
 .diff-sign-del {
-  color: #9a6700;
-  background: #f2d28b;
+  /* GitHub removed line sign gutter */
+  color: #cf222e;
+  background: #ffcecb;
 }
 
 .diff-sign-ctx {
@@ -444,7 +446,8 @@ body {
 }
 
 .diff-line-del .diff-code {
-  background: #fff8c5;
+  /* GitHub removed line background */
+  background: #ffebe9;
 }
 
 .diff-line-add .diff-sign {
@@ -452,7 +455,8 @@ body {
 }
 
 .diff-line-del .diff-sign {
-  background: #f2d28b;
+  /* GitHub removed line gutter */
+  background: #ffcecb;
 }
 
 .inline-callee .diff-line-add .diff-code {
@@ -460,7 +464,7 @@ body {
 }
 
 .inline-callee .diff-line-del .diff-code {
-  background: #fff8c5 !important;
+  background: #ffebe9 !important;
 }
 
 .diff-line-ctx .diff-code {
