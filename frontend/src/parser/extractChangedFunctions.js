@@ -75,9 +75,13 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
       }
     }
 
+    /** @type {{ start: number, end: number }[]} */
+    const functionOwnedRanges = [];
+
     for (let i = 0; i < defs.length; i++) {
       const { name, lineNum, snippet, indent, defAdded } = defs[i];
       let endLine = fileEndLine;
+      // Original heuristic for function boundaries: next def/class at same or lower indent.
       for (let j = lineNum; j < sourceLines.length; j++) {
         const blockMatch = sourceLines[j].match(PY_BLOCK_START_REGEX);
         if (!blockMatch) continue;
@@ -87,6 +91,10 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
           break;
         }
       }
+
+      // For module-context exclusion, treat the entire function span [startLine, endLine]
+      // (including the def line) as "owned" by the function.
+      functionOwnedRanges.push({ start: lineNum, end: endLine });
 
       const hasAddedChange = visibleLines.some(
         (line) => line.lineNumber >= lineNum && line.lineNumber <= endLine && line.added
@@ -121,21 +129,19 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
     }
 
     // Compute module-scope changed ranges.
-    // Heuristic: touched lines whose *current* source line is top-level (no indentation).
-    // This reliably captures imports/constants/module init code that users need as context.
+    // Heuristic: touched lines that are NOT owned by any function (or its decorators).
+    // This captures imports/constants/module init code and other non-function changes.
     const moduleChangedLineNumbers = [];
     const functionOwnedLineNumbers = new Set(decoratorLineNumbers);
-    for (const fn of changedFnsInFile) {
-      for (let ln = fn.startLine; ln <= fn.endLine; ln++) functionOwnedLineNumbers.add(ln);
+    for (const r of functionOwnedRanges) {
+      for (let ln = r.start; ln <= r.end; ln++) functionOwnedLineNumbers.add(ln);
     }
     for (const line of visibleLines) {
       const touched = line.added || line.touchedByDeletion;
       if (!touched) continue;
       if (line.lineNumber == null) continue;
       if (functionOwnedLineNumbers.has(line.lineNumber)) continue;
-      const text = sourceLines[line.lineNumber - 1] ?? '';
-      const isTopLevel = text.length > 0 && !/^\s+/.test(text);
-      if (isTopLevel) moduleChangedLineNumbers.push(line.lineNumber);
+      moduleChangedLineNumbers.push(line.lineNumber);
     }
     moduleChangedLineNumbers.sort((a, b) => a - b);
 
