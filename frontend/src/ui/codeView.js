@@ -247,9 +247,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
         const { placeholder, calleeId, start, end, treeNodeKey } = placeholders[pi];
         const callText = line.slice(start, end);
         const dataKey = treeNodeKey ? ` data-tree-node-key="${escapeHtml(treeNodeKey)}"` : '';
-        const idx = placeholders[pi].callIndex;
-        const indicator = idx !== undefined ? `<sup class="call-site-indicator" title="Call #${idx + 1}">${idx + 1}</sup>` : '';
-        const callSpanHtml = `<span class="call-site" data-callee-id="${escapeHtml(calleeId)}"${dataKey} title="Click to expand">${escapeHtml(callText)}${indicator}</span>`;
+        const callSpanHtml = `<span class="call-site" data-callee-id="${escapeHtml(calleeId)}"${dataKey} title="Click to expand">${escapeHtml(callText)}</span>`;
         lineHtml = lineHtml.replace(new RegExp(escapeRegex(placeholder), 'g'), callSpanHtml);
       }
     }
@@ -304,7 +302,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       inlineBlock.dataset.functionId = site.calleeId;
       const label = document.createElement('div');
       label.className = 'inline-callee-label';
-      label.textContent = `↳ ${callee.name}`;
+      label.textContent = '↳';
       inlineBlock.appendChild(label);
       const innerContainer = document.createElement('div');
       innerContainer.className = 'inline-callee-body';
