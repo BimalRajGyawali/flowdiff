@@ -7,7 +7,6 @@
 import { getState, toggleExpandedTreeNode, setActiveFunction, setSelectedFileInFlow } from '../state/store.js';
 
 let lastScrolledToActiveKey = null;
-let lastScrolledToHoveredKey = null;
 
 function makePlaceholder(index) {
   return `__flowdiff_ph_${index}__`;
@@ -148,6 +147,65 @@ function buildFunctionDisplayRows(fn, sourceLines, diffLines) {
   return rows;
 }
 
+function buildRangeDisplayRows(ranges, sourceLines, diffLines, excludedLineNumbers = new Set()) {
+  if (!ranges?.length) return [];
+  const inRange = (n) => ranges.some((r) => n >= r.start && n <= r.end);
+
+  const relevantDiffLines = diffLines.filter((row) => {
+    if (row.type === 'del') {
+      const anchor = row.anchorNewLineNumber ?? 0;
+      return inRange(anchor) && !excludedLineNumbers.has(anchor);
+    }
+    return row.newLineNumber != null && inRange(row.newLineNumber) && !excludedLineNumbers.has(row.newLineNumber);
+  });
+
+  const rows = [];
+  for (const r of ranges) {
+    // Include any diff rows anchored in this range.
+    for (const row of relevantDiffLines) {
+      const anchor = row.type === 'del' ? (row.anchorNewLineNumber ?? 0) : (row.newLineNumber ?? 0);
+      if (anchor >= r.start && anchor <= r.end) rows.push(row);
+    }
+    // Add context lines for the current source in the range (skip ones already added as '+' lines).
+    const addedNums = new Set(rows.filter((x) => x.type === 'add').map((x) => x.newLineNumber).filter((n) => n != null));
+    for (let ln = r.start; ln <= r.end; ln++) {
+      if (excludedLineNumbers.has(ln)) continue;
+      if (addedNums.has(ln)) continue;
+      rows.push({ type: 'ctx', oldLineNumber: '', newLineNumber: ln, content: sourceLines[ln - 1] ?? '' });
+    }
+  }
+
+  // Sort by anchor/new line to keep stable ordering.
+  const key = (row) => (row.type === 'del' ? (row.anchorNewLineNumber ?? 0) : (row.newLineNumber ?? 0));
+  return rows.sort((a, b) => key(a) - key(b));
+}
+
+function renderDiffRows(container, filePath, rows, prContext) {
+  for (const rowData of rows) {
+    const line = rowData.content;
+    const lineHtml = highlightPython(line);
+
+    const lineNum = rowData.newLineNumber ?? rowData.oldLineNumber;
+    const lineLink = prContext && lineNum != null && rowData.type !== 'del'
+      ? `https://github.com/${prContext.owner}/${prContext.repo}/blob/${prContext.headSha}/${filePath}#L${lineNum}`
+      : '';
+    const oldNumHtml = rowData.oldLineNumber != null ? String(rowData.oldLineNumber) : '';
+    const newNumHtml = rowData.newLineNumber != null
+      ? (lineLink ? `<a href="${escapeHtml(lineLink)}" target="_blank" rel="noopener" class="diff-num-link" title="Open on GitHub">${rowData.newLineNumber}</a>` : String(rowData.newLineNumber))
+      : '';
+
+    const row = document.createElement('div');
+    row.className = `diff-line diff-line-${rowData.type}`;
+    row.innerHTML = `
+      <span class="diff-num diff-num-${rowData.type}">${oldNumHtml}</span>
+      <span class="diff-num diff-num-${rowData.type}">${newNumHtml}</span>
+      <span class="diff-sign diff-sign-${rowData.type}">${rowData.type === 'add' ? '+' : rowData.type === 'del' ? '-' : ''}</span>
+      <pre class="diff-code diff-code-${rowData.type}"><code class="language-python">${lineHtml}</code></pre>
+    `;
+    container.appendChild(row);
+  }
+}
+
 /**
  * Collects all function IDs in the flow (root + all descendants via edges).
  */
@@ -203,8 +261,57 @@ function findCallSitesInLine(line, callees) {
  * @param {string} pathPrefix - path-based tree key for this block (root:rootId or parentPath/e:caller:idx:callee)
  * @param {Record<string, string[]>} sourceLinesByFile - file path -> full current source lines
  * @param {Record<string, { type: string, oldLineNumber: number | null, newLineNumber: number | null, content: string }[]>} diffLinesByFile
+ * @param {Set<string>} filesWithModuleContext - file paths that have module-scope changes
+ * @param {Map<string, { moduleChangedRanges?: { start: number, end: number }[], moduleChangedSymbols?: string[] }>} moduleMetaByFile
  */
-function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, diffLinesByFile, calleesByCaller, indent, pathPrefix, prContext) {
+function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, diffLinesByFile, filesWithModuleContext, moduleMetaByFile, calleesByCaller, indent, pathPrefix, prContext) {
+  // Ensure a module-context section exists within this file block (root or inline)
+  // so any "module context" pills have a reliable scroll target.
+  if (filesWithModuleContext.has(fn.file)) {
+    const fileBlock = container.closest('[data-file]') || container;
+    const already = fileBlock.querySelector?.('[data-module-context-section]');
+    if (!already) {
+      const fileMeta = moduleMetaByFile.get(fn.file);
+      if (fileMeta?.moduleChangedRanges?.length) {
+        const ctx = document.createElement('div');
+        ctx.className = 'module-context';
+        ctx.dataset.moduleContextSection = fn.file;
+        const symText = (fileMeta.moduleChangedSymbols || []).slice(0, 8).join(', ');
+        const more = (fileMeta.moduleChangedSymbols || []).length > 8 ? ` (+${(fileMeta.moduleChangedSymbols || []).length - 8} more)` : '';
+        const ctxId = `module-ctx:${fn.file}`;
+        ctx.innerHTML = `
+          <div class="module-context-header">
+            <button type="button" class="module-context-toggle" aria-expanded="false" aria-controls="${escapeHtml(ctxId)}" title="Show module-level diff">Module-level changes (outside functions)</button>
+            <span class="module-context-file">${escapeHtml(fn.file)}</span>
+            ${symText ? `<span class="module-context-syms" title="${escapeHtml((fileMeta.moduleChangedSymbols || []).join(', '))}">${escapeHtml(symText)}${more}</span>` : ''}
+          </div>
+          <div class="module-context-body" id="${escapeHtml(ctxId)}" hidden></div>
+        `;
+        const body = ctx.querySelector('.module-context-body');
+        const toggle = ctx.querySelector('.module-context-toggle');
+        toggle?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const expanded = toggle.getAttribute('aria-expanded') === 'true';
+          toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+          if (body) body.hidden = expanded;
+          if (!expanded && body && body.childElementCount === 0) {
+            const rows = buildRangeDisplayRows(
+              fileMeta.moduleChangedRanges,
+              sourceLinesByFile[fn.file] || [],
+              diffLinesByFile[fn.file] || [],
+              new Set(fileMeta.moduleExcludedLineNumbers || [])
+            );
+            const lines = document.createElement('div');
+            lines.className = 'module-context-lines';
+            renderDiffRows(lines, fn.file, rows, prContext);
+            body.appendChild(lines);
+          }
+        });
+        fileBlock.prepend(ctx);
+      }
+    }
+  }
+
   const sourceLines = sourceLinesByFile[fn.file] || [];
   const fnDiffLines = buildFunctionDisplayRows(fn, sourceLines, diffLinesByFile[fn.file] || []);
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
@@ -307,7 +414,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       const innerContainer = document.createElement('div');
       innerContainer.className = 'inline-callee-body';
       const innerIndent = indent + '    ';
-      renderFunctionBody(innerContainer, payload, uiState, callee, sourceLinesByFile, diffLinesByFile, calleesByCaller, innerIndent, treeNodeKey, prContext);
+      renderFunctionBody(innerContainer, payload, uiState, callee, sourceLinesByFile, diffLinesByFile, filesWithModuleContext, moduleMetaByFile, calleesByCaller, innerIndent, treeNodeKey, prContext);
       inlineBlock.appendChild(innerContainer);
       container.appendChild(inlineBlock);
     }
@@ -348,9 +455,17 @@ export function renderCodeView(container) {
 
   const sourceLinesByFile = {};
   const diffLinesByFile = {};
+  const filesWithModuleContext = new Set();
+  const moduleMetaByFile = new Map();
   for (const file of flowPayload.files) {
     sourceLinesByFile[file.path] = file.sourceLines || [];
     diffLinesByFile[file.path] = buildDiffLines(file.hunks || []);
+    if (file.moduleChangedRanges?.length) filesWithModuleContext.add(file.path);
+    moduleMetaByFile.set(file.path, {
+      moduleChangedRanges: file.moduleChangedRanges,
+      moduleChangedSymbols: file.moduleChangedSymbols,
+      moduleExcludedLineNumbers: file.moduleExcludedLineNumbers
+    });
   }
 
   const root = flowPayload.functionsById[selectedFlow.rootId];
@@ -380,10 +495,10 @@ export function renderCodeView(container) {
   const rootPath = `root:${root.id}`;
   const fileSection = document.createElement('div');
   fileSection.className = 'file-section';
-  const header = document.createElement('div');
-  header.className = 'file-header';
-  header.textContent = root.file;
-  fileSection.appendChild(header);
+  // File header omitted; file context is shown within blocks.
+
+  // Module context sections are inserted lazily per file block in renderFunctionBody,
+  // so inline callees in other files also get a scroll target.
 
   const rootBlock = document.createElement('div');
   rootBlock.className = 'function-block root';
@@ -393,7 +508,7 @@ export function renderCodeView(container) {
   if (uiState.activeTreeNodeKey === rootPath) rootBlock.classList.add('active');
   if (uiState.hoveredTreeNodeKey === rootPath) rootBlock.classList.add('hovered');
 
-  renderFunctionBody(rootBlock, flowPayload, uiState, root, sourceLinesByFile, diffLinesByFile, calleesByCaller, '', rootPath, prContext);
+  renderFunctionBody(rootBlock, flowPayload, uiState, root, sourceLinesByFile, diffLinesByFile, filesWithModuleContext, moduleMetaByFile, calleesByCaller, '', rootPath, prContext);
   fileSection.appendChild(rootBlock);
   container.appendChild(fileSection);
 
@@ -407,15 +522,5 @@ export function renderCodeView(container) {
   }
   if (!uiState.activeTreeNodeKey) lastScrolledToActiveKey = null;
 
-  if (uiState.hoveredTreeNodeKey && uiState.hoveredTreeNodeKey !== lastScrolledToHoveredKey) {
-    const candidates = container.querySelectorAll('[data-tree-node-key]');
-    const el = [...candidates].find((c) => c.dataset.treeNodeKey === uiState.hoveredTreeNodeKey);
-    if (el) {
-      requestAnimationFrame(() => {
-        el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-      });
-      lastScrolledToHoveredKey = uiState.hoveredTreeNodeKey;
-    }
-  }
-  if (!uiState.hoveredTreeNodeKey) lastScrolledToHoveredKey = null;
+  // Hover only highlights; no auto-scroll (prevents disorientation).
 }

@@ -51,6 +51,30 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
       });
     }
 
+    /** @type {import('../flowSchema.js').FunctionMeta[]} */
+    const changedFnsInFile = [];
+
+    // Decorators immediately above a `def` belong to the function, not module context.
+    // This includes multi-line decorators where continuation lines are indented further.
+    const decoratorLineNumbers = new Set();
+    for (const d of defs) {
+      // Walk upward from the line above `def`, collecting the contiguous decorator block:
+      // - lines starting with '@' at the same indent as the def
+      // - any continuation lines more-indented than the def (e.g. decorator args split across lines)
+      for (let idx = d.lineNum - 2; idx >= 0; idx--) {
+        const text = sourceLines[idx] ?? '';
+        if (text.trim().length === 0) break;
+        const indentMatch = text.match(/^(\s*)/);
+        const indentLen = (indentMatch?.[1] ?? '').length;
+
+        const isDecoratorStart = indentLen === d.indent && text.trimStart().startsWith('@');
+        const isDecoratorContinuation = indentLen > d.indent;
+
+        if (!isDecoratorStart && !isDecoratorContinuation) break;
+        decoratorLineNumbers.add(idx + 1);
+      }
+    }
+
     for (let i = 0; i < defs.length; i++) {
       const { name, lineNum, snippet, indent, defAdded } = defs[i];
       let endLine = fileEndLine;
@@ -82,7 +106,7 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
       const changeType = isNewFunction ? 'added' : 'modified';
 
       const id = `${pf.path}:${name}`;
-      functionsById[id] = {
+      const fnMeta = {
         id,
         name,
         file: pf.path,
@@ -92,12 +116,67 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
         changed: true,
         changeType
       };
+      functionsById[id] = fnMeta;
+      changedFnsInFile.push(fnMeta);
+    }
+
+    // Compute module-scope changed ranges.
+    // Heuristic: touched lines whose *current* source line is top-level (no indentation).
+    // This reliably captures imports/constants/module init code that users need as context.
+    const moduleChangedLineNumbers = [];
+    const functionOwnedLineNumbers = new Set(decoratorLineNumbers);
+    for (const fn of changedFnsInFile) {
+      for (let ln = fn.startLine; ln <= fn.endLine; ln++) functionOwnedLineNumbers.add(ln);
+    }
+    for (const line of visibleLines) {
+      const touched = line.added || line.touchedByDeletion;
+      if (!touched) continue;
+      if (line.lineNumber == null) continue;
+      if (functionOwnedLineNumbers.has(line.lineNumber)) continue;
+      const text = sourceLines[line.lineNumber - 1] ?? '';
+      const isTopLevel = text.length > 0 && !/^\s+/.test(text);
+      if (isTopLevel) moduleChangedLineNumbers.push(line.lineNumber);
+    }
+    moduleChangedLineNumbers.sort((a, b) => a - b);
+
+    /** @type {{ start: number, end: number }[]} */
+    const moduleChangedRanges = [];
+    for (const ln of moduleChangedLineNumbers) {
+      const last = moduleChangedRanges[moduleChangedRanges.length - 1];
+      if (!last || ln > last.end + 1) moduleChangedRanges.push({ start: ln, end: ln });
+      else last.end = ln;
+    }
+
+    // Extract simple module-level symbols (best-effort): NAME = ...
+    const moduleChangedSymbolsSet = new Set();
+    const moduleAssignRe = /^\s*([A-Za-z_]\w*)\s*=/;
+    for (const r of moduleChangedRanges) {
+      for (let ln = r.start; ln <= r.end; ln++) {
+        const text = sourceLines[ln - 1] ?? '';
+        // Only consider top-level (no indentation).
+        if (/^\s+/.test(text)) continue;
+        const m = text.match(moduleAssignRe);
+        if (m) moduleChangedSymbolsSet.add(m[1]);
+      }
+    }
+    const moduleChangedSymbols = [...moduleChangedSymbolsSet].sort();
+
+    // Tag functions that reference module-level changed symbols (best-effort).
+    if (moduleChangedSymbols.length > 0) {
+      for (const fn of changedFnsInFile) {
+        const body = sourceLines.slice(fn.startLine - 1, fn.endLine).join('\n');
+        const deps = moduleChangedSymbols.filter((sym) => new RegExp(`\\b${sym}\\b`).test(body));
+        if (deps.length) fn.moduleDeps = deps;
+      }
     }
 
     files.push({
       path: pf.path,
       hunks: pf.hunks,
       changedRanges,
+      moduleChangedRanges,
+      moduleChangedSymbols,
+      moduleExcludedLineNumbers: [...functionOwnedLineNumbers],
       sourceLines
     });
   }
