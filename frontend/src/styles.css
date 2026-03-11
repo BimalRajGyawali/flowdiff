@@ -292,34 +292,6 @@ body {
   background: #bf8700;
 }
 
-.file-tabs {
-  display: flex;
-  gap: 2px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-}
-
-.file-tab {
-  padding: 6px 12px;
-  font-size: 12px;
-  border: 1px solid #d0d7de;
-  background: #f6f8fa;
-  border-radius: 6px;
-  cursor: pointer;
-  color: #57606a;
-}
-
-.file-tab:hover {
-  background: #eaeef2;
-  color: #24292f;
-}
-
-.file-tab.active {
-  background: #0969da;
-  color: white;
-  border-color: #0969da;
-}
-
 .file-section {
   margin-bottom: 24px;
   border: 1px solid #d0d7de;
@@ -503,7 +475,7 @@ body {
   color: #57606a;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   margin: 6px 0 4px;
-  padding: 4px 0;
+  padding: 4px 0 4px 16px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -542,10 +514,21 @@ body {
   font: inherit;
   color: #0969da;
   cursor: pointer;
+  border-radius: 2px;
 }
 
 .module-context-toggle:hover {
   text-decoration: underline;
+}
+
+.module-context-toggle:focus {
+  outline: none;
+  text-decoration: underline;
+}
+
+.module-context-toggle:focus-visible {
+  outline: 1px solid #0969da;
+  outline-offset: 2px;
 }
 
 .module-context.flash {

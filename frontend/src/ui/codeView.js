@@ -4,7 +4,7 @@
  * Expansion syncs with the flow tree. Uses Prism for syntax highlighting.
  */
 
-import { getState, toggleExpandedTreeNode, setActiveFunction, setSelectedFileInFlow } from '../state/store.js';
+import { getState, toggleExpandedTreeNode, setActiveFunction } from '../state/store.js';
 
 let lastScrolledToActiveKey = null;
 
@@ -267,9 +267,9 @@ function findCallSitesInLine(line, callees) {
 function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, diffLinesByFile, filesWithModuleContext, moduleMetaByFile, calleesByCaller, indent, pathPrefix, prContext) {
   const fileBlock = container.closest('[data-file]') || container;
 
-  // Show file name even when there are no module-level changes.
+  // Show file name only when there are no module-level changes (module-context already shows the file name).
   const hasFileHeader = fileBlock.querySelector?.('.file-name-header, [data-module-context-section]');
-  if (!hasFileHeader && fileBlock.dataset?.file === fn.file) {
+  if (!hasFileHeader && !filesWithModuleContext.has(fn.file) && fileBlock.dataset?.file === fn.file) {
     const fileHeader = document.createElement('div');
     fileHeader.className = 'file-name-header';
     fileHeader.textContent = fn.file;
@@ -292,7 +292,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
         const ctxId = `module-ctx:${fn.file}`;
         ctx.innerHTML = `
           <div class="module-context-header">
-            <button type="button" class="module-context-toggle" aria-expanded="false" aria-controls="${escapeHtml(ctxId)}" title="Show module-level diff">Module-level changes (outside functions)</button>
+            <button type="button" class="module-context-toggle" aria-expanded="false" aria-controls="${escapeHtml(ctxId)}" title="Changes outside function bodies">Module changes</button>
             <span class="module-context-file">${escapeHtml(fn.file)}</span>
             ${symText ? `<span class="module-context-syms" title="${escapeHtml((fileMeta.moduleChangedSymbols || []).join(', '))}">${escapeHtml(symText)}${more}</span>` : ''}
           </div>
@@ -449,13 +449,6 @@ export function renderCodeView(container) {
     return;
   }
 
-  const flowFiles = new Set();
-  for (const id of flowFnIds) {
-    const fn = flowPayload.functionsById[id];
-    if (fn?.file) flowFiles.add(fn.file);
-  }
-  const flowFilesSorted = [...flowFiles].sort();
-
   const calleesByCaller = new Map();
   for (const e of flowPayload.edges) {
     if (!flowFnIds.has(e.callerId) || !flowFnIds.has(e.calleeId)) continue;
@@ -481,27 +474,6 @@ export function renderCodeView(container) {
 
   const root = flowPayload.functionsById[selectedFlow.rootId];
   if (!root) return;
-
-  if (flowFilesSorted.length > 1) {
-    const tabBar = document.createElement('div');
-    tabBar.className = 'file-tabs';
-    for (const filePath of flowFilesSorted) {
-      const tab = document.createElement('button');
-      tab.className = 'file-tab';
-      tab.type = 'button';
-      tab.textContent = filePath.split('/').pop();
-      tab.title = filePath;
-      tab.dataset.file = filePath;
-      if (filePath === (uiState.selectedFileInFlow || root.file)) tab.classList.add('active');
-      tab.addEventListener('click', () => {
-        setSelectedFileInFlow(filePath);
-        const el = [...container.querySelectorAll('[data-file]')].find((e) => e.dataset.file === filePath);
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      });
-      tabBar.appendChild(tab);
-    }
-    container.appendChild(tabBar);
-  }
 
   const rootPath = `root:${root.id}`;
   const fileSection = document.createElement('div');
