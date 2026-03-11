@@ -619,3 +619,77 @@ body {
   padding: 0;
   background: transparent;
 }
+
+/* GitHub Light syntax theme (Primer) – code pane only */
+.code-pane code[class*="language-"],
+.code-pane pre[class*="language-"] {
+  color: #1f2328;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.code-pane .token.comment,
+.code-pane .token.prolog,
+.code-pane .token.doctype,
+.code-pane .token.cdata {
+  color: #6e7781;
+  font-style: italic;
+}
+
+.code-pane .token.namespace {
+  opacity: 0.8;
+}
+
+.code-pane .token.keyword,
+.code-pane .token.atrule,
+.code-pane .token.important,
+.code-pane .token.deleted {
+  color: #cf222e;
+}
+
+.code-pane .token.string,
+.code-pane .token.attr-value,
+.code-pane .token.regex,
+.code-pane .token.inserted {
+  color: #0a3069;
+}
+
+.code-pane .token.number,
+.code-pane .token.boolean,
+.code-pane .token.constant,
+.code-pane .token.url,
+.code-pane .token.symbol {
+  color: #0550ae;
+}
+
+.code-pane .token.function,
+.code-pane .token.class-name {
+  color: #8250df;
+}
+
+.code-pane .token.variable,
+.code-pane .token.property {
+  color: #1f2328;
+}
+
+.code-pane .token.punctuation,
+.code-pane .token.operator {
+  color: #1f2328;
+}
+
+.code-pane .token.tag,
+.code-pane .token.selector,
+.code-pane .token.attr-name {
+  color: #116329;
+}
+
+.code-pane .token.entity {
+  color: #0550ae;
+}
+
+.code-pane .token.bold {
+  font-weight: bold;
+}
+
+.code-pane .token.italic {
+  font-style: italic;
+}
