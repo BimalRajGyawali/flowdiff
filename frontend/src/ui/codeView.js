@@ -265,6 +265,17 @@ function findCallSitesInLine(line, callees) {
  * @param {Map<string, { moduleChangedRanges?: { start: number, end: number }[], moduleChangedSymbols?: string[] }>} moduleMetaByFile
  */
 function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, diffLinesByFile, filesWithModuleContext, moduleMetaByFile, calleesByCaller, indent, pathPrefix, prContext) {
+  const fileBlock = container.closest('[data-file]') || container;
+
+  // Show file name even when there are no module-level changes.
+  const hasFileHeader = fileBlock.querySelector?.('.file-name-header, [data-module-context-section]');
+  if (!hasFileHeader && fileBlock.dataset?.file === fn.file) {
+    const fileHeader = document.createElement('div');
+    fileHeader.className = 'file-name-header';
+    fileHeader.textContent = fn.file;
+    fileBlock.prepend(fileHeader);
+  }
+
   // Ensure a module-context section exists within this file block (root or inline)
   // so any "module context" pills have a reliable scroll target.
   if (filesWithModuleContext.has(fn.file)) {
