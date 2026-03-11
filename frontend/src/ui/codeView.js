@@ -437,7 +437,7 @@ export function renderCodeView(container) {
   container.innerHTML = '';
 
   if (!flowPayload.files?.length) {
-    container.textContent = 'Enter a PR URL and click Analyze.';
+    container.textContent = 'Enter a PR URL and click Go.';
     return;
   }
 
