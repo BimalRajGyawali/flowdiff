@@ -3,7 +3,7 @@
  * Preserves call order (func2, func5 under func1; func3, func4 under func2).
  */
 
-import { getState, toggleExpandedTreeNode, setActiveFunction, setHoveredTreeNodeKey } from '../state/store.js';
+import { getState, toggleExpandedTreeNode, setActiveFunction, setHoveredTreeNodeKey, expandFlowTreeToDepth } from '../state/store.js';
 
 /**
  * @param {HTMLElement} container
@@ -29,6 +29,30 @@ export function renderFlowTree(container) {
     return;
   }
 
+  const wrapper = document.createElement('div');
+  wrapper.className = 'flow-tree-wrapper';
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'flow-tree-toolbar';
+  toolbar.innerHTML = '<span class="flow-tree-toolbar-label">Expand:</span>';
+  const depths = [2, 3, 4];
+  depths.forEach((d) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'flow-tree-toolbar-btn';
+    btn.textContent = String(d);
+    btn.title = `Expand tree to depth ${d}`;
+    btn.addEventListener('click', () => expandFlowTreeToDepth(d));
+    toolbar.appendChild(btn);
+  });
+  const allBtn = document.createElement('button');
+  allBtn.type = 'button';
+  allBtn.className = 'flow-tree-toolbar-btn';
+  allBtn.textContent = 'All';
+  allBtn.title = 'Expand entire tree';
+  allBtn.addEventListener('click', () => expandFlowTreeToDepth(Infinity));
+  toolbar.appendChild(allBtn);
+
   const tree = document.createElement('div');
   tree.className = 'flow-tree';
   const rootKey = `root:${root.id}`;
@@ -36,7 +60,10 @@ export function renderFlowTree(container) {
   const pathKeysById = new Map([[root.id, rootKey]]);
   renderNode(tree, flowPayload, root, false, rootKey, pathFromRoot, pathKeysById);
   tree.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));
-  container.appendChild(tree);
+
+  wrapper.appendChild(toolbar);
+  wrapper.appendChild(tree);
+  container.appendChild(wrapper);
 }
 
 /**

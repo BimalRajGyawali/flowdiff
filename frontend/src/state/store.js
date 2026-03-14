@@ -193,6 +193,49 @@ export function toggleExpandedTreeNode(treeNodeKey) {
   notify();
 }
 
+/**
+ * Expand the flow tree (tree pane only) to a given depth, or all nodes.
+ * Depth 0 = root only, 1 = root + direct children visible, 2 = one more level, etc.
+ * @param {number} maxDepth - max depth to expand (nodes at depth < maxDepth are expanded); use Infinity for "expand all"
+ */
+export function expandFlowTreeToDepth(maxDepth) {
+  const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId);
+  if (!selectedFlow?.rootId) return;
+  const rootId = selectedFlow.rootId;
+  const rootKey = `root:${rootId}`;
+  const keysToExpand = new Set([rootKey]);
+
+  function visit(fnId, depth, pathFromRoot, treeNodeKey) {
+    if (depth >= maxDepth) return;
+    const pathIncludingThis = new Set(pathFromRoot);
+    pathIncludingThis.add(fnId);
+    const childEdges = flowPayload.edges
+      .filter((e) => e.callerId === fnId)
+      .sort((a, b) => a.callIndex - b.callIndex);
+    if (childEdges.length > 0) keysToExpand.add(treeNodeKey);
+    for (const e of childEdges) {
+      if (pathIncludingThis.has(e.calleeId)) continue;
+      const childKey = `${treeNodeKey}/e:${e.callerId}:${e.callIndex}:${e.calleeId}`;
+      visit(e.calleeId, depth + 1, pathIncludingThis, childKey);
+    }
+  }
+
+  const rootChildEdges = flowPayload.edges
+    .filter((e) => e.callerId === rootId)
+    .sort((a, b) => a.callIndex - b.callIndex);
+  if (rootChildEdges.length > 0 && maxDepth > 0) keysToExpand.add(rootKey);
+  for (const e of rootChildEdges) {
+    if (e.calleeId === rootId) continue;
+    const pathIncludingThis = new Set([rootId]);
+    if (pathIncludingThis.has(e.calleeId)) continue;
+    const childKey = `${rootKey}/e:${e.callerId}:${e.callIndex}:${e.calleeId}`;
+    visit(e.calleeId, 1, pathIncludingThis, childKey);
+  }
+
+  uiState.expandedTreeNodeIds = keysToExpand;
+  notify();
+}
+
 export function setActiveFunction(functionId, treeNodeKey = null) {
   uiState.activeFunctionId = functionId;
   uiState.activeTreeNodeKey = treeNodeKey;
