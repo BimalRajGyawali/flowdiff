@@ -32,7 +32,9 @@ export function renderFlowTree(container) {
   const tree = document.createElement('div');
   tree.className = 'flow-tree';
   const rootKey = `root:${root.id}`;
-  renderNode(tree, flowPayload, root, false, rootKey);
+  const pathFromRoot = new Set([root.id]);
+  const pathKeysById = new Map([[root.id, rootKey]]);
+  renderNode(tree, flowPayload, root, false, rootKey, pathFromRoot, pathKeysById);
   tree.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));
   container.appendChild(tree);
 }
@@ -43,8 +45,10 @@ export function renderFlowTree(container) {
  * @param {import('../flowSchema.js').FunctionMeta} fn
  * @param {boolean} isLast - whether this node is the last among its siblings
  * @param {string} treeNodeKey - unique path-based key (root:id or parentPath/e:callerId:callIndex:calleeId)
+ * @param {Set<string>} pathFromRoot - function IDs from root to this node (recursion = callee already in path, e.g. A→C→A)
+ * @param {Map<string, string>} pathKeysById - function id -> treeNodeKey of first occurrence on path (so recursive click can jump to original)
  */
-function renderNode(parent, payload, fn, isLast, treeNodeKey) {
+function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, pathKeysById) {
   const { uiState } = getState();
   const expanded = uiState.expandedTreeNodeIds.has(treeNodeKey);
   const isActive = uiState.activeTreeNodeKey === treeNodeKey;
@@ -67,8 +71,6 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey) {
   row.addEventListener('click', (e) => {
     e.stopPropagation();
     setActiveFunction(fn.id, treeNodeKey);
-    // Toggle this occurrence in the flow tree and code view,
-    // regardless of whether it has children (leaf nodes inline/collapse in code view).
     toggleExpandedTreeNode(treeNodeKey);
   });
   row.addEventListener('mouseenter', () => setHoveredTreeNodeKey(treeNodeKey));
@@ -78,10 +80,36 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey) {
   if (hasChildren && expanded) {
     const branch = document.createElement('div');
     branch.className = 'flow-tree-branch';
+    const pathIncludingThis = new Set(pathFromRoot);
+    pathIncludingThis.add(fn.id);
+    const pathKeysIncludingThis = new Map(pathKeysById);
+    pathKeysIncludingThis.set(fn.id, treeNodeKey);
     for (let i = 0; i < children.length; i++) {
       const e = childEdges[i];
       const childKey = `${treeNodeKey}/e:${e.callerId}:${e.callIndex}:${e.calleeId}`;
-      renderNode(branch, payload, children[i], i === children.length - 1, childKey);
+      const child = children[i];
+      const isRecursive = pathIncludingThis.has(child.id);
+      if (isRecursive) {
+        const originalKey = pathKeysById.get(child.id);
+        const recItem = document.createElement('div');
+        recItem.className = 'flow-tree-item flow-tree-item-recursive';
+        const recRow = document.createElement('div');
+        recRow.className = 'flow-tree-node flow-tree-node-recursive' + (uiState.activeTreeNodeKey === originalKey ? ' active' : '');
+        recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${escapeHtml(child.name)} <span class="flow-tree-recursive-hint">(already above)</span></span>`;
+        recRow.title = 'Recursive call — click to go to original above';
+        recRow.dataset.functionId = child.id;
+        recRow.dataset.treeNodeKey = originalKey;
+        recRow.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          setActiveFunction(child.id, originalKey);
+        });
+        recRow.addEventListener('mouseenter', () => setHoveredTreeNodeKey(originalKey));
+        recRow.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));
+        recItem.appendChild(recRow);
+        branch.appendChild(recItem);
+      } else {
+        renderNode(branch, payload, child, i === children.length - 1, childKey, pathIncludingThis, pathKeysIncludingThis);
+      }
     }
     item.appendChild(branch);
   }

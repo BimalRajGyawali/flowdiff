@@ -8,6 +8,51 @@ import { getState, toggleExpandedTreeNode, setActiveFunction } from '../state/st
 
 let lastScrolledToActiveKey = null;
 
+function isElementInView(container, el) {
+  const cRect = container.getBoundingClientRect();
+  const eRect = el.getBoundingClientRect();
+  const padding = 40;
+  return eRect.top >= cRect.top - padding && eRect.bottom <= cRect.bottom + padding;
+}
+
+function scrollToVerticalCenter(container, el) {
+  if (!container || !el) return;
+  const cRect = container.getBoundingClientRect();
+  const eRect = el.getBoundingClientRect();
+  const containerCenterY = cRect.top + cRect.height / 2;
+  const elementCenterY = eRect.top + eRect.height / 2;
+  const delta = elementCenterY - containerCenterY;
+  container.scrollTo({ top: container.scrollTop + delta, behavior: 'smooth' });
+}
+
+function applyFocusDimming(container, uiState) {
+  container.querySelectorAll('.code-focus-block').forEach((el) => el.classList.remove('code-focus-block'));
+  const dimmables = container.querySelectorAll(
+    '.diff-line, .file-name-header, .module-context, .function-block, .inline-callee'
+  );
+  dimmables.forEach((el) => el.classList.remove('code-dimmed'));
+  container.classList.remove('code-focus-mode');
+
+  const focusKey =
+    uiState.activeTreeNodeKey && uiState.expandedTreeNodeIds.has(uiState.activeTreeNodeKey)
+      ? uiState.activeTreeNodeKey
+      : null;
+  if (!focusKey) return;
+
+  const focusEl = container.querySelector(
+    `.function-block[data-tree-node-key="${CSS.escape(focusKey)}"], .inline-callee[data-tree-node-key="${CSS.escape(focusKey)}"]`
+  );
+  if (!focusEl) return;
+
+  focusEl.classList.add('code-focus-block');
+  container.classList.add('code-focus-mode');
+  dimmables.forEach((el) => {
+    if (el.closest('.code-focus-block')) return;
+    if (el.contains(focusEl)) return;
+    el.classList.add('code-dimmed');
+  });
+}
+
 function makePlaceholder(index) {
   return `__flowdiff_ph_${index}__`;
 }
@@ -238,6 +283,25 @@ function findCallEnd(text, openParen) {
 }
 
 /**
+ * Returns the set of function IDs on the path from root to the current node (pathPrefix).
+ * Used to detect recursion: if a callee is in this set (already above), we treat it as
+ * recursive — not just immediate self-call (A→A), but any cycle (e.g. A→C→A).
+ */
+function getPathFunctionIds(pathPrefix) {
+  const parts = pathPrefix.split('/');
+  const ids = new Set();
+  if (parts[0].startsWith('root:')) ids.add(parts[0].slice(5));
+  for (let i = 1; i < parts.length; i++) {
+    const seg = parts[i];
+    if (seg.startsWith('e:')) {
+      const p = seg.split(':');
+      if (p.length >= 4) ids.add(p[3]);
+    }
+  }
+  return ids;
+}
+
+/**
  * Finds call sites in a line for the given callees.
  * @returns {{ start: number, end: number, calleeId: string }[]}
  */
@@ -323,6 +387,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
     }
   }
 
+  const pathFunctionIds = getPathFunctionIds(pathPrefix);
   const sourceLines = sourceLinesByFile[fn.file] || [];
   const fnDiffLines = buildFunctionDisplayRows(fn, sourceLines, diffLinesByFile[fn.file] || []);
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
@@ -364,8 +429,15 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       for (let pi = 0; pi < placeholders.length; pi++) {
         const { placeholder, calleeId, start, end, treeNodeKey } = placeholders[pi];
         const callText = line.slice(start, end);
-        const dataKey = treeNodeKey ? ` data-tree-node-key="${escapeHtml(treeNodeKey)}"` : '';
-        const callSpanHtml = `<span class="call-site" data-callee-id="${escapeHtml(calleeId)}"${dataKey} title="Click to expand">${escapeHtml(callText)}</span>`;
+        const isRecursive = pathFunctionIds.has(calleeId);
+        const dataKey = treeNodeKey && !isRecursive ? ` data-tree-node-key="${escapeHtml(treeNodeKey)}"` : '';
+        const recClass = isRecursive ? ' call-site-recursive' : '';
+        const title = isRecursive ? 'Recursive call — already shown in the path above' : 'Click to expand';
+        const fnName = payload.functionsById[calleeId]?.name || calleeId;
+        const recContent = isRecursive
+          ? `<span class="call-site-recursive-icon" aria-hidden="true">↻</span> ${escapeHtml(fnName)} <span class="call-site-recursive-hint">(recursive already above)</span>`
+          : escapeHtml(callText);
+        const callSpanHtml = `<span class="call-site${recClass}" data-callee-id="${escapeHtml(calleeId)}" data-recursive="${isRecursive}"${dataKey} title="${escapeHtml(title)}">${recContent}</span>`;
         lineHtml = lineHtml.replace(new RegExp(escapeRegex(placeholder), 'g'), callSpanHtml);
       }
     }
@@ -390,10 +462,18 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
     row.querySelectorAll('.call-site').forEach((el) => {
       const calleeId = el.dataset.calleeId;
       const treeNodeKey = el.dataset.treeNodeKey;
+      const isRecursive = el.dataset.recursive === 'true';
       const callee = payload.functionsById[calleeId];
       const isExpanded = treeNodeKey ? uiState.expandedTreeNodeIds.has(treeNodeKey) : false;
       const isActive = treeNodeKey ? uiState.activeTreeNodeKey === treeNodeKey : uiState.activeFunctionId === calleeId;
       const isHovered = treeNodeKey && uiState.hoveredTreeNodeKey === treeNodeKey;
+      if (isRecursive) {
+        el.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        return;
+      }
       if (isActive) el.classList.add('active');
       if (isHovered) el.classList.add('hovered');
       el.title = `Click to ${isExpanded ? 'collapse' : 'expand'} ${callee?.name || calleeId}`;
@@ -407,6 +487,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
     container.appendChild(row);
 
     for (const site of sites) {
+      if (pathFunctionIds.has(site.calleeId)) continue;
       const treeNodeKey = site.callIndex !== undefined ? `${pathPrefix}/e:${fn.id}:${site.callIndex}:${site.calleeId}` : '';
       const callee = payload.functionsById[site.calleeId];
       if (!callee || !treeNodeKey || !uiState.expandedTreeNodeIds.has(treeNodeKey)) continue;
@@ -415,6 +496,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       inlineBlock.className = 'inline-callee function-block';
       inlineBlock.dataset.treeNodeKey = treeNodeKey;
       inlineBlock.dataset.file = callee.file;
+      if (callee.changeType) inlineBlock.dataset.changeType = callee.changeType;
       if (uiState.activeTreeNodeKey === treeNodeKey) inlineBlock.classList.add('active');
       if (uiState.hoveredTreeNodeKey === treeNodeKey) inlineBlock.classList.add('hovered');
       inlineBlock.dataset.functionId = site.calleeId;
@@ -424,8 +506,7 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       inlineBlock.appendChild(label);
       const innerContainer = document.createElement('div');
       innerContainer.className = 'inline-callee-body';
-      const innerIndent = indent + '    ';
-      renderFunctionBody(innerContainer, payload, uiState, callee, sourceLinesByFile, diffLinesByFile, filesWithModuleContext, moduleMetaByFile, calleesByCaller, innerIndent, treeNodeKey, prContext);
+      renderFunctionBody(innerContainer, payload, uiState, callee, sourceLinesByFile, diffLinesByFile, filesWithModuleContext, moduleMetaByFile, calleesByCaller, indent, treeNodeKey, prContext);
       inlineBlock.appendChild(innerContainer);
       container.appendChild(inlineBlock);
     }
@@ -488,6 +569,7 @@ export function renderCodeView(container) {
   rootBlock.dataset.functionId = root.id;
   rootBlock.dataset.treeNodeKey = rootPath;
   rootBlock.dataset.file = root.file;
+  if (root.changeType) rootBlock.dataset.changeType = root.changeType;
   if (uiState.activeTreeNodeKey === rootPath) rootBlock.classList.add('active');
   if (uiState.hoveredTreeNodeKey === rootPath) rootBlock.classList.add('hovered');
 
@@ -495,15 +577,22 @@ export function renderCodeView(container) {
   fileSection.appendChild(rootBlock);
   container.appendChild(fileSection);
 
-  if (uiState.activeTreeNodeKey && uiState.activeTreeNodeKey !== lastScrolledToActiveKey) {
-    const candidates = container.querySelectorAll('[data-tree-node-key]');
-    const el = [...candidates].find((c) => c.dataset.treeNodeKey === uiState.activeTreeNodeKey);
+  const key = uiState.activeTreeNodeKey;
+  const isExpanded = key && uiState.expandedTreeNodeIds.has(key);
+  if (key && isExpanded && key !== lastScrolledToActiveKey) {
+    const el =
+      container.querySelector(
+        `.function-block[data-tree-node-key="${CSS.escape(key)}"], .inline-callee[data-tree-node-key="${CSS.escape(key)}"]`
+      ) ||
+      [...container.querySelectorAll('[data-tree-node-key]')].find((c) => c.dataset.treeNodeKey === key);
     if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      lastScrolledToActiveKey = uiState.activeTreeNodeKey;
+      lastScrolledToActiveKey = key;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => scrollToVerticalCenter(container, el));
+      });
     }
   }
   if (!uiState.activeTreeNodeKey) lastScrolledToActiveKey = null;
 
-  // Hover only highlights; no auto-scroll (prevents disorientation).
+  applyFocusDimming(container, uiState);
 }

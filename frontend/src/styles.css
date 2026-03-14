@@ -226,6 +226,16 @@ body {
   background: #bf8700;
 }
 
+.flow-tree-node-recursive .flow-tree-icon {
+  color: #57606a;
+}
+
+.flow-tree-recursive-hint {
+  font-size: 11px;
+  color: #8c959f;
+  font-weight: 400;
+}
+
 /* Tree branch lines - vertical connector for each level */
 .flow-tree-branch {
   position: relative;
@@ -466,9 +476,7 @@ body {
 }
 
 .function-block.hovered {
-  outline: 2px solid #0969da;
-  outline-offset: 1px;
-  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.2);
+  /* No blue border; hover is conveyed by flow tree / code focus. */
 }
 
 .file-name-header {
@@ -571,11 +579,66 @@ body {
   border-radius: 2px;
 }
 
+/* De-emphasize non-focused code when a function is expanded */
+.code-pane.code-focus-mode .code-dimmed {
+  opacity: 0.82;
+  filter: grayscale(0.2);
+  transition: opacity 200ms ease-out, filter 200ms ease-out;
+}
+
+.code-pane.code-focus-mode .code-focus-block {
+  opacity: 1;
+  filter: none;
+  border: 1px solid #d0d7de;
+}
+
+.code-pane.code-focus-mode .code-focus-block[data-change-type="added"] {
+  border-color: #2da44e;
+}
+
+.code-pane.code-focus-mode .code-focus-block[data-change-type="modified"] {
+  border-color: #bf8700;
+}
+
+.code-pane.code-focus-mode .code-focus-block .code-dimmed {
+  opacity: 1;
+  filter: none;
+}
+
+.code-pane .diff-line,
+.code-pane .file-name-header,
+.code-pane .module-context,
+.code-pane .function-block,
+.code-pane .inline-callee {
+  transition: opacity 200ms ease-out, filter 200ms ease-out;
+}
+
 .call-site.hovered {
-  background: rgba(9, 105, 218, 0.12);
+  background: rgba(9, 105, 218, 0.08);
   border-radius: 2px;
-  outline: 1px solid #0969da;
-  outline-offset: 1px;
+}
+
+.call-site-recursive {
+  cursor: default;
+  color: #57606a;
+  text-decoration: none;
+}
+
+.call-site-recursive:hover {
+  color: #57606a;
+}
+
+.call-site-recursive-icon {
+  color: #8c959f;
+  font-size: 1em;
+  margin-right: 2px;
+}
+
+.code-pane .call-site-recursive-hint {
+  font-size: 11px;
+  color: #8c959f;
+  font-style: normal;
+  margin-left: 2px;
 }
 
 .call-site-indicator {
@@ -605,9 +668,8 @@ body {
 }
 
 .inline-callee {
-  margin: 4px 0 8px 16px;
+  margin: 4px 0 8px 0;
   padding: 0;
-  border-left: 1px solid #d0d7de;
   background: #fafbfc;
   border-radius: 2px;
   overflow: hidden;
@@ -627,27 +689,15 @@ body {
 }
 
 .inline-callee.active {
-  border-left-color: #0969da;
-  border-left-width: 3px;
-  background: #f0f6ff;
-  outline: 1px solid #0969da;
-  outline-offset: 1px;
-  box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.15);
+  background: #fafbfc;
 }
 
 .inline-callee.active .inline-callee-label {
-  background: #ddf4ff;
-  color: #0969da;
-  font-weight: 500;
+  background: #f6f8fa;
+  color: #57606a;
+  font-weight: 400;
 }
 
-.inline-callee.hovered {
-  outline: 2px solid #0969da;
-  outline-offset: 1px;
-  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.2);
-  border-left-width: 3px;
-  border-left-color: #0969da;
-}
 
 .code-line {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
