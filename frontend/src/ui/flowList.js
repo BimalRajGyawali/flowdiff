@@ -108,11 +108,12 @@ export function renderFlowList(container) {
     const header = document.createElement('button');
     header.type = 'button';
     header.className = 'flow-list-folder-header';
-    header.setAttribute('aria-expanded', 'true');
-    header.innerHTML = `<span class="flow-list-folder-icon">▾</span> Tests (${testFlows.length})`;
+    header.setAttribute('aria-expanded', 'false');
+    header.innerHTML = `<span class="flow-list-folder-icon">▸</span> Tests (${testFlows.length})`;
     header.title = 'Test flows (files under tests/ or names starting with test_)';
     const body = document.createElement('div');
     body.className = 'flow-list-folder-body';
+    body.hidden = true;
     testFlows.forEach((entry) => appendFlowItem(body, entry));
     folder.appendChild(header);
     folder.appendChild(body);

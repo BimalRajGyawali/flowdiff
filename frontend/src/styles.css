@@ -305,10 +305,6 @@ body {
 
 .flow-list-folder {
   margin-top: 12px;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  overflow: hidden;
-  background: #f6f8fa;
 }
 
 .flow-list-folder-header {
@@ -316,30 +312,27 @@ body {
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 8px 12px;
+  padding: 6px 0;
   font-size: 13px;
   font-weight: 600;
-  color: #24292f;
+  color: #57606a;
   background: transparent;
   border: none;
   cursor: pointer;
   text-align: left;
-  border-radius: 0;
 }
 
 .flow-list-folder-header:hover {
-  background: #eaeef2;
+  color: #24292f;
 }
 
 .flow-list-folder-icon {
   font-size: 10px;
-  color: #57606a;
+  color: #8c959f;
 }
 
 .flow-list-folder-body {
-  padding: 4px 8px 8px;
-  background: #ffffff;
-  border-top: 1px solid #d0d7de;
+  padding: 0;
 }
 
 .flow-list-folder-body .flow-list-item {
