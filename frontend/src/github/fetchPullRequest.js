@@ -9,7 +9,6 @@ import { fetchDiff } from './fetchDiff.js';
 import { parseDiff } from '../parser/parseDiff.js';
 import { extractChangedFunctions } from '../parser/extractChangedFunctions.js';
 import { buildFlows } from '../parser/buildFlows.js';
-import { isTestFile } from '../parser/isTestFile.js';
 
 const CACHE_VERSION = 'v2';
 
@@ -93,7 +92,7 @@ export async function fetchAndAnalyze(prUrl) {
     const parsed = parseDiff(diffText);
     const pythonPaths = parsed.files
       .map((file) => file.path)
-      .filter((path) => path.endsWith('.py') && !isTestFile(path));
+      .filter((path) => path.endsWith('.py'));
     const uniquePaths = [...new Set(pythonPaths)];
     const fileContentEntries = await Promise.all(
       uniquePaths.map(async (path) => [path, await fetchFileContent(owner, repo, path, meta.head.sha)])

@@ -1,11 +1,10 @@
 /**
  * Extracts changed/added functions from parsed diff.
  * Python only: detects `def name(...):` and `async def name(...):`.
- * Excludes test files (test_*.py, *_test.py, tests/**, test/**).
+ * Includes all .py files (test files are included; test flows are grouped in the UI).
  */
 
 /** @typedef {import('./parseDiff.js').ParsedFile} ParsedFile */
-import { isTestFile } from './isTestFile.js';
 import { buildVisibleLines } from './buildVisibleLines.js';
 
 const PY_FN_REGEX = /(?:async\s+)?def\s+(\w+)\s*\(/g;
@@ -22,7 +21,7 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
   const files = [];
 
   for (const pf of parsed.files) {
-    if (!pf.path.endsWith('.py') || isTestFile(pf.path)) continue;
+    if (!pf.path.endsWith('.py')) continue;
 
     const changedRanges = pf.hunks.flatMap((h) => {
       const start = h.newStart;

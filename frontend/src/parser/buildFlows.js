@@ -2,10 +2,9 @@
  * Builds flows from changed Python functions by detecting call relationships.
  * Call graph: caller -> callee. Supports cross-file calls (e.g. imported functions).
  * Flows are rooted at entry functions (no incoming edges).
- * Flow name = root function name. Excludes test files.
+ * Flow name = root function name. Includes test files (test flows are grouped in the UI).
  */
 
-import { isTestFile } from './isTestFile.js';
 import { buildVisibleLines } from './buildVisibleLines.js';
 
 // Matches: foo(  or  self.foo(  or  obj.foo(
@@ -29,7 +28,7 @@ function getFunctionsByName(functionsById, name) {
 export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
   const edges = [];
 
-  const pyFiles = parsed.files.filter((pf) => pf.path.endsWith('.py') && !isTestFile(pf.path));
+  const pyFiles = parsed.files.filter((pf) => pf.path.endsWith('.py'));
 
   for (const pf of pyFiles) {
     const fnsInFile = Object.values(functionsById)
