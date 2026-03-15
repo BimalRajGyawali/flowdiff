@@ -380,10 +380,6 @@ body {
 
 .file-section {
   margin-bottom: 24px;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  overflow: hidden;
-  background: #ffffff;
 }
 
 .file-header {
@@ -397,11 +393,6 @@ body {
   line-height: 20px;
   display: flex;
   align-items: center;
-}
-
-.function-block.root {
-  padding: 0;
-  background: #ffffff;
 }
 
 /* GitHub-style diff */
@@ -542,16 +533,36 @@ body {
 }
 
 .function-block {
-  margin: 4px 0;
-  border-radius: 4px;
+  margin-top: 16px;
+  margin-bottom: 0;
+  padding: 12px 0 0;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #f6f8fa;
+  overflow: hidden;
+}
+
+.function-block:first-child {
+  margin-top: 0;
 }
 
 .function-block.active {
   background: #f0f6ff;
+  border-color: #a5d0f7;
 }
 
 .function-block.hovered {
-  /* No blue border; hover is conveyed by flow tree / code focus. */
+  border-color: #afb8c1;
+}
+
+.function-block.root {
+  background: #ffffff;
+  border-color: #d0d7de;
+}
+
+.function-block.root.active {
+  background: #f0f6ff;
+  border-color: #a5d0f7;
 }
 
 .file-name-header {
@@ -565,12 +576,11 @@ body {
   text-overflow: ellipsis;
 }
 
+/* Sits at top of function block; header bar then divider then function code */
 .module-context {
-  margin: 8px 0 10px;
-  padding: 8px 10px;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  background: #f6f8fa;
+  margin: -12px 0 0 0;
+  padding: 0;
+  background: transparent;
 }
 
 .module-context-header {
@@ -579,6 +589,10 @@ body {
   display: flex;
   gap: 8px;
   align-items: baseline;
+  justify-content: flex-start;
+  padding: 12px 16px 10px;
+  background: #f6f8fa;
+  border-bottom: 1px solid #d0d7de;
 }
 
 .module-context-file {
@@ -615,13 +629,16 @@ body {
   outline-offset: 2px;
 }
 
-.module-context.flash {
-  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.18);
-  border-color: rgba(9, 105, 218, 0.45);
+.module-context.flash .module-context-header {
+  border-bottom-color: rgba(9, 105, 218, 0.45);
+}
+
+.module-context-body {
+  padding: 8px 16px;
 }
 
 .module-context-lines {
-  margin-top: 6px;
+  margin-top: 0;
 }
 
 .module-context-syms {
