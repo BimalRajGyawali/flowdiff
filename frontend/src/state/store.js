@@ -12,12 +12,13 @@ let flowPayload = { ...emptyFlowPayload };
 /** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
 let prContext = null;
 
-/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null }} */
+/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null }} */
 let uiState = {
   selectedFlowId: null,
   selectedFileInFlow: null,
   expandedIds: new Set(),
   expandedTreeNodeIds: new Set(),
+  flowTreeExpandedIds: new Set(),
   activeFunctionId: null,
   activeTreeNodeKey: null,
   hoveredTreeNodeKey: null
@@ -38,11 +39,14 @@ export function setPrContext(owner, repo, number, headSha) {
 export function setFlowPayload(payload) {
   flowPayload = payload;
   const firstFlow = payload.flows[0];
+  const rootKey = firstFlow?.rootId ? `root:${firstFlow.rootId}` : null;
+  const initialTree = rootKey ? new Set([rootKey]) : new Set();
   uiState = {
     selectedFlowId: firstFlow?.id ?? null,
     selectedFileInFlow: null,
     expandedIds: firstFlow?.rootId ? new Set([firstFlow.rootId]) : new Set(),
-    expandedTreeNodeIds: firstFlow?.rootId ? new Set([`root:${firstFlow.rootId}`]) : new Set(),
+    expandedTreeNodeIds: initialTree,
+    flowTreeExpandedIds: new Set(initialTree),
     activeFunctionId: null,
     activeTreeNodeKey: null,
     hoveredTreeNodeKey: null
@@ -54,7 +58,10 @@ export function setSelectedFlow(flowId, rootId) {
   uiState.selectedFlowId = flowId;
   uiState.selectedFileInFlow = null;
   uiState.expandedIds = rootId ? new Set([rootId]) : new Set();
-  uiState.expandedTreeNodeIds = rootId ? new Set([`root:${rootId}`]) : new Set();
+  const rootKey = rootId ? `root:${rootId}` : null;
+  const initialTree = rootKey ? new Set([rootKey]) : new Set();
+  uiState.expandedTreeNodeIds = new Set(initialTree);
+  uiState.flowTreeExpandedIds = new Set(initialTree);
   uiState.activeFunctionId = null;
   uiState.activeTreeNodeKey = null;
   uiState.hoveredTreeNodeKey = null;
@@ -110,12 +117,13 @@ function getAncestorIds(functionId) {
 
 /**
  * Returns expanded tree node keys that are descendants of the given path-based key.
- * Descendants have keys that start with treeNodeKey + "/".
+ * @param {string} treeNodeKey
+ * @param {Set<string>} [fromSet] - set to search in (default: flowTreeExpandedIds)
  */
-function getDescendantTreeNodeKeys(treeNodeKey) {
+function getDescendantTreeNodeKeys(treeNodeKey, fromSet = uiState.flowTreeExpandedIds) {
   const prefix = treeNodeKey + '/';
   const keys = new Set();
-  for (const k of uiState.expandedTreeNodeIds) {
+  for (const k of fromSet) {
     if (k.startsWith(prefix)) keys.add(k);
   }
   return keys;
@@ -130,6 +138,7 @@ function ensurePathToFunctionInTree(functionId) {
   const rootId = selectedFlow.rootId;
   let pathKey = `root:${rootId}`;
   uiState.expandedTreeNodeIds.add(pathKey);
+  uiState.flowTreeExpandedIds.add(pathKey);
   if (functionId === rootId) return;
   const path = [];
   const parent = new Map();
@@ -147,6 +156,7 @@ function ensurePathToFunctionInTree(functionId) {
     const { callerId, callIndex, calleeId } = path[i];
     pathKey = `${pathKey}/e:${callerId}:${callIndex}:${calleeId}`;
     uiState.expandedTreeNodeIds.add(pathKey);
+    uiState.flowTreeExpandedIds.add(pathKey);
   }
 }
 
@@ -168,23 +178,26 @@ export function toggleExpanded(functionId) {
 
 /**
  * Ensures the path from root to the given tree node is expanded so the node is visible.
- * For path-based keys (root:id or root:id/e:.../e:...), adds all path prefixes.
+ * Updates both code view and flow tree expansion.
  */
 function ensurePathToTreeNode(treeNodeKey) {
   const parts = treeNodeKey.split('/');
   for (let i = 1; i <= parts.length; i++) {
-    uiState.expandedTreeNodeIds.add(parts.slice(0, i).join('/'));
+    const key = parts.slice(0, i).join('/');
+    uiState.expandedTreeNodeIds.add(key);
+    uiState.flowTreeExpandedIds.add(key);
   }
 }
 
 /**
- * Toggle expansion of a single tree node (one occurrence in the flow tree).
- * Only that occurrence expands; code view uses expandedTreeNodeIds per call site.
+ * Toggle expansion of a single tree node. Updates both flow tree and code view.
  */
 export function toggleExpandedTreeNode(treeNodeKey) {
-  if (uiState.expandedTreeNodeIds.has(treeNodeKey)) {
+  if (uiState.flowTreeExpandedIds.has(treeNodeKey)) {
+    uiState.flowTreeExpandedIds.delete(treeNodeKey);
     uiState.expandedTreeNodeIds.delete(treeNodeKey);
     for (const k of getDescendantTreeNodeKeys(treeNodeKey)) {
+      uiState.flowTreeExpandedIds.delete(k);
       uiState.expandedTreeNodeIds.delete(k);
     }
   } else {
@@ -194,13 +207,13 @@ export function toggleExpandedTreeNode(treeNodeKey) {
 }
 
 /**
- * Expand the flow tree (tree pane only) to a given depth, or all nodes.
- * Depth 0 = root only, 1 = root + direct children visible, 2 = one more level, etc.
- * @param {number} maxDepth - max depth to expand (nodes at depth < maxDepth are expanded); use Infinity for "expand all"
+ * Returns the set of tree node keys that would be expanded for the selected flow at the given depth.
+ * @param {number} maxDepth - use Infinity for "expand all"
+ * @returns {Set<string>}
  */
-export function expandFlowTreeToDepth(maxDepth) {
+export function getFlowTreeKeysAtDepth(maxDepth) {
   const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId);
-  if (!selectedFlow?.rootId) return;
+  if (!selectedFlow?.rootId) return new Set();
   const rootId = selectedFlow.rootId;
   const rootKey = `root:${rootId}`;
   const keysToExpand = new Set([rootKey]);
@@ -232,7 +245,25 @@ export function expandFlowTreeToDepth(maxDepth) {
     visit(e.calleeId, 1, pathIncludingThis, childKey);
   }
 
-  uiState.expandedTreeNodeIds = keysToExpand;
+  return keysToExpand;
+}
+
+/**
+ * Expand the flow tree (tree pane only) to a given depth, or all nodes. Does not change code view.
+ * @param {number} maxDepth - use Infinity for "expand all"
+ */
+export function expandFlowTreeToDepth(maxDepth) {
+  uiState.flowTreeExpandedIds = getFlowTreeKeysAtDepth(maxDepth);
+  notify();
+}
+
+/**
+ * Collapse the flow tree to root only (tree pane only). Does not change code view.
+ */
+export function collapseFlowTree() {
+  const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId);
+  if (!selectedFlow?.rootId) return;
+  uiState.flowTreeExpandedIds = new Set([`root:${selectedFlow.rootId}`]);
   notify();
 }
 
@@ -271,6 +302,7 @@ export function initStore() {
     flowListSort: 'name',
     expandedIds: new Set(),
     expandedTreeNodeIds: new Set(),
+    flowTreeExpandedIds: new Set(),
     activeFunctionId: null,
     activeTreeNodeKey: null,
     hoveredTreeNodeKey: null

@@ -3,7 +3,7 @@
  * Preserves call order (func2, func5 under func1; func3, func4 under func2).
  */
 
-import { getState, toggleExpandedTreeNode, setActiveFunction, setHoveredTreeNodeKey, expandFlowTreeToDepth } from '../state/store.js';
+import { getState, toggleExpandedTreeNode, setActiveFunction, setHoveredTreeNodeKey, expandFlowTreeToDepth, collapseFlowTree, getFlowTreeKeysAtDepth } from '../state/store.js';
 
 /**
  * @param {HTMLElement} container
@@ -32,36 +32,50 @@ export function renderFlowTree(container) {
   const wrapper = document.createElement('div');
   wrapper.className = 'flow-tree-wrapper';
 
-  const toolbar = document.createElement('div');
-  toolbar.className = 'flow-tree-toolbar';
-  toolbar.innerHTML = '<span class="flow-tree-toolbar-label">Expand:</span>';
-  const depths = [2, 3, 4];
-  depths.forEach((d) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'flow-tree-toolbar-btn';
-    btn.textContent = String(d);
-    btn.title = `Expand tree to depth ${d}`;
-    btn.addEventListener('click', () => expandFlowTreeToDepth(d));
-    toolbar.appendChild(btn);
-  });
-  const allBtn = document.createElement('button');
-  allBtn.type = 'button';
-  allBtn.className = 'flow-tree-toolbar-btn';
-  allBtn.textContent = 'All';
-  allBtn.title = 'Expand entire tree';
-  allBtn.addEventListener('click', () => expandFlowTreeToDepth(Infinity));
-  toolbar.appendChild(allBtn);
+  const hasExpandableNodes = flowPayload.edges.some((e) => e.callerId === root.id);
+  const rootKey = `root:${root.id}`;
+  if (hasExpandableNodes) {
+    const defaultExpandDepth = 3;
+    const toolbar = document.createElement('div');
+    toolbar.className = 'flow-tree-toolbar';
+    const currentFlowKeys = () => {
+      const { uiState: state } = getState();
+      return new Set([...state.flowTreeExpandedIds].filter((k) => k === rootKey || k.startsWith(rootKey + '/')));
+    };
+    const setsEqual = (a, b) => a.size === b.size && [...a].every((k) => b.has(k));
+
+    const toDepthBtn = document.createElement('button');
+    toDepthBtn.type = 'button';
+    toDepthBtn.className = 'flow-tree-toolbar-btn';
+    toDepthBtn.innerHTML = '<span class="flow-tree-toolbar-icon" aria-hidden="true">⊞</span><span class="flow-tree-toolbar-label">Expand some</span>';
+    toDepthBtn.title = 'Expand first few levels (click again to collapse)';
+    toDepthBtn.addEventListener('click', () => {
+      const target = getFlowTreeKeysAtDepth(defaultExpandDepth);
+      if (setsEqual(currentFlowKeys(), target)) collapseFlowTree();
+      else expandFlowTreeToDepth(defaultExpandDepth);
+    });
+    const allBtn = document.createElement('button');
+    allBtn.type = 'button';
+    allBtn.className = 'flow-tree-toolbar-btn';
+    allBtn.innerHTML = '<span class="flow-tree-toolbar-icon" aria-hidden="true">⤢</span><span class="flow-tree-toolbar-label">Full tree</span>';
+    allBtn.title = 'Expand entire tree (click again to collapse)';
+    allBtn.addEventListener('click', () => {
+      const target = getFlowTreeKeysAtDepth(Infinity);
+      if (setsEqual(currentFlowKeys(), target)) collapseFlowTree();
+      else expandFlowTreeToDepth(Infinity);
+    });
+    toolbar.appendChild(toDepthBtn);
+    toolbar.appendChild(allBtn);
+    wrapper.appendChild(toolbar);
+  }
 
   const tree = document.createElement('div');
   tree.className = 'flow-tree';
-  const rootKey = `root:${root.id}`;
   const pathFromRoot = new Set([root.id]);
   const pathKeysById = new Map([[root.id, rootKey]]);
   renderNode(tree, flowPayload, root, false, rootKey, pathFromRoot, pathKeysById);
   tree.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));
 
-  wrapper.appendChild(toolbar);
   wrapper.appendChild(tree);
   container.appendChild(wrapper);
 }
@@ -77,7 +91,7 @@ export function renderFlowTree(container) {
  */
 function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, pathKeysById) {
   const { uiState } = getState();
-  const expanded = uiState.expandedTreeNodeIds.has(treeNodeKey);
+  const expanded = uiState.flowTreeExpandedIds.has(treeNodeKey);
   const isActive = uiState.activeTreeNodeKey === treeNodeKey;
   const childEdges = payload.edges
     .filter((e) => e.callerId === fn.id)
