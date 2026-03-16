@@ -3,7 +3,7 @@
  * No inline expansion; call-site and flow-tree clicks navigate (scroll to + highlight) the function block.
  */
 
-import { getState, setActiveFunction, setHoveredTreeNodeKey, setInViewTreeNodeKey } from '../state/store.js';
+import { getState, setActiveFunction, setInViewTreeNodeKey } from '../state/store.js';
 
 let lastScrolledToActiveKey = null;
 let scrollRAF = null;
@@ -39,13 +39,29 @@ function isElementInView(container, el) {
 }
 
 function scrollToVerticalCenter(container, el) {
-  if (!container || !el) return;
-  const cRect = container.getBoundingClientRect();
-  const eRect = el.getBoundingClientRect();
-  const containerCenterY = cRect.top + cRect.height / 2;
-  const elementCenterY = eRect.top + eRect.height / 2;
-  const delta = elementCenterY - containerCenterY;
-  container.scrollTo({ top: container.scrollTop + delta, behavior: 'smooth' });
+  if (!el) return;
+
+  // The code pane (`container`) is the vertical scroll container.
+  const scroller = container;
+
+  // Compute element's offsetTop relative to the scroll container,
+  // walking up through offsetParents until we reach the container.
+  let offsetTop = 0;
+  /** @type {HTMLElement | null} */
+  let node = /** @type {HTMLElement | null} */ (el);
+  while (node && node !== scroller && node.offsetParent) {
+    offsetTop += node.offsetTop;
+    node = /** @type {HTMLElement | null} */ (node.offsetParent);
+  }
+
+  const elCenter = offsetTop + el.offsetHeight / 2;
+  const targetTop = Math.max(0, elCenter - scroller.clientHeight / 2);
+
+  if (typeof scroller.scrollTo === 'function') {
+    scroller.scrollTo({ top: targetTop, behavior: 'smooth' });
+  } else {
+    scroller.scrollTop = targetTop;
+  }
 }
 
 function getFunctionIdFromTreeNodeKey(treeNodeKey) {
@@ -526,7 +542,6 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       const isActive =
         uiState.activeFunctionId === calleeId ||
         (treeNodeKey && uiState.activeTreeNodeKey === treeNodeKey);
-      const isHovered = treeNodeKey && uiState.hoveredTreeNodeKey === treeNodeKey;
       if (isRecursive) {
         el.title = `Go to ${callee?.name || calleeId} (recursive, already above)`;
         el.addEventListener('click', (e) => {
@@ -537,7 +552,6 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
         return;
       }
       if (isActive) el.classList.add('active');
-      if (isHovered) el.classList.add('hovered');
       el.title = `Go to ${callee?.name || calleeId}`;
       el.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -608,11 +622,7 @@ export function renderCodeView(container) {
     const isActive =
       uiState.activeFunctionId === functionId ||
       uiState.activeTreeNodeKey === treeNodeKey;
-    const isHovered = uiState.hoveredTreeNodeKey === treeNodeKey;
     if (isActive) block.classList.add('active');
-    if (isHovered) block.classList.add('hovered');
-    block.addEventListener('mouseenter', () => setHoveredTreeNodeKey(treeNodeKey));
-    block.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));
 
     const callerId = getCallerFromTreeNodeKey(treeNodeKey);
     if (callerId) {
@@ -655,13 +665,14 @@ export function renderCodeView(container) {
 
   const activeFunctionId =
     getFunctionIdFromTreeNodeKey(uiState.activeTreeNodeKey) || uiState.activeFunctionId;
+  // Only auto-center when the active function changes, so manual scrolling isn't
+  // constantly overridden on every store update (e.g., when updating "you are here").
   if (activeFunctionId && activeFunctionId !== lastScrolledToActiveKey) {
     const el = container.querySelector(
       `.function-block[data-function-id="${CSS.escape(activeFunctionId)}"]`
     );
     if (el) {
       lastScrolledToActiveKey = activeFunctionId;
-      if (activeTreeNodeKeyResolved) setInViewTreeNodeKey(activeTreeNodeKeyResolved);
       requestAnimationFrame(() => {
         requestAnimationFrame(() => scrollToVerticalCenter(container, el));
       });

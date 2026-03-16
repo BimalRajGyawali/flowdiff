@@ -235,8 +235,10 @@ body {
   box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.4);
 }
 
+/* "You are here" indication (node currently centered in code view):
+   use a thin blue border accent so it's easy to see but still distinct from the active (clicked) state. */
 .flow-tree-node.in-view {
-  border-left: 2px solid #8c959f;
+  border-left: 2px solid #60a5fa;
 }
 
 .flow-tree-node.active.in-view {
@@ -576,9 +578,11 @@ body {
   margin-top: 0;
 }
 
+/* Active function highlighting – strong blue to stand out clearly */
 .function-block.active {
-  background: #f0f6ff;
-  border-color: #a5d0f7;
+  background: #e0f2ff;
+  border-color: #1d4ed8;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.55);
 }
 
 .function-block.hovered {
