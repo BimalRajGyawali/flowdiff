@@ -12,7 +12,7 @@ let flowPayload = { ...emptyFlowPayload };
 /** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
 let prContext = null;
 
-/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null }} */
+/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, collapsedFunctionIds: Set<string> }} */
 let uiState = {
   selectedFlowId: null,
   selectedFileInFlow: null,
@@ -22,8 +22,15 @@ let uiState = {
   activeFunctionId: null,
   activeTreeNodeKey: null,
   hoveredTreeNodeKey: null,
-  inViewTreeNodeKey: null
+  inViewTreeNodeKey: null,
+  readFunctionIds: new Set(),
+  collapsedFunctionIds: new Set()
 };
+
+// Per-flow cache of tree expansion state so navigating back to a flow restores
+// its previous expanded/collapsed nodes.
+/** @type {Map<string, { expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string> }>} */
+const flowTreeExpansionByFlowId = new Map();
 
 /** @type {(() => void)[]} */
 const subscribers = [];
@@ -51,19 +58,39 @@ export function setFlowPayload(payload) {
     activeFunctionId: null,
     activeTreeNodeKey: null,
     hoveredTreeNodeKey: null,
-    inViewTreeNodeKey: null
+    inViewTreeNodeKey: null,
+    readFunctionIds: new Set(),
+    collapsedFunctionIds: new Set()
   };
+  flowTreeExpansionByFlowId.clear();
   notify();
 }
 
 export function setSelectedFlow(flowId, rootId) {
+  // Persist current flow tree expansion state for the previously selected flow.
+  if (uiState.selectedFlowId) {
+    flowTreeExpansionByFlowId.set(uiState.selectedFlowId, {
+      expandedTreeNodeIds: new Set(uiState.expandedTreeNodeIds),
+      flowTreeExpandedIds: new Set(uiState.flowTreeExpandedIds)
+    });
+  }
+
   uiState.selectedFlowId = flowId;
   uiState.selectedFileInFlow = null;
   uiState.expandedIds = rootId ? new Set([rootId]) : new Set();
-  const rootKey = rootId ? `root:${rootId}` : null;
-  const initialTree = rootKey ? new Set([rootKey]) : new Set();
-  uiState.expandedTreeNodeIds = new Set(initialTree);
-  uiState.flowTreeExpandedIds = new Set(initialTree);
+
+  // Restore previous tree expansion for this flow if available; otherwise start at root only.
+  const cached = flowTreeExpansionByFlowId.get(flowId);
+  if (cached) {
+    uiState.expandedTreeNodeIds = new Set(cached.expandedTreeNodeIds);
+    uiState.flowTreeExpandedIds = new Set(cached.flowTreeExpandedIds);
+  } else {
+    const rootKey = rootId ? `root:${rootId}` : null;
+    const initialTree = rootKey ? new Set([rootKey]) : new Set();
+    uiState.expandedTreeNodeIds = new Set(initialTree);
+    uiState.flowTreeExpandedIds = new Set(initialTree);
+  }
+
   uiState.activeFunctionId = null;
   uiState.activeTreeNodeKey = null;
   uiState.hoveredTreeNodeKey = null;
@@ -290,6 +317,34 @@ export function setInViewTreeNodeKey(treeNodeKey) {
   }
 }
 
+/**
+ * Toggle or set the collapsed/expanded state for a function block in the code view.
+ * @param {string} functionId
+ * @param {boolean} [isCollapsed] - if omitted, toggles; otherwise sets explicitly
+ */
+export function setFunctionCollapsedState(functionId, isCollapsed) {
+  const currentlyCollapsed = uiState.collapsedFunctionIds.has(functionId);
+  const next = typeof isCollapsed === 'boolean' ? isCollapsed : !currentlyCollapsed;
+  if (next === currentlyCollapsed) return;
+  if (next) uiState.collapsedFunctionIds.add(functionId);
+  else uiState.collapsedFunctionIds.delete(functionId);
+  notify();
+}
+
+/**
+ * Toggle or set the "read/done" state for a function block.
+ * @param {string} functionId
+ * @param {boolean} [isRead] - if omitted, toggles; otherwise sets explicitly
+ */
+export function setFunctionReadState(functionId, isRead) {
+  const currentlyRead = uiState.readFunctionIds.has(functionId);
+  const next = typeof isRead === 'boolean' ? isRead : !currentlyRead;
+  if (next === currentlyRead) return;
+  if (next) uiState.readFunctionIds.add(functionId);
+  else uiState.readFunctionIds.delete(functionId);
+  notify();
+}
+
 export function subscribe(cb) {
   subscribers.push(cb);
   return () => {
@@ -316,6 +371,8 @@ export function initStore() {
     activeFunctionId: null,
     activeTreeNodeKey: null,
     hoveredTreeNodeKey: null,
-    inViewTreeNodeKey: null
+    inViewTreeNodeKey: null,
+    readFunctionIds: new Set(),
+    collapsedFunctionIds: new Set()
   };
 }

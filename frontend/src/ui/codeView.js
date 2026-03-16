@@ -3,7 +3,7 @@
  * No inline expansion; call-site and flow-tree clicks navigate (scroll to + highlight) the function block.
  */
 
-import { getState, setActiveFunction, setInViewTreeNodeKey } from '../state/store.js';
+import { getState, setActiveFunction, setInViewTreeNodeKey, setFunctionReadState, setFunctionCollapsedState } from '../state/store.js';
 
 let lastScrolledToActiveKey = null;
 let scrollRAF = null;
@@ -317,7 +317,7 @@ function getFlowFunctionIds(flow, payload) {
 }
 
 /**
- * Returns functions in flow order (DFS from root, first occurrence). One entry per function.
+ * Returns functions in flow order (DFS from root, first occurrence). One entry per function ID.
  * @param {string} rootId
  * @param {import('../flowSchema.js').FlowPayload} payload
  * @returns {{ treeNodeKey: string, functionId: string }[]}
@@ -325,8 +325,11 @@ function getFlowFunctionIds(flow, payload) {
 function collectFlowOrder(rootId, payload) {
   const rootKey = `root:${rootId}`;
   const list = [];
+  const visited = new Set();
 
   function visit(fnId, treeNodeKey, pathFromRoot) {
+    if (visited.has(fnId)) return;
+    visited.add(fnId);
     const pathIncludingThis = new Set(pathFromRoot);
     pathIncludingThis.add(fnId);
     list.push({ treeNodeKey, functionId: fnId });
@@ -622,7 +625,25 @@ export function renderCodeView(container) {
     const isActive =
       uiState.activeFunctionId === functionId ||
       uiState.activeTreeNodeKey === treeNodeKey;
+    const isRead = uiState.readFunctionIds?.has?.(functionId);
+    const isCollapsed = uiState.collapsedFunctionIds?.has?.(functionId);
     if (isActive) block.classList.add('active');
+    if (isRead) block.classList.add('read');
+    if (isCollapsed) block.classList.add('collapsed');
+
+    // Collapsible content wrapper (function body and caller info).
+    const content = document.createElement('div');
+    content.className = 'function-block-content' + (isCollapsed ? ' collapsed' : '');
+    block.appendChild(content);
+
+    // Title shown only when collapsed, as a one-line function "signature" with syntax highlighting.
+    const titleRow = document.createElement('div');
+    titleRow.className = 'function-block-title';
+    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigHtml = highlightPython(sigSource);
+    // Use the highlighted HTML directly (Prism returns span-based markup, no box).
+    titleRow.innerHTML = sigHtml;
+    block.appendChild(titleRow);
 
     const callerId = getCallerFromTreeNodeKey(treeNodeKey);
     if (callerId) {
@@ -642,11 +663,11 @@ export function renderCodeView(container) {
       });
       callerLine.appendChild(document.createTextNode('Called from: '));
       callerLine.appendChild(link);
-      block.appendChild(callerLine);
+      content.appendChild(callerLine);
     }
 
     renderFunctionBody(
-      block,
+      content,
       flowPayload,
       uiState,
       fn,
@@ -659,6 +680,57 @@ export function renderCodeView(container) {
       treeNodeKey,
       prContext
     );
+
+    // Attach checkbox-style "done/read" control into the existing header inside this block:
+    // prefer module-context header if present, otherwise file-name header.
+    const headerEl =
+      block.querySelector('.module-context-header') ||
+      block.querySelector('.file-name-header');
+    if (headerEl) {
+      const controls = document.createElement('div');
+      controls.className = 'function-block-header-controls';
+
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'function-block-toggle-btn';
+      const updateToggleLabel = () => {
+        const nowCollapsed = uiState.collapsedFunctionIds?.has?.(functionId);
+        toggleBtn.textContent = nowCollapsed ? '+' : '–';
+        toggleBtn.title = nowCollapsed ? 'Expand function body' : 'Collapse function body';
+        toggleBtn.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
+      };
+      updateToggleLabel();
+      toggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setFunctionCollapsedState(functionId);
+      });
+
+      const doneBtn = document.createElement('button');
+      doneBtn.type = 'button';
+      doneBtn.className = 'function-block-done-btn';
+      doneBtn.textContent = '✓';
+      const updateDoneLabel = () => {
+        const nowRead = uiState.readFunctionIds?.has?.(functionId);
+        if (nowRead) {
+          doneBtn.classList.add('checked');
+          doneBtn.title = 'Marked as done (click to mark as not done)';
+          doneBtn.setAttribute('aria-pressed', 'true');
+        } else {
+          doneBtn.classList.remove('checked');
+          doneBtn.title = 'Mark this function as done/read';
+          doneBtn.setAttribute('aria-pressed', 'false');
+        }
+      };
+      updateDoneLabel();
+      doneBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setFunctionReadState(functionId);
+      });
+
+      controls.appendChild(toggleBtn);
+      controls.appendChild(doneBtn);
+      headerEl.appendChild(controls);
+    }
     fileSection.appendChild(block);
   }
   container.appendChild(fileSection);

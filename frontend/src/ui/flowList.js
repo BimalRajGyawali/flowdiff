@@ -27,7 +27,7 @@ function getFlowMetadata(flow, payload) {
     if (fn?.file) files.add(fn.file);
   }
   const depth = computeDepth(flow.rootId, payload.edges, new Set());
-  return { nodeCount: ids.size, files: Array.from(files), depth };
+  return { nodeCount: ids.size, ids, files: Array.from(files), depth };
 }
 
 function computeDepth(rootId, edges, visited) {
@@ -88,10 +88,37 @@ export function renderFlowList(container) {
     const metaEl = document.createElement('div');
     metaEl.className = 'flow-list-item-meta';
     const fileCountText = meta.files.length === 1 ? '1 file' : `${meta.files.length} files`;
-    metaEl.textContent = fileCountText;
-    if (meta.files.length > 0) {
-      metaEl.title = meta.files.join('\n');
+    const totalFns = meta.nodeCount || 0;
+    let doneFns = 0;
+    if (totalFns > 0 && uiState.readFunctionIds?.size) {
+      for (const id of meta.ids) {
+        if (uiState.readFunctionIds.has(id)) doneFns += 1;
+      }
     }
+    const pct = totalFns > 0 ? Math.round((doneFns / totalFns) * 100) : 0;
+
+    const barOuter = document.createElement('div');
+    barOuter.className = 'flow-progress-bar';
+    const barInner = document.createElement('div');
+    barInner.className = 'flow-progress-bar-fill';
+    barInner.style.width = `${pct}%`;
+    barOuter.appendChild(barInner);
+
+    const metaText = document.createElement('span');
+    metaText.className = 'flow-list-meta-text';
+    metaText.textContent = fileCountText;
+
+    metaEl.appendChild(metaText);
+    metaEl.appendChild(barOuter);
+
+    if (meta.files.length > 0) {
+      metaEl.title = `${meta.files.join('\n')}\n\nDone: ${doneFns}/${totalFns} (${pct}%)`;
+    }
+
+    if (pct === 100) {
+      item.classList.add('flow-list-item-complete');
+    }
+
     item.appendChild(metaEl);
 
     item.addEventListener('click', () => setSelectedFlow(flow.id, flow.rootId));

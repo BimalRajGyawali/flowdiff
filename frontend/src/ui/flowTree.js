@@ -5,6 +5,10 @@
 
 import { getState, toggleExpandedTreeNode, setActiveFunction, expandFlowTreeToDepth, collapseFlowTree, getFlowTreeKeysAtDepth } from '../state/store.js';
 
+// Tracks the first tree-node key where each function ID appears in the current flow tree.
+/** @type {Map<string, string>} */
+const firstTreeNodeKeyByFunctionId = new Map();
+
 /**
  * @param {HTMLElement} container
  */
@@ -34,6 +38,10 @@ export function renderFlowTree(container) {
 
   const hasExpandableNodes = flowPayload.edges.some((e) => e.callerId === root.id);
   const rootKey = `root:${root.id}`;
+
+  // Reset per-render tracking of first occurrences.
+  firstTreeNodeKeyByFunctionId.clear();
+  firstTreeNodeKeyByFunctionId.set(root.id, rootKey);
   if (hasExpandableNodes) {
     const toolbar = document.createElement('div');
     toolbar.className = 'flow-tree-toolbar';
@@ -102,14 +110,24 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   item.className = 'flow-tree-item' + (isLast ? ' flow-tree-item-last' : '');
 
   const isInView = uiState.inViewTreeNodeKey === treeNodeKey;
+  const isRead = uiState.readFunctionIds?.has?.(fn.id);
   const row = document.createElement('div');
-  row.className = 'flow-tree-node' + (isActive ? ' active' : '') + (isInView ? ' in-view' : '');
+  row.className =
+    'flow-tree-node' +
+    (isActive ? ' active' : '') +
+    (isInView ? ' in-view' : '') +
+    (isRead ? ' read' : '');
   const hasChildren = children.length > 0;
   const expandIcon = hasChildren ? (expanded ? '▾' : '▸') : '◦';
   const changeBadge = fn.changeType ? `<span class="flow-tree-badge flow-tree-badge-${fn.changeType}" title="${fn.changeType}"></span>` : '';
   row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${changeBadge}${escapeHtml(fn.name)}</span>`;
   row.dataset.functionId = fn.id;
   row.dataset.treeNodeKey = treeNodeKey;
+
+  // Record the first time we render this function as a full node (for later references).
+  if (!firstTreeNodeKeyByFunctionId.has(fn.id)) {
+    firstTreeNodeKeyByFunctionId.set(fn.id, treeNodeKey);
+  }
   // Clicking the row selects the function (syncs code view) without toggling expansion.
   row.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -139,15 +157,24 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
       const childKey = `${treeNodeKey}/e:${e.callerId}:${e.callIndex}:${e.calleeId}`;
       const child = children[i];
       const isRecursive = pathIncludingThis.has(child.id);
-      if (isRecursive) {
-        const originalKey = pathKeysById.get(child.id);
+      const firstKey = firstTreeNodeKeyByFunctionId.get(child.id);
+
+      // Treat recursive calls and repeated functions (already shown elsewhere)
+      // as references that jump to the original occurrence.
+      if (isRecursive || (firstKey && firstKey !== childKey)) {
+        const originalKey = isRecursive ? pathKeysById.get(child.id) : firstKey;
         const recItem = document.createElement('div');
         recItem.className = 'flow-tree-item flow-tree-item-recursive';
         const recRow = document.createElement('div');
         const recInView = uiState.inViewTreeNodeKey === originalKey;
-        recRow.className = 'flow-tree-node flow-tree-node-recursive' + (uiState.activeTreeNodeKey === originalKey ? ' active' : '') + (recInView ? ' in-view' : '');
-        recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${escapeHtml(child.name)} <span class="flow-tree-recursive-hint">(already above)</span></span>`;
-        recRow.title = 'Recursive call — click to go to original above';
+        const recIsRead = uiState.readFunctionIds?.has?.(child.id);
+        recRow.className =
+          'flow-tree-node flow-tree-node-recursive' +
+          (uiState.activeTreeNodeKey === originalKey ? ' active' : '') +
+          (recInView ? ' in-view' : '') +
+          (recIsRead ? ' read' : '');
+        recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${escapeHtml(child.name)}</span>`;
+        recRow.title = 'Click to jump to where this function is shown above';
         recRow.dataset.functionId = child.id;
         recRow.dataset.treeNodeKey = originalKey;
         recRow.addEventListener('click', (ev) => {
@@ -157,6 +184,10 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
         recItem.appendChild(recRow);
         branch.appendChild(recItem);
       } else {
+        // Record the first time we render this function as a full node.
+        if (!firstTreeNodeKeyByFunctionId.has(child.id)) {
+          firstTreeNodeKeyByFunctionId.set(child.id, childKey);
+        }
         renderNode(branch, payload, child, i === children.length - 1, childKey, pathIncludingThis, pathKeysIncludingThis);
       }
     }
