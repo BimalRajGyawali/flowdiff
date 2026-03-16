@@ -12,7 +12,7 @@ let flowPayload = { ...emptyFlowPayload };
 /** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
 let prContext = null;
 
-/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
+/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string>, flowListTestsExpanded?: boolean }} */
 let uiState = {
   selectedFlowId: null,
   selectedFileInFlow: null,
@@ -25,7 +25,8 @@ let uiState = {
   inViewTreeNodeKey: null,
   readFunctionIds: new Set(),
   collapsedFunctionIds: new Set(),
-  multiFlowFunctionIds: new Set()
+  multiFlowFunctionIds: new Set(),
+  flowListTestsExpanded: false
 };
 
 // Per-flow cache of tree expansion state so navigating back to a flow restores
@@ -109,7 +110,8 @@ export function setFlowPayload(payload) {
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
     collapsedFunctionIds: multiFlowCollapsedIds,
-    multiFlowFunctionIds: new Set(multiFlowCollapsedIds)
+    multiFlowFunctionIds: new Set(multiFlowCollapsedIds),
+    flowListTestsExpanded: uiState.flowListTestsExpanded ?? false
   };
   flowTreeExpansionByFlowId.clear();
   notify();
@@ -423,6 +425,12 @@ export function initStore() {
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
     collapsedFunctionIds: new Set(),
-    multiFlowFunctionIds: new Set()
+    multiFlowFunctionIds: new Set(),
+    flowListTestsExpanded: false
   };
+}
+
+export function setFlowListTestsExpanded(expanded) {
+  uiState.flowListTestsExpanded = !!expanded;
+  notify();
 }
