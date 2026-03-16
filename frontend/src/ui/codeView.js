@@ -14,6 +14,13 @@ function updateInViewFromScroll(container) {
     setInViewTreeNodeKey(null);
     return;
   }
+
+  // If everything fits in the visible viewport (no vertical scroll),
+  // there is no meaningful "you are here" position.
+  if (container.scrollHeight <= container.clientHeight + 1) {
+    setInViewTreeNodeKey(null);
+    return;
+  }
   const cRect = container.getBoundingClientRect();
   const centerY = cRect.top + cRect.height / 2;
   let best = null;
@@ -470,6 +477,19 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
 
   const pathFunctionIds = getPathFunctionIds(pathPrefix);
   const sourceLines = sourceLinesByFile[fn.file] || [];
+
+  // If we don't have any source or diff lines for this file/function (e.g. it wasn't in the git diff),
+  // still show at least a best-effort function definition line so the block is never empty.
+  if (!sourceLines.length && !(diffLinesByFile[fn.file] || []).length) {
+    const body = document.createElement('div');
+    body.className = 'function-body';
+    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigHtml = highlightPython(sigSource);
+    body.innerHTML = `<pre class="code-line"><code class="language-python">${sigHtml}</code></pre>`;
+    container.appendChild(body);
+    return;
+  }
+
   const fnDiffLines = buildFunctionDisplayRows(fn, sourceLines, diffLinesByFile[fn.file] || []);
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
   const calleesForFind = [...new Map(calleesWithIndex.map((e) => [e.calleeId, { calleeId: e.calleeId, name: payload.functionsById[e.calleeId]?.name }])).values()].filter((x) => x.name);
@@ -751,6 +771,17 @@ export function renderCodeView(container) {
     }
   }
   if (!activeFunctionId) lastScrolledToActiveKey = null;
+
+  // Explicitly mark the "you are here" function block in the code view,
+  // based on the function ID derived from the tree's inViewTreeNodeKey.
+  const inViewFnId =
+    getFunctionIdFromTreeNodeKey(uiState.inViewTreeNodeKey) || null;
+  if (inViewFnId) {
+    const inViewBlock = container.querySelector(
+      `.function-block[data-function-id="${CSS.escape(inViewFnId)}"]`
+    );
+    if (inViewBlock) inViewBlock.classList.add('in-view');
+  }
 
   if (!container.dataset.scrollLinked) {
     container.dataset.scrollLinked = '1';

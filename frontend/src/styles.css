@@ -311,6 +311,13 @@ body {
   font-weight: 400;
 }
 
+.flow-tree-shared-hint {
+  font-size: 9px;
+  color: #6b7280;
+  margin-left: 4px;
+  transform: translateY(-1px);
+}
+
 /* Tree branch lines - vertical connector for each level */
 .flow-tree-branch {
   position: relative;
@@ -627,6 +634,8 @@ body {
 .function-block.read.active {
   opacity: 0.9;
 }
+
+/* (no "you are here" styling in code view; flow tree owns that indicator) */
 
 .function-block-title {
   font-size: 12px;

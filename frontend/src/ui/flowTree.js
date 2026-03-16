@@ -111,6 +111,7 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
 
   const isInView = uiState.inViewTreeNodeKey === treeNodeKey;
   const isRead = uiState.readFunctionIds?.has?.(fn.id);
+  const isMultiFlow = uiState.multiFlowFunctionIds?.has?.(fn.id);
   const row = document.createElement('div');
   row.className =
     'flow-tree-node' +
@@ -120,7 +121,10 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   const hasChildren = children.length > 0;
   const expandIcon = hasChildren ? (expanded ? '▾' : '▸') : '◦';
   const changeBadge = fn.changeType ? `<span class="flow-tree-badge flow-tree-badge-${fn.changeType}" title="${fn.changeType}"></span>` : '';
-  row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${changeBadge}${escapeHtml(fn.name)}</span>`;
+  const sharedHint = isMultiFlow
+    ? `<span class="flow-tree-shared-hint" title="Also appears in other flows (collapsed in code view)">↗</span>`
+    : '';
+  row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${changeBadge}${escapeHtml(fn.name)}${sharedHint}</span>`;
   row.dataset.functionId = fn.id;
   row.dataset.treeNodeKey = treeNodeKey;
 

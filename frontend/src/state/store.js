@@ -12,7 +12,7 @@ let flowPayload = { ...emptyFlowPayload };
 /** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
 let prContext = null;
 
-/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, collapsedFunctionIds: Set<string> }} */
+/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
 let uiState = {
   selectedFlowId: null,
   selectedFileInFlow: null,
@@ -24,7 +24,8 @@ let uiState = {
   hoveredTreeNodeKey: null,
   inViewTreeNodeKey: null,
   readFunctionIds: new Set(),
-  collapsedFunctionIds: new Set()
+  collapsedFunctionIds: new Set(),
+  multiFlowFunctionIds: new Set()
 };
 
 // Per-flow cache of tree expansion state so navigating back to a flow restores
@@ -48,7 +49,54 @@ export function setFlowPayload(payload) {
   flowPayload = payload;
   const firstFlow = payload.flows[0];
   const rootKey = firstFlow?.rootId ? `root:${firstFlow.rootId}` : null;
-  const initialTree = rootKey ? new Set([rootKey]) : new Set();
+
+  // Expand full tree by default for the initially selected flow.
+  let initialTree = new Set();
+  if (firstFlow?.rootId) {
+    const rootId = firstFlow.rootId;
+    const keysToExpand = new Set([`root:${rootId}`]);
+    function visit(fnId, pathFromRoot, treeNodeKey) {
+      const pathIncludingThis = new Set(pathFromRoot);
+      pathIncludingThis.add(fnId);
+      const childEdges = payload.edges
+        .filter((e) => e.callerId === fnId)
+        .sort((a, b) => a.callIndex - b.callIndex);
+      if (childEdges.length > 0) keysToExpand.add(treeNodeKey);
+      for (const e of childEdges) {
+        if (pathIncludingThis.has(e.calleeId)) continue;
+        const childKey = `${treeNodeKey}/e:${e.callerId}:${e.callIndex}:${e.calleeId}`;
+        visit(e.calleeId, pathIncludingThis, childKey);
+      }
+    }
+    visit(rootId, new Set(), `root:${rootId}`);
+    initialTree = keysToExpand;
+  }
+
+   // Functions that participate in more than one flow are collapsed by default in the code view.
+  const functionFlowCounts = new Map();
+  for (const flow of payload.flows || []) {
+    if (!flow.rootId) continue;
+    const ids = new Set([flow.rootId]);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const e of payload.edges || []) {
+        if (ids.has(e.callerId) && !ids.has(e.calleeId)) {
+          ids.add(e.calleeId);
+          added = true;
+        }
+      }
+    }
+    for (const id of ids) {
+      functionFlowCounts.set(id, (functionFlowCounts.get(id) || 0) + 1);
+    }
+  }
+  const multiFlowCollapsedIds = new Set(
+    [...functionFlowCounts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([id]) => id)
+  );
+
   uiState = {
     selectedFlowId: firstFlow?.id ?? null,
     selectedFileInFlow: null,
@@ -60,7 +108,8 @@ export function setFlowPayload(payload) {
     hoveredTreeNodeKey: null,
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
-    collapsedFunctionIds: new Set()
+    collapsedFunctionIds: multiFlowCollapsedIds,
+    multiFlowFunctionIds: new Set(multiFlowCollapsedIds)
   };
   flowTreeExpansionByFlowId.clear();
   notify();
@@ -85,10 +134,10 @@ export function setSelectedFlow(flowId, rootId) {
     uiState.expandedTreeNodeIds = new Set(cached.expandedTreeNodeIds);
     uiState.flowTreeExpandedIds = new Set(cached.flowTreeExpandedIds);
   } else {
-    const rootKey = rootId ? `root:${rootId}` : null;
-    const initialTree = rootKey ? new Set([rootKey]) : new Set();
-    uiState.expandedTreeNodeIds = new Set(initialTree);
-    uiState.flowTreeExpandedIds = new Set(initialTree);
+    // No cached state for this flow yet: expand its full tree by default.
+    const fullTree = getFlowTreeKeysAtDepth(Infinity);
+    uiState.flowTreeExpandedIds = new Set(fullTree);
+    uiState.expandedTreeNodeIds = new Set(fullTree);
   }
 
   uiState.activeFunctionId = null;
@@ -373,6 +422,7 @@ export function initStore() {
     hoveredTreeNodeKey: null,
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
-    collapsedFunctionIds: new Set()
+    collapsedFunctionIds: new Set(),
+    multiFlowFunctionIds: new Set()
   };
 }
