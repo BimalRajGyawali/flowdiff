@@ -755,22 +755,37 @@ export function renderCodeView(container) {
   }
   container.appendChild(fileSection);
 
+  // Determine the current active code block, preferring the specific tree-node path
+  // when available so different occurrences of the same function scroll independently.
+  const activeTreeNodeKey = uiState.activeTreeNodeKey || null;
   const activeFunctionId =
-    getFunctionIdFromTreeNodeKey(uiState.activeTreeNodeKey) || uiState.activeFunctionId;
-  // Only auto-center when the active function changes, so manual scrolling isn't
+    getFunctionIdFromTreeNodeKey(activeTreeNodeKey) || uiState.activeFunctionId;
+
+  // Build a stable key that distinguishes different occurrences of the same function.
+  const activeScrollKey = activeTreeNodeKey || (activeFunctionId ? `fn:${activeFunctionId}` : null);
+
+  // Only auto-center when the active target changes, so manual scrolling isn't
   // constantly overridden on every store update (e.g., when updating "you are here").
-  if (activeFunctionId && activeFunctionId !== lastScrolledToActiveKey) {
-    const el = container.querySelector(
-      `.function-block[data-function-id="${CSS.escape(activeFunctionId)}"]`
-    );
+  if (activeScrollKey && activeScrollKey !== lastScrolledToActiveKey) {
+    let el = null;
+    if (activeTreeNodeKey) {
+      el = container.querySelector(
+        `.function-block[data-tree-node-key="${CSS.escape(activeTreeNodeKey)}"]`
+      );
+    }
+    if (!el && activeFunctionId) {
+      el = container.querySelector(
+        `.function-block[data-function-id="${CSS.escape(activeFunctionId)}"]`
+      );
+    }
     if (el) {
-      lastScrolledToActiveKey = activeFunctionId;
+      lastScrolledToActiveKey = activeScrollKey;
       requestAnimationFrame(() => {
         requestAnimationFrame(() => scrollToVerticalCenter(container, el));
       });
     }
   }
-  if (!activeFunctionId) lastScrolledToActiveKey = null;
+  if (!activeScrollKey) lastScrolledToActiveKey = null;
 
   // Explicitly mark the "you are here" function block in the code view,
   // based on the function ID derived from the tree's inViewTreeNodeKey.
