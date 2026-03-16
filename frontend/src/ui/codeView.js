@@ -7,6 +7,8 @@ import { getState, setActiveFunction, setInViewTreeNodeKey, setFunctionReadState
 
 let lastScrolledToActiveKey = null;
 let scrollRAF = null;
+let moduleContextExpandedKeys = new Set();
+let moduleContextFlowId = null;
 
 function updateInViewFromScroll(container) {
   const blocks = container.querySelectorAll('.function-block[data-tree-node-key]');
@@ -452,23 +454,39 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
         `;
         const body = ctx.querySelector('.module-context-body');
         const toggle = ctx.querySelector('.module-context-toggle');
+        const expandedKey = `${pathPrefix}::${fn.file}`;
+
+        const ensureModuleContextBodyPopulated = () => {
+          if (!body) return;
+          if (body.childElementCount > 0) return;
+          const rows = buildRangeDisplayRows(
+            fileMeta.moduleChangedRanges,
+            sourceLinesByFile[fn.file] || [],
+            diffLinesByFile[fn.file] || [],
+            new Set(fileMeta.moduleExcludedLineNumbers || [])
+          );
+          const lines = document.createElement('div');
+          lines.className = 'module-context-lines';
+          renderDiffRows(lines, fn.file, rows, prContext);
+          body.appendChild(lines);
+        };
+
+        // Initialize expanded/collapsed state from an in-memory cache (per flow),
+        // so scroll-driven re-renders don't reset the UI, but nothing is persisted across flows.
+        const isInitiallyExpanded = moduleContextExpandedKeys.has(expandedKey);
+        toggle.setAttribute('aria-expanded', isInitiallyExpanded ? 'true' : 'false');
+        if (body) body.hidden = !isInitiallyExpanded;
+        if (isInitiallyExpanded) ensureModuleContextBodyPopulated();
+
         toggle?.addEventListener('click', (e) => {
           e.stopPropagation();
           const expanded = toggle.getAttribute('aria-expanded') === 'true';
-          toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
-          if (body) body.hidden = expanded;
-          if (!expanded && body && body.childElementCount === 0) {
-            const rows = buildRangeDisplayRows(
-              fileMeta.moduleChangedRanges,
-              sourceLinesByFile[fn.file] || [],
-              diffLinesByFile[fn.file] || [],
-              new Set(fileMeta.moduleExcludedLineNumbers || [])
-            );
-            const lines = document.createElement('div');
-            lines.className = 'module-context-lines';
-            renderDiffRows(lines, fn.file, rows, prContext);
-            body.appendChild(lines);
-          }
+          const next = !expanded;
+          toggle.setAttribute('aria-expanded', next ? 'true' : 'false');
+          if (body) body.hidden = !next;
+          if (next) ensureModuleContextBodyPopulated();
+          if (next) moduleContextExpandedKeys.add(expandedKey);
+          else moduleContextExpandedKeys.delete(expandedKey);
         });
         fileBlock.prepend(ctx);
       }
@@ -597,6 +615,10 @@ export function renderCodeView(container) {
 
   const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId);
   const flowFnIds = selectedFlow ? getFlowFunctionIds(selectedFlow, flowPayload) : new Set();
+  if (selectedFlow?.id !== moduleContextFlowId) {
+    moduleContextFlowId = selectedFlow?.id ?? null;
+    moduleContextExpandedKeys = new Set();
+  }
 
   if (flowFnIds.size === 0) {
     container.textContent = 'Select a flow.';

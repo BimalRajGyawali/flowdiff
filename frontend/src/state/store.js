@@ -26,7 +26,7 @@ let uiState = {
   readFunctionIds: new Set(),
   collapsedFunctionIds: new Set(),
   multiFlowFunctionIds: new Set(),
-  flowListTestsExpanded: false
+  flowListTestsExpanded: false,
 };
 
 // Per-flow cache of tree expansion state so navigating back to a flow restores
