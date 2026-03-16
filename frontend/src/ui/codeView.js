@@ -3,9 +3,33 @@
  * No inline expansion; call-site and flow-tree clicks navigate (scroll to + highlight) the function block.
  */
 
-import { getState, setActiveFunction } from '../state/store.js';
+import { getState, setActiveFunction, setHoveredTreeNodeKey, setInViewTreeNodeKey } from '../state/store.js';
 
 let lastScrolledToActiveKey = null;
+let scrollRAF = null;
+
+function updateInViewFromScroll(container) {
+  const blocks = container.querySelectorAll('.function-block[data-tree-node-key]');
+  if (blocks.length === 0) {
+    setInViewTreeNodeKey(null);
+    return;
+  }
+  const cRect = container.getBoundingClientRect();
+  const centerY = cRect.top + cRect.height / 2;
+  let best = null;
+  let bestDist = Infinity;
+  for (const el of blocks) {
+    const r = el.getBoundingClientRect();
+    const elCenter = r.top + r.height / 2;
+    const dist = Math.abs(elCenter - centerY);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = el;
+    }
+  }
+  const key = best?.dataset?.treeNodeKey ?? null;
+  setInViewTreeNodeKey(key);
+}
 
 function isElementInView(container, el) {
   const cRect = container.getBoundingClientRect();
@@ -36,31 +60,32 @@ function getFunctionIdFromTreeNodeKey(treeNodeKey) {
   return null;
 }
 
-function applyFocusDimming(container, uiState) {
-  container.querySelectorAll('.code-focus-block').forEach((el) => el.classList.remove('code-focus-block'));
-  const dimmables = container.querySelectorAll(
-    '.diff-line, .file-name-header, .module-context, .function-block'
-  );
-  dimmables.forEach((el) => el.classList.remove('code-dimmed'));
-  container.classList.remove('code-focus-mode');
-
-  const activeFunctionId =
-    getFunctionIdFromTreeNodeKey(uiState.activeTreeNodeKey) || uiState.activeFunctionId;
-  if (!activeFunctionId) return;
-
-  const focusEl = container.querySelector(
-    `.function-block[data-function-id="${CSS.escape(activeFunctionId)}"]`
-  );
-  if (!focusEl) return;
-
-  focusEl.classList.add('code-focus-block');
-  container.classList.add('code-focus-mode');
-  dimmables.forEach((el) => {
-    if (el.closest('.code-focus-block')) return;
-    if (el.contains(focusEl)) return;
-    el.classList.add('code-dimmed');
-  });
+/**
+ * Returns callerId for a tree node key (from last segment e:callerId:callIndex:calleeId), or null for root.
+ */
+function getCallerFromTreeNodeKey(treeNodeKey) {
+  if (!treeNodeKey || treeNodeKey.startsWith('root:')) return null;
+  const parts = treeNodeKey.split('/');
+  const last = parts[parts.length - 1];
+  if (last.startsWith('e:')) {
+    const p = last.split(':');
+    if (p.length >= 4) return p[1];
+  }
+  return null;
 }
+
+/**
+ * Returns parent tree node key (prefix without last segment), or null for root.
+ */
+function getParentTreeNodeKey(treeNodeKey) {
+  if (!treeNodeKey || treeNodeKey.startsWith('root:')) return null;
+  const idx = treeNodeKey.lastIndexOf('/');
+  return idx > 0 ? treeNodeKey.slice(0, idx) : null;
+}
+
+// Breadcrumb support was removed based on UI feedback.
+
+// Focus dimming has been disabled based on UI feedback.
 
 function makePlaceholder(index) {
   return `__flowdiff_ph_${index}__`;
@@ -240,12 +265,9 @@ function renderDiffRows(container, filePath, rows, prContext) {
     const lineHtml = highlightPython(line);
 
     const lineNum = rowData.newLineNumber ?? rowData.oldLineNumber;
-    const lineLink = prContext && lineNum != null && rowData.type !== 'del'
-      ? `https://github.com/${prContext.owner}/${prContext.repo}/blob/${prContext.headSha}/${filePath}#L${lineNum}`
-      : '';
     const oldNumHtml = rowData.oldLineNumber != null ? String(rowData.oldLineNumber) : '';
     const newNumHtml = rowData.newLineNumber != null
-      ? (lineLink ? `<a href="${escapeHtml(lineLink)}" target="_blank" rel="noopener" class="diff-num-link" title="Open on GitHub">${rowData.newLineNumber}</a>` : String(rowData.newLineNumber))
+      ? String(rowData.newLineNumber)
       : '';
 
     const row = document.createElement('div');
@@ -374,7 +396,8 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
   if (!hasFileHeader && !filesWithModuleContext.has(fn.file) && fileBlock.dataset?.file === fn.file) {
     const fileHeader = document.createElement('div');
     fileHeader.className = 'file-name-header';
-    fileHeader.textContent = fn.file;
+    const baseName = fn.file.replace(/^.*\//, '');
+    fileHeader.textContent = baseName;
     fileBlock.prepend(fileHeader);
   }
 
@@ -392,10 +415,11 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
         const symText = (fileMeta.moduleChangedSymbols || []).slice(0, 8).join(', ');
         const more = (fileMeta.moduleChangedSymbols || []).length > 8 ? ` (+${(fileMeta.moduleChangedSymbols || []).length - 8} more)` : '';
         const ctxId = `module-ctx:${fn.file}`;
+        const baseName = fn.file.replace(/^.*\//, '');
         ctx.innerHTML = `
           <div class="module-context-header">
             <button type="button" class="module-context-toggle" aria-expanded="false" aria-controls="${escapeHtml(ctxId)}" title="Changes outside function bodies">Module changes</button>
-            <span class="module-context-file">${escapeHtml(fn.file)}</span>
+            <span class="module-context-file">${escapeHtml(baseName)}</span>
             ${symText ? `<span class="module-context-syms" title="${escapeHtml((fileMeta.moduleChangedSymbols || []).join(', '))}">${escapeHtml(symText)}${more}</span>` : ''}
           </div>
           <div class="module-context-body" id="${escapeHtml(ctxId)}" hidden></div>
@@ -481,12 +505,9 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
     }
 
     const lineNum = rowData.newLineNumber ?? rowData.oldLineNumber;
-    const lineLink = prContext && lineNum != null && rowData.type !== 'del'
-      ? `https://github.com/${prContext.owner}/${prContext.repo}/blob/${prContext.headSha}/${fn.file}#L${lineNum}`
-      : '';
     const oldNumHtml = rowData.oldLineNumber != null ? String(rowData.oldLineNumber) : '';
     const newNumHtml = rowData.newLineNumber != null
-      ? (lineLink ? `<a href="${escapeHtml(lineLink)}" target="_blank" rel="noopener" class="diff-num-link" title="Open on GitHub">${rowData.newLineNumber}</a>` : String(rowData.newLineNumber))
+      ? String(rowData.newLineNumber)
       : '';
     const row = document.createElement('div');
     row.className = `diff-line diff-line-${rowData.type}`;
@@ -590,6 +611,29 @@ export function renderCodeView(container) {
     const isHovered = uiState.hoveredTreeNodeKey === treeNodeKey;
     if (isActive) block.classList.add('active');
     if (isHovered) block.classList.add('hovered');
+    block.addEventListener('mouseenter', () => setHoveredTreeNodeKey(treeNodeKey));
+    block.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));
+
+    const callerId = getCallerFromTreeNodeKey(treeNodeKey);
+    if (callerId) {
+      const caller = flowPayload.functionsById[callerId];
+      const callerName = caller?.name || callerId;
+      const parentKey = getParentTreeNodeKey(treeNodeKey);
+      const callerLine = document.createElement('div');
+      callerLine.className = 'function-block-caller';
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'function-block-caller-link';
+      link.textContent = `${callerName}()`;
+      link.title = 'Go to caller';
+      link.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setActiveFunction(callerId, parentKey);
+      });
+      callerLine.appendChild(document.createTextNode('Called from: '));
+      callerLine.appendChild(link);
+      block.appendChild(callerLine);
+    }
 
     renderFunctionBody(
       block,
@@ -617,6 +661,7 @@ export function renderCodeView(container) {
     );
     if (el) {
       lastScrolledToActiveKey = activeFunctionId;
+      if (activeTreeNodeKeyResolved) setInViewTreeNodeKey(activeTreeNodeKeyResolved);
       requestAnimationFrame(() => {
         requestAnimationFrame(() => scrollToVerticalCenter(container, el));
       });
@@ -624,5 +669,15 @@ export function renderCodeView(container) {
   }
   if (!activeFunctionId) lastScrolledToActiveKey = null;
 
-  applyFocusDimming(container, uiState);
+  if (!container.dataset.scrollLinked) {
+    container.dataset.scrollLinked = '1';
+    container.addEventListener('scroll', () => {
+      if (scrollRAF) return;
+      scrollRAF = requestAnimationFrame(() => {
+        scrollRAF = null;
+        updateInViewFromScroll(container);
+      });
+    });
+  }
+  updateInViewFromScroll(container);
 }

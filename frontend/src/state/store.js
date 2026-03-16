@@ -12,7 +12,7 @@ let flowPayload = { ...emptyFlowPayload };
 /** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
 let prContext = null;
 
-/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null }} */
+/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null }} */
 let uiState = {
   selectedFlowId: null,
   selectedFileInFlow: null,
@@ -21,7 +21,8 @@ let uiState = {
   flowTreeExpandedIds: new Set(),
   activeFunctionId: null,
   activeTreeNodeKey: null,
-  hoveredTreeNodeKey: null
+  hoveredTreeNodeKey: null,
+  inViewTreeNodeKey: null
 };
 
 /** @type {(() => void)[]} */
@@ -49,7 +50,8 @@ export function setFlowPayload(payload) {
     flowTreeExpandedIds: new Set(initialTree),
     activeFunctionId: null,
     activeTreeNodeKey: null,
-    hoveredTreeNodeKey: null
+    hoveredTreeNodeKey: null,
+    inViewTreeNodeKey: null
   };
   notify();
 }
@@ -65,6 +67,7 @@ export function setSelectedFlow(flowId, rootId) {
   uiState.activeFunctionId = null;
   uiState.activeTreeNodeKey = null;
   uiState.hoveredTreeNodeKey = null;
+  uiState.inViewTreeNodeKey = null;
   notify();
 }
 
@@ -280,6 +283,13 @@ export function setHoveredTreeNodeKey(treeNodeKey) {
   }
 }
 
+export function setInViewTreeNodeKey(treeNodeKey) {
+  if (uiState.inViewTreeNodeKey !== treeNodeKey) {
+    uiState.inViewTreeNodeKey = treeNodeKey;
+    notify();
+  }
+}
+
 export function subscribe(cb) {
   subscribers.push(cb);
   return () => {
@@ -305,6 +315,7 @@ export function initStore() {
     flowTreeExpandedIds: new Set(),
     activeFunctionId: null,
     activeTreeNodeKey: null,
-    hoveredTreeNodeKey: null
+    hoveredTreeNodeKey: null,
+    inViewTreeNodeKey: null
   };
 }

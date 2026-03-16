@@ -78,6 +78,19 @@ export function renderFlowTree(container) {
 
   wrapper.appendChild(tree);
   container.appendChild(wrapper);
+
+  if (uiState.activeTreeNodeKey) {
+    const activeRow = container.querySelector(
+      `[data-tree-node-key="${CSS.escape(uiState.activeTreeNodeKey)}"]`
+    );
+    if (activeRow) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          activeRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        });
+      });
+    }
+  }
 }
 
 /**
@@ -101,8 +114,9 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   const item = document.createElement('div');
   item.className = 'flow-tree-item' + (isLast ? ' flow-tree-item-last' : '');
 
+  const isInView = uiState.inViewTreeNodeKey === treeNodeKey;
   const row = document.createElement('div');
-  row.className = 'flow-tree-node' + (isActive ? ' active' : '');
+  row.className = 'flow-tree-node' + (isActive ? ' active' : '') + (isInView ? ' in-view' : '');
   const hasChildren = children.length > 0;
   const expandIcon = hasChildren ? (expanded ? '▾' : '▸') : '◦';
   const changeBadge = fn.changeType ? `<span class="flow-tree-badge flow-tree-badge-${fn.changeType}" title="${fn.changeType}"></span>` : '';
@@ -135,7 +149,8 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
         const recItem = document.createElement('div');
         recItem.className = 'flow-tree-item flow-tree-item-recursive';
         const recRow = document.createElement('div');
-        recRow.className = 'flow-tree-node flow-tree-node-recursive' + (uiState.activeTreeNodeKey === originalKey ? ' active' : '');
+        const recInView = uiState.inViewTreeNodeKey === originalKey;
+        recRow.className = 'flow-tree-node flow-tree-node-recursive' + (uiState.activeTreeNodeKey === originalKey ? ' active' : '') + (recInView ? ' in-view' : '');
         recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${escapeHtml(child.name)} <span class="flow-tree-recursive-hint">(already above)</span></span>`;
         recRow.title = 'Recursive call — click to go to original above';
         recRow.dataset.functionId = child.id;
