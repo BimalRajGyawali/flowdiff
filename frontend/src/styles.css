@@ -152,7 +152,7 @@ body {
   flex: 0 0 60%;
   padding: 16px;
   background: #ffffff;
-  overflow-x: auto;
+  overflow-x: hidden;
 }
 
 .flow-tree-pane {
@@ -547,8 +547,10 @@ body {
   flex: 1;
   margin: 0;
   padding: 0 10px;
-  overflow-x: auto;
-  white-space: pre;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   background: #dafbe1;
   border: none;
   font-family: inherit;
@@ -562,6 +564,9 @@ body {
   background: transparent !important;
   padding: 0 !important;
   font-size: 12px;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .diff-line-add .diff-code {
@@ -571,6 +576,19 @@ body {
 .diff-line-del .diff-code {
   /* GitHub removed line background */
   background: #ffebe9;
+}
+
+.intraline {
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+.intraline-add {
+  background: rgba(46, 160, 67, 0.22);
+}
+
+.intraline-del {
+  background: rgba(248, 81, 73, 0.22);
 }
 
 .diff-line-add .diff-sign {
@@ -983,7 +1001,9 @@ body {
 .code-line {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   margin: 0;
   padding: 0;
   background: transparent;

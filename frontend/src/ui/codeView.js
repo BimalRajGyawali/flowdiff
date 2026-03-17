@@ -131,6 +131,39 @@ function highlightPython(code) {
   return window.Prism.highlight(code, window.Prism.languages.python, 'python');
 }
 
+function getCommonPrefixLength(a, b) {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a[i] === b[i]) i++;
+  return i;
+}
+
+function getCommonSuffixLength(a, b, prefixLen = 0) {
+  const max = Math.min(a.length, b.length) - prefixLen;
+  let i = 0;
+  while (i < max && a[a.length - 1 - i] === b[b.length - 1 - i]) i++;
+  return i;
+}
+
+function computeIntralineRange(oldText, newText) {
+  const prefix = getCommonPrefixLength(oldText, newText);
+  const suffix = getCommonSuffixLength(oldText, newText, prefix);
+  const oldEnd = Math.max(prefix, oldText.length - suffix);
+  const newEnd = Math.max(prefix, newText.length - suffix);
+  return {
+    old: { start: prefix, end: oldEnd },
+    new: { start: prefix, end: newEnd }
+  };
+}
+
+function applyIntralineHighlight(text, range, cls) {
+  if (!range || range.end <= range.start) return escapeHtml(text);
+  const a = escapeHtml(text.slice(0, range.start));
+  const b = escapeHtml(text.slice(range.start, range.end));
+  const c = escapeHtml(text.slice(range.end));
+  return `${a}<span class="${cls}">${b}</span>${c}`;
+}
+
 function buildDiffLines(hunks) {
   const diffLines = [];
 
@@ -172,6 +205,32 @@ function buildDiffLines(hunks) {
       });
       oldLineNumber += 1;
       newLineNumber += 1;
+    }
+  }
+
+  // GitHub-style intraline highlighting for "replace" blocks (runs of - then +).
+  // We only attempt a simple prefix/suffix based range per paired line.
+  let i = 0;
+  while (i < diffLines.length) {
+    if (diffLines[i].type !== 'del') {
+      i++;
+      continue;
+    }
+    const delStart = i;
+    while (i < diffLines.length && diffLines[i].type === 'del') i++;
+    const delEnd = i;
+    const addStart = i;
+    while (i < diffLines.length && diffLines[i].type === 'add') i++;
+    const addEnd = i;
+    if (addStart === addEnd) continue;
+
+    const pairCount = Math.min(delEnd - delStart, addEnd - addStart);
+    for (let k = 0; k < pairCount; k++) {
+      const delRow = diffLines[delStart + k];
+      const addRow = diffLines[addStart + k];
+      const r = computeIntralineRange(delRow.content || '', addRow.content || '');
+      delRow.intraline = r.old;
+      addRow.intraline = r.new;
     }
   }
 
@@ -287,7 +346,12 @@ function buildRangeDisplayRows(ranges, sourceLines, diffLines, excludedLineNumbe
 function renderDiffRows(container, filePath, rows, prContext) {
   for (const rowData of rows) {
     const line = rowData.content;
-    const lineHtml = highlightPython(line);
+    const lineHtml =
+      rowData.type === 'add'
+        ? applyIntralineHighlight(line, rowData.intraline, 'intraline intraline-add')
+        : rowData.type === 'del'
+          ? applyIntralineHighlight(line, rowData.intraline, 'intraline intraline-del')
+          : highlightPython(line);
 
     const lineNum = rowData.newLineNumber ?? rowData.oldLineNumber;
     const oldNumHtml = rowData.oldLineNumber != null ? String(rowData.oldLineNumber) : '';
@@ -528,7 +592,11 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
     let lineHtml;
     const placeholders = [];
 
-    if (sites.length === 0) {
+    if (rowData.type === 'add') {
+      lineHtml = applyIntralineHighlight(indent + line, rowData.intraline, 'intraline intraline-add');
+    } else if (rowData.type === 'del') {
+      lineHtml = applyIntralineHighlight(indent + line, rowData.intraline, 'intraline intraline-del');
+    } else if (sites.length === 0) {
       lineHtml = highlightPython(indent + line);
     } else {
       let lineWithPlaceholders = '';
