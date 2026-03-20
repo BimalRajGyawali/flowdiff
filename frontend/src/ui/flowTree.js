@@ -3,7 +3,11 @@
  * Preserves call order (func2, func5 under func1; func3, func4 under func2).
  */
 
-import { getState, toggleExpandedTreeNode, setActiveFunction, setHoveredTreeNodeKey, expandFlowTreeToDepth, collapseFlowTree, getFlowTreeKeysAtDepth } from '../state/store.js';
+import { getState, toggleExpandedTreeNode, setActiveFunction, expandFlowTreeToDepth, collapseFlowTree, getFlowTreeKeysAtDepth } from '../state/store.js';
+
+// Tracks the first tree-node key where each function ID appears in the current flow tree.
+/** @type {Map<string, string>} */
+const firstTreeNodeKeyByFunctionId = new Map();
 
 /**
  * @param {HTMLElement} container
@@ -34,8 +38,11 @@ export function renderFlowTree(container) {
 
   const hasExpandableNodes = flowPayload.edges.some((e) => e.callerId === root.id);
   const rootKey = `root:${root.id}`;
+
+  // Reset per-render tracking of first occurrences.
+  firstTreeNodeKeyByFunctionId.clear();
+  firstTreeNodeKeyByFunctionId.set(root.id, rootKey);
   if (hasExpandableNodes) {
-    const defaultExpandDepth = 3;
     const toolbar = document.createElement('div');
     toolbar.className = 'flow-tree-toolbar';
     const currentFlowKeys = () => {
@@ -44,16 +51,6 @@ export function renderFlowTree(container) {
     };
     const setsEqual = (a, b) => a.size === b.size && [...a].every((k) => b.has(k));
 
-    const toDepthBtn = document.createElement('button');
-    toDepthBtn.type = 'button';
-    toDepthBtn.className = 'flow-tree-toolbar-btn';
-    toDepthBtn.innerHTML = '<span class="flow-tree-toolbar-icon" aria-hidden="true">⊞</span><span class="flow-tree-toolbar-label">Expand some</span>';
-    toDepthBtn.title = 'Expand first few levels (click again to collapse)';
-    toDepthBtn.addEventListener('click', () => {
-      const target = getFlowTreeKeysAtDepth(defaultExpandDepth);
-      if (setsEqual(currentFlowKeys(), target)) collapseFlowTree();
-      else expandFlowTreeToDepth(defaultExpandDepth);
-    });
     const allBtn = document.createElement('button');
     allBtn.type = 'button';
     allBtn.className = 'flow-tree-toolbar-btn';
@@ -64,7 +61,6 @@ export function renderFlowTree(container) {
       if (setsEqual(currentFlowKeys(), target)) collapseFlowTree();
       else expandFlowTreeToDepth(Infinity);
     });
-    toolbar.appendChild(toDepthBtn);
     toolbar.appendChild(allBtn);
     wrapper.appendChild(toolbar);
   }
@@ -74,10 +70,22 @@ export function renderFlowTree(container) {
   const pathFromRoot = new Set([root.id]);
   const pathKeysById = new Map([[root.id, rootKey]]);
   renderNode(tree, flowPayload, root, false, rootKey, pathFromRoot, pathKeysById);
-  tree.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));
 
   wrapper.appendChild(tree);
   container.appendChild(wrapper);
+
+  if (uiState.activeTreeNodeKey) {
+    const activeRow = container.querySelector(
+      `[data-tree-node-key="${CSS.escape(uiState.activeTreeNodeKey)}"]`
+    );
+    if (activeRow) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          activeRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        });
+      });
+    }
+  }
 }
 
 /**
@@ -101,21 +109,44 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   const item = document.createElement('div');
   item.className = 'flow-tree-item' + (isLast ? ' flow-tree-item-last' : '');
 
+  const isInView = uiState.inViewTreeNodeKey === treeNodeKey;
+  const isRead = uiState.readFunctionIds?.has?.(fn.id);
+  const isMultiFlow = uiState.multiFlowFunctionIds?.has?.(fn.id);
   const row = document.createElement('div');
-  row.className = 'flow-tree-node' + (isActive ? ' active' : '');
+  row.className =
+    'flow-tree-node' +
+    (isActive ? ' active' : '') +
+    (isInView ? ' in-view' : '') +
+    (isRead ? ' read' : '');
   const hasChildren = children.length > 0;
   const expandIcon = hasChildren ? (expanded ? '▾' : '▸') : '◦';
   const changeBadge = fn.changeType ? `<span class="flow-tree-badge flow-tree-badge-${fn.changeType}" title="${fn.changeType}"></span>` : '';
-  row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${changeBadge}${escapeHtml(fn.name)}</span>`;
+  const sharedHint = isMultiFlow
+    ? `<span class="flow-tree-shared-hint" title="Also appears in other flows (collapsed in code view)">↗</span>`
+    : '';
+  row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${changeBadge}${escapeHtml(fn.name)}${sharedHint}</span>`;
   row.dataset.functionId = fn.id;
   row.dataset.treeNodeKey = treeNodeKey;
+
+  // Record the first time we render this function as a full node (for later references).
+  if (!firstTreeNodeKeyByFunctionId.has(fn.id)) {
+    firstTreeNodeKeyByFunctionId.set(fn.id, treeNodeKey);
+  }
+  // Clicking the row selects the function (syncs code view) without toggling expansion.
   row.addEventListener('click', (e) => {
     e.stopPropagation();
     setActiveFunction(fn.id, treeNodeKey);
-    toggleExpandedTreeNode(treeNodeKey);
   });
-  row.addEventListener('mouseenter', () => setHoveredTreeNodeKey(treeNodeKey));
-  row.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));
+
+  // Clicking the icon toggles expansion independently.
+  const iconEl = row.querySelector('.flow-tree-icon');
+  if (iconEl && hasChildren) {
+    iconEl.style.cursor = 'pointer';
+    iconEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleExpandedTreeNode(treeNodeKey);
+    });
+  }
   item.appendChild(row);
 
   if (hasChildren && expanded) {
@@ -130,25 +161,37 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
       const childKey = `${treeNodeKey}/e:${e.callerId}:${e.callIndex}:${e.calleeId}`;
       const child = children[i];
       const isRecursive = pathIncludingThis.has(child.id);
-      if (isRecursive) {
-        const originalKey = pathKeysById.get(child.id);
+      const firstKey = firstTreeNodeKeyByFunctionId.get(child.id);
+
+      // Treat recursive calls and repeated functions (already shown elsewhere)
+      // as references that jump to the original occurrence.
+      if (isRecursive || (firstKey && firstKey !== childKey)) {
+        const originalKey = isRecursive ? pathKeysById.get(child.id) : firstKey;
         const recItem = document.createElement('div');
         recItem.className = 'flow-tree-item flow-tree-item-recursive';
         const recRow = document.createElement('div');
-        recRow.className = 'flow-tree-node flow-tree-node-recursive' + (uiState.activeTreeNodeKey === originalKey ? ' active' : '');
-        recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${escapeHtml(child.name)} <span class="flow-tree-recursive-hint">(already above)</span></span>`;
-        recRow.title = 'Recursive call — click to go to original above';
+        const recInView = uiState.inViewTreeNodeKey === originalKey;
+        const recIsRead = uiState.readFunctionIds?.has?.(child.id);
+        recRow.className =
+          'flow-tree-node flow-tree-node-recursive' +
+          (uiState.activeTreeNodeKey === originalKey ? ' active' : '') +
+          (recInView ? ' in-view' : '') +
+          (recIsRead ? ' read' : '');
+        recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${escapeHtml(child.name)}</span>`;
+        recRow.title = 'Click to jump to where this function is shown above';
         recRow.dataset.functionId = child.id;
         recRow.dataset.treeNodeKey = originalKey;
         recRow.addEventListener('click', (ev) => {
           ev.stopPropagation();
           setActiveFunction(child.id, originalKey);
         });
-        recRow.addEventListener('mouseenter', () => setHoveredTreeNodeKey(originalKey));
-        recRow.addEventListener('mouseleave', () => setHoveredTreeNodeKey(null));
         recItem.appendChild(recRow);
         branch.appendChild(recItem);
       } else {
+        // Record the first time we render this function as a full node.
+        if (!firstTreeNodeKeyByFunctionId.has(child.id)) {
+          firstTreeNodeKeyByFunctionId.set(child.id, childKey);
+        }
         renderNode(branch, payload, child, i === children.length - 1, childKey, pathIncludingThis, pathKeysIncludingThis);
       }
     }

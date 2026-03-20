@@ -1,12 +1,44 @@
 /**
- * Code view pane: shows only the code of the selected flow.
- * Callee call sites are clickable; when expanded, the callee is inlined at the call site.
- * Expansion syncs with the flow tree. Uses Prism for syntax highlighting.
+ * Code view pane: shows all functions of the selected flow in flow-tree order.
+ * No inline expansion; call-site and flow-tree clicks navigate (scroll to + highlight) the function block.
  */
 
-import { getState, toggleExpandedTreeNode, setActiveFunction } from '../state/store.js';
+import { getState, setActiveFunction, setInViewTreeNodeKey, setFunctionReadState, setFunctionCollapsedState } from '../state/store.js';
 
 let lastScrolledToActiveKey = null;
+let scrollRAF = null;
+let moduleContextExpandedKeys = new Set();
+let moduleContextFlowId = null;
+
+function updateInViewFromScroll(container) {
+  const blocks = container.querySelectorAll('.function-block[data-tree-node-key]');
+  if (blocks.length === 0) {
+    setInViewTreeNodeKey(null);
+    return;
+  }
+
+  // If everything fits in the visible viewport (no vertical scroll),
+  // there is no meaningful "you are here" position.
+  if (container.scrollHeight <= container.clientHeight + 1) {
+    setInViewTreeNodeKey(null);
+    return;
+  }
+  const cRect = container.getBoundingClientRect();
+  const centerY = cRect.top + cRect.height / 2;
+  let best = null;
+  let bestDist = Infinity;
+  for (const el of blocks) {
+    const r = el.getBoundingClientRect();
+    const elCenter = r.top + r.height / 2;
+    const dist = Math.abs(elCenter - centerY);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = el;
+    }
+  }
+  const key = best?.dataset?.treeNodeKey ?? null;
+  setInViewTreeNodeKey(key);
+}
 
 function isElementInView(container, el) {
   const cRect = container.getBoundingClientRect();
@@ -16,42 +48,69 @@ function isElementInView(container, el) {
 }
 
 function scrollToVerticalCenter(container, el) {
-  if (!container || !el) return;
-  const cRect = container.getBoundingClientRect();
-  const eRect = el.getBoundingClientRect();
-  const containerCenterY = cRect.top + cRect.height / 2;
-  const elementCenterY = eRect.top + eRect.height / 2;
-  const delta = elementCenterY - containerCenterY;
-  container.scrollTo({ top: container.scrollTop + delta, behavior: 'smooth' });
+  if (!el) return;
+
+  // The code pane (`container`) is the vertical scroll container.
+  const scroller = container;
+
+  // Compute element's offsetTop relative to the scroll container,
+  // walking up through offsetParents until we reach the container.
+  let offsetTop = 0;
+  /** @type {HTMLElement | null} */
+  let node = /** @type {HTMLElement | null} */ (el);
+  while (node && node !== scroller && node.offsetParent) {
+    offsetTop += node.offsetTop;
+    node = /** @type {HTMLElement | null} */ (node.offsetParent);
+  }
+
+  const elCenter = offsetTop + el.offsetHeight / 2;
+  const targetTop = Math.max(0, elCenter - scroller.clientHeight / 2);
+
+  if (typeof scroller.scrollTo === 'function') {
+    scroller.scrollTo({ top: targetTop, behavior: 'smooth' });
+  } else {
+    scroller.scrollTop = targetTop;
+  }
 }
 
-function applyFocusDimming(container, uiState) {
-  container.querySelectorAll('.code-focus-block').forEach((el) => el.classList.remove('code-focus-block'));
-  const dimmables = container.querySelectorAll(
-    '.diff-line, .file-name-header, .module-context, .function-block, .inline-callee'
-  );
-  dimmables.forEach((el) => el.classList.remove('code-dimmed'));
-  container.classList.remove('code-focus-mode');
-
-  const focusKey =
-    uiState.activeTreeNodeKey && uiState.expandedTreeNodeIds.has(uiState.activeTreeNodeKey)
-      ? uiState.activeTreeNodeKey
-      : null;
-  if (!focusKey) return;
-
-  const focusEl = container.querySelector(
-    `.function-block[data-tree-node-key="${CSS.escape(focusKey)}"], .inline-callee[data-tree-node-key="${CSS.escape(focusKey)}"]`
-  );
-  if (!focusEl) return;
-
-  focusEl.classList.add('code-focus-block');
-  container.classList.add('code-focus-mode');
-  dimmables.forEach((el) => {
-    if (el.closest('.code-focus-block')) return;
-    if (el.contains(focusEl)) return;
-    el.classList.add('code-dimmed');
-  });
+function getFunctionIdFromTreeNodeKey(treeNodeKey) {
+  if (!treeNodeKey) return null;
+  if (treeNodeKey.startsWith('root:')) return treeNodeKey.slice(5);
+  const parts = treeNodeKey.split('/');
+  const last = parts[parts.length - 1];
+  if (last.startsWith('e:')) {
+    const p = last.split(':');
+    if (p.length >= 4) return p[3];
+  }
+  return null;
 }
+
+/**
+ * Returns callerId for a tree node key (from last segment e:callerId:callIndex:calleeId), or null for root.
+ */
+function getCallerFromTreeNodeKey(treeNodeKey) {
+  if (!treeNodeKey || treeNodeKey.startsWith('root:')) return null;
+  const parts = treeNodeKey.split('/');
+  const last = parts[parts.length - 1];
+  if (last.startsWith('e:')) {
+    const p = last.split(':');
+    if (p.length >= 4) return p[1];
+  }
+  return null;
+}
+
+/**
+ * Returns parent tree node key (prefix without last segment), or null for root.
+ */
+function getParentTreeNodeKey(treeNodeKey) {
+  if (!treeNodeKey || treeNodeKey.startsWith('root:')) return null;
+  const idx = treeNodeKey.lastIndexOf('/');
+  return idx > 0 ? treeNodeKey.slice(0, idx) : null;
+}
+
+// Breadcrumb support was removed based on UI feedback.
+
+// Focus dimming has been disabled based on UI feedback.
 
 function makePlaceholder(index) {
   return `__flowdiff_ph_${index}__`;
@@ -231,12 +290,9 @@ function renderDiffRows(container, filePath, rows, prContext) {
     const lineHtml = highlightPython(line);
 
     const lineNum = rowData.newLineNumber ?? rowData.oldLineNumber;
-    const lineLink = prContext && lineNum != null && rowData.type !== 'del'
-      ? `https://github.com/${prContext.owner}/${prContext.repo}/blob/${prContext.headSha}/${filePath}#L${lineNum}`
-      : '';
     const oldNumHtml = rowData.oldLineNumber != null ? String(rowData.oldLineNumber) : '';
     const newNumHtml = rowData.newLineNumber != null
-      ? (lineLink ? `<a href="${escapeHtml(lineLink)}" target="_blank" rel="noopener" class="diff-num-link" title="Open on GitHub">${rowData.newLineNumber}</a>` : String(rowData.newLineNumber))
+      ? String(rowData.newLineNumber)
       : '';
 
     const row = document.createElement('div');
@@ -267,6 +323,38 @@ function getFlowFunctionIds(flow, payload) {
     }
   }
   return ids;
+}
+
+/**
+ * Returns functions in flow order (DFS from root, first occurrence). One entry per function ID.
+ * @param {string} rootId
+ * @param {import('../flowSchema.js').FlowPayload} payload
+ * @returns {{ treeNodeKey: string, functionId: string }[]}
+ */
+function collectFlowOrder(rootId, payload) {
+  const rootKey = `root:${rootId}`;
+  const list = [];
+  const visited = new Set();
+
+  function visit(fnId, treeNodeKey, pathFromRoot) {
+    if (visited.has(fnId)) return;
+    visited.add(fnId);
+    const pathIncludingThis = new Set(pathFromRoot);
+    pathIncludingThis.add(fnId);
+    list.push({ treeNodeKey, functionId: fnId });
+
+    const childEdges = payload.edges
+      .filter((e) => e.callerId === fnId)
+      .sort((a, b) => a.callIndex - b.callIndex);
+    for (const e of childEdges) {
+      if (pathIncludingThis.has(e.calleeId)) continue;
+      const childKey = `${treeNodeKey}/e:${e.callerId}:${e.callIndex}:${e.calleeId}`;
+      visit(e.calleeId, childKey, pathIncludingThis);
+    }
+  }
+
+  visit(rootId, rootKey, new Set());
+  return list;
 }
 
 /**
@@ -336,7 +424,8 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
   if (!hasFileHeader && !filesWithModuleContext.has(fn.file) && fileBlock.dataset?.file === fn.file) {
     const fileHeader = document.createElement('div');
     fileHeader.className = 'file-name-header';
-    fileHeader.textContent = fn.file;
+    const baseName = fn.file.replace(/^.*\//, '');
+    fileHeader.textContent = baseName;
     fileBlock.prepend(fileHeader);
   }
 
@@ -354,33 +443,50 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
         const symText = (fileMeta.moduleChangedSymbols || []).slice(0, 8).join(', ');
         const more = (fileMeta.moduleChangedSymbols || []).length > 8 ? ` (+${(fileMeta.moduleChangedSymbols || []).length - 8} more)` : '';
         const ctxId = `module-ctx:${fn.file}`;
+        const baseName = fn.file.replace(/^.*\//, '');
         ctx.innerHTML = `
           <div class="module-context-header">
             <button type="button" class="module-context-toggle" aria-expanded="false" aria-controls="${escapeHtml(ctxId)}" title="Changes outside function bodies">Module changes</button>
-            <span class="module-context-file">${escapeHtml(fn.file)}</span>
+            <span class="module-context-file">${escapeHtml(baseName)}</span>
             ${symText ? `<span class="module-context-syms" title="${escapeHtml((fileMeta.moduleChangedSymbols || []).join(', '))}">${escapeHtml(symText)}${more}</span>` : ''}
           </div>
           <div class="module-context-body" id="${escapeHtml(ctxId)}" hidden></div>
         `;
         const body = ctx.querySelector('.module-context-body');
         const toggle = ctx.querySelector('.module-context-toggle');
+        const expandedKey = `${pathPrefix}::${fn.file}`;
+
+        const ensureModuleContextBodyPopulated = () => {
+          if (!body) return;
+          if (body.childElementCount > 0) return;
+          const rows = buildRangeDisplayRows(
+            fileMeta.moduleChangedRanges,
+            sourceLinesByFile[fn.file] || [],
+            diffLinesByFile[fn.file] || [],
+            new Set(fileMeta.moduleExcludedLineNumbers || [])
+          );
+          const lines = document.createElement('div');
+          lines.className = 'module-context-lines';
+          renderDiffRows(lines, fn.file, rows, prContext);
+          body.appendChild(lines);
+        };
+
+        // Initialize expanded/collapsed state from an in-memory cache (per flow),
+        // so scroll-driven re-renders don't reset the UI, but nothing is persisted across flows.
+        const isInitiallyExpanded = moduleContextExpandedKeys.has(expandedKey);
+        toggle.setAttribute('aria-expanded', isInitiallyExpanded ? 'true' : 'false');
+        if (body) body.hidden = !isInitiallyExpanded;
+        if (isInitiallyExpanded) ensureModuleContextBodyPopulated();
+
         toggle?.addEventListener('click', (e) => {
           e.stopPropagation();
           const expanded = toggle.getAttribute('aria-expanded') === 'true';
-          toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
-          if (body) body.hidden = expanded;
-          if (!expanded && body && body.childElementCount === 0) {
-            const rows = buildRangeDisplayRows(
-              fileMeta.moduleChangedRanges,
-              sourceLinesByFile[fn.file] || [],
-              diffLinesByFile[fn.file] || [],
-              new Set(fileMeta.moduleExcludedLineNumbers || [])
-            );
-            const lines = document.createElement('div');
-            lines.className = 'module-context-lines';
-            renderDiffRows(lines, fn.file, rows, prContext);
-            body.appendChild(lines);
-          }
+          const next = !expanded;
+          toggle.setAttribute('aria-expanded', next ? 'true' : 'false');
+          if (body) body.hidden = !next;
+          if (next) ensureModuleContextBodyPopulated();
+          if (next) moduleContextExpandedKeys.add(expandedKey);
+          else moduleContextExpandedKeys.delete(expandedKey);
         });
         fileBlock.prepend(ctx);
       }
@@ -389,6 +495,19 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
 
   const pathFunctionIds = getPathFunctionIds(pathPrefix);
   const sourceLines = sourceLinesByFile[fn.file] || [];
+
+  // If we don't have any source or diff lines for this file/function (e.g. it wasn't in the git diff),
+  // still show at least a best-effort function definition line so the block is never empty.
+  if (!sourceLines.length && !(diffLinesByFile[fn.file] || []).length) {
+    const body = document.createElement('div');
+    body.className = 'function-body';
+    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigHtml = highlightPython(sigSource);
+    body.innerHTML = `<pre class="code-line"><code class="language-python">${sigHtml}</code></pre>`;
+    container.appendChild(body);
+    return;
+  }
+
   const fnDiffLines = buildFunctionDisplayRows(fn, sourceLines, diffLinesByFile[fn.file] || []);
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
   const calleesForFind = [...new Map(calleesWithIndex.map((e) => [e.calleeId, { calleeId: e.calleeId, name: payload.functionsById[e.calleeId]?.name }])).values()].filter((x) => x.name);
@@ -443,12 +562,9 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
     }
 
     const lineNum = rowData.newLineNumber ?? rowData.oldLineNumber;
-    const lineLink = prContext && lineNum != null && rowData.type !== 'del'
-      ? `https://github.com/${prContext.owner}/${prContext.repo}/blob/${prContext.headSha}/${fn.file}#L${lineNum}`
-      : '';
     const oldNumHtml = rowData.oldLineNumber != null ? String(rowData.oldLineNumber) : '';
     const newNumHtml = rowData.newLineNumber != null
-      ? (lineLink ? `<a href="${escapeHtml(lineLink)}" target="_blank" rel="noopener" class="diff-num-link" title="Open on GitHub">${rowData.newLineNumber}</a>` : String(rowData.newLineNumber))
+      ? String(rowData.newLineNumber)
       : '';
     const row = document.createElement('div');
     row.className = `diff-line diff-line-${rowData.type}`;
@@ -464,52 +580,27 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       const treeNodeKey = el.dataset.treeNodeKey;
       const isRecursive = el.dataset.recursive === 'true';
       const callee = payload.functionsById[calleeId];
-      const isExpanded = treeNodeKey ? uiState.expandedTreeNodeIds.has(treeNodeKey) : false;
-      const isActive = treeNodeKey ? uiState.activeTreeNodeKey === treeNodeKey : uiState.activeFunctionId === calleeId;
-      const isHovered = treeNodeKey && uiState.hoveredTreeNodeKey === treeNodeKey;
+      const isActive =
+        uiState.activeFunctionId === calleeId ||
+        (treeNodeKey && uiState.activeTreeNodeKey === treeNodeKey);
       if (isRecursive) {
+        el.title = `Go to ${callee?.name || calleeId} (recursive, already above)`;
         el.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
+          setActiveFunction(calleeId, null);
         });
         return;
       }
       if (isActive) el.classList.add('active');
-      if (isHovered) el.classList.add('hovered');
-      el.title = `Click to ${isExpanded ? 'collapse' : 'expand'} ${callee?.name || calleeId}`;
+      el.title = `Go to ${callee?.name || calleeId}`;
       el.addEventListener('click', (e) => {
         e.stopPropagation();
         setActiveFunction(calleeId, treeNodeKey);
-        if (treeNodeKey) toggleExpandedTreeNode(treeNodeKey);
       });
     });
 
     container.appendChild(row);
-
-    for (const site of sites) {
-      if (pathFunctionIds.has(site.calleeId)) continue;
-      const treeNodeKey = site.callIndex !== undefined ? `${pathPrefix}/e:${fn.id}:${site.callIndex}:${site.calleeId}` : '';
-      const callee = payload.functionsById[site.calleeId];
-      if (!callee || !treeNodeKey || !uiState.expandedTreeNodeIds.has(treeNodeKey)) continue;
-
-      const inlineBlock = document.createElement('div');
-      inlineBlock.className = 'inline-callee function-block';
-      inlineBlock.dataset.treeNodeKey = treeNodeKey;
-      inlineBlock.dataset.file = callee.file;
-      if (callee.changeType) inlineBlock.dataset.changeType = callee.changeType;
-      if (uiState.activeTreeNodeKey === treeNodeKey) inlineBlock.classList.add('active');
-      if (uiState.hoveredTreeNodeKey === treeNodeKey) inlineBlock.classList.add('hovered');
-      inlineBlock.dataset.functionId = site.calleeId;
-      const label = document.createElement('div');
-      label.className = 'inline-callee-label';
-      label.textContent = '↳';
-      inlineBlock.appendChild(label);
-      const innerContainer = document.createElement('div');
-      innerContainer.className = 'inline-callee-body';
-      renderFunctionBody(innerContainer, payload, uiState, callee, sourceLinesByFile, diffLinesByFile, filesWithModuleContext, moduleMetaByFile, calleesByCaller, indent, treeNodeKey, prContext);
-      inlineBlock.appendChild(innerContainer);
-      container.appendChild(inlineBlock);
-    }
   }
 }
 
@@ -524,6 +615,10 @@ export function renderCodeView(container) {
 
   const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId);
   const flowFnIds = selectedFlow ? getFlowFunctionIds(selectedFlow, flowPayload) : new Set();
+  if (selectedFlow?.id !== moduleContextFlowId) {
+    moduleContextFlowId = selectedFlow?.id ?? null;
+    moduleContextExpandedKeys = new Set();
+  }
 
   if (flowFnIds.size === 0) {
     container.textContent = 'Select a flow.';
@@ -556,43 +651,184 @@ export function renderCodeView(container) {
   const root = flowPayload.functionsById[selectedFlow.rootId];
   if (!root) return;
 
-  const rootPath = `root:${root.id}`;
+  const flowOrder = collectFlowOrder(selectedFlow.rootId, flowPayload);
   const fileSection = document.createElement('div');
   fileSection.className = 'file-section';
-  // File header omitted; file context is shown within blocks.
 
-  // Module context sections are inserted lazily per file block in renderFunctionBody,
-  // so inline callees in other files also get a scroll target.
+  for (const { treeNodeKey, functionId } of flowOrder) {
+    const fn = flowPayload.functionsById[functionId];
+    if (!fn) continue;
+    const block = document.createElement('div');
+    block.className = 'function-block' + (functionId === root.id ? ' root' : '');
+    block.dataset.functionId = functionId;
+    block.dataset.treeNodeKey = treeNodeKey;
+    block.dataset.file = fn.file;
+    if (fn.changeType) block.dataset.changeType = fn.changeType;
+    const isActive =
+      uiState.activeFunctionId === functionId ||
+      uiState.activeTreeNodeKey === treeNodeKey;
+    const isRead = uiState.readFunctionIds?.has?.(functionId);
+    const isCollapsed = uiState.collapsedFunctionIds?.has?.(functionId);
+    if (isActive) block.classList.add('active');
+    if (isRead) block.classList.add('read');
+    if (isCollapsed) block.classList.add('collapsed');
 
-  const rootBlock = document.createElement('div');
-  rootBlock.className = 'function-block root';
-  rootBlock.dataset.functionId = root.id;
-  rootBlock.dataset.treeNodeKey = rootPath;
-  rootBlock.dataset.file = root.file;
-  if (root.changeType) rootBlock.dataset.changeType = root.changeType;
-  if (uiState.activeTreeNodeKey === rootPath) rootBlock.classList.add('active');
-  if (uiState.hoveredTreeNodeKey === rootPath) rootBlock.classList.add('hovered');
+    // Collapsible content wrapper (function body and caller info).
+    const content = document.createElement('div');
+    content.className = 'function-block-content' + (isCollapsed ? ' collapsed' : '');
+    block.appendChild(content);
 
-  renderFunctionBody(rootBlock, flowPayload, uiState, root, sourceLinesByFile, diffLinesByFile, filesWithModuleContext, moduleMetaByFile, calleesByCaller, '', rootPath, prContext);
-  fileSection.appendChild(rootBlock);
+    // Title shown only when collapsed, as a one-line function "signature" with syntax highlighting.
+    const titleRow = document.createElement('div');
+    titleRow.className = 'function-block-title';
+    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigHtml = highlightPython(sigSource);
+    // Use the highlighted HTML directly (Prism returns span-based markup, no box).
+    titleRow.innerHTML = sigHtml;
+    block.appendChild(titleRow);
+
+    const callerId = getCallerFromTreeNodeKey(treeNodeKey);
+    if (callerId) {
+      const caller = flowPayload.functionsById[callerId];
+      const callerName = caller?.name || callerId;
+      const parentKey = getParentTreeNodeKey(treeNodeKey);
+      const callerLine = document.createElement('div');
+      callerLine.className = 'function-block-caller';
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'function-block-caller-link';
+      link.textContent = `${callerName}()`;
+      link.title = 'Go to caller';
+      link.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setActiveFunction(callerId, parentKey);
+      });
+      callerLine.appendChild(document.createTextNode('Called from: '));
+      callerLine.appendChild(link);
+      content.appendChild(callerLine);
+    }
+
+    renderFunctionBody(
+      content,
+      flowPayload,
+      uiState,
+      fn,
+      sourceLinesByFile,
+      diffLinesByFile,
+      filesWithModuleContext,
+      moduleMetaByFile,
+      calleesByCaller,
+      '',
+      treeNodeKey,
+      prContext
+    );
+
+    // Attach checkbox-style "done/read" control into the existing header inside this block:
+    // prefer module-context header if present, otherwise file-name header.
+    const headerEl =
+      block.querySelector('.module-context-header') ||
+      block.querySelector('.file-name-header');
+    if (headerEl) {
+      const controls = document.createElement('div');
+      controls.className = 'function-block-header-controls';
+
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'function-block-toggle-btn';
+      const updateToggleLabel = () => {
+        const nowCollapsed = uiState.collapsedFunctionIds?.has?.(functionId);
+        toggleBtn.textContent = nowCollapsed ? '+' : '–';
+        toggleBtn.title = nowCollapsed ? 'Expand function body' : 'Collapse function body';
+        toggleBtn.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
+      };
+      updateToggleLabel();
+      toggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setFunctionCollapsedState(functionId);
+      });
+
+      const doneBtn = document.createElement('button');
+      doneBtn.type = 'button';
+      doneBtn.className = 'function-block-done-btn';
+      doneBtn.textContent = '✓';
+      const updateDoneLabel = () => {
+        const nowRead = uiState.readFunctionIds?.has?.(functionId);
+        if (nowRead) {
+          doneBtn.classList.add('checked');
+          doneBtn.title = 'Marked as done (click to mark as not done)';
+          doneBtn.setAttribute('aria-pressed', 'true');
+        } else {
+          doneBtn.classList.remove('checked');
+          doneBtn.title = 'Mark this function as done/read';
+          doneBtn.setAttribute('aria-pressed', 'false');
+        }
+      };
+      updateDoneLabel();
+      doneBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setFunctionReadState(functionId);
+      });
+
+      controls.appendChild(toggleBtn);
+      controls.appendChild(doneBtn);
+      headerEl.appendChild(controls);
+    }
+    fileSection.appendChild(block);
+  }
   container.appendChild(fileSection);
 
-  const key = uiState.activeTreeNodeKey;
-  const isExpanded = key && uiState.expandedTreeNodeIds.has(key);
-  if (key && isExpanded && key !== lastScrolledToActiveKey) {
-    const el =
-      container.querySelector(
-        `.function-block[data-tree-node-key="${CSS.escape(key)}"], .inline-callee[data-tree-node-key="${CSS.escape(key)}"]`
-      ) ||
-      [...container.querySelectorAll('[data-tree-node-key]')].find((c) => c.dataset.treeNodeKey === key);
+  // Determine the current active code block, preferring the specific tree-node path
+  // when available so different occurrences of the same function scroll independently.
+  const activeTreeNodeKey = uiState.activeTreeNodeKey || null;
+  const activeFunctionId =
+    getFunctionIdFromTreeNodeKey(activeTreeNodeKey) || uiState.activeFunctionId;
+
+  // Build a stable key that distinguishes different occurrences of the same function.
+  const activeScrollKey = activeTreeNodeKey || (activeFunctionId ? `fn:${activeFunctionId}` : null);
+
+  // Only auto-center when the active target changes, so manual scrolling isn't
+  // constantly overridden on every store update (e.g., when updating "you are here").
+  if (activeScrollKey && activeScrollKey !== lastScrolledToActiveKey) {
+    let el = null;
+    if (activeTreeNodeKey) {
+      el = container.querySelector(
+        `.function-block[data-tree-node-key="${CSS.escape(activeTreeNodeKey)}"]`
+      );
+    }
+    if (!el && activeFunctionId) {
+      el = container.querySelector(
+        `.function-block[data-function-id="${CSS.escape(activeFunctionId)}"]`
+      );
+    }
     if (el) {
-      lastScrolledToActiveKey = key;
+      lastScrolledToActiveKey = activeScrollKey;
       requestAnimationFrame(() => {
         requestAnimationFrame(() => scrollToVerticalCenter(container, el));
       });
     }
   }
-  if (!uiState.activeTreeNodeKey) lastScrolledToActiveKey = null;
+  if (!activeScrollKey) lastScrolledToActiveKey = null;
 
-  applyFocusDimming(container, uiState);
+  // Explicitly mark the "you are here" function block in the code view,
+  // based on the function ID derived from the tree's inViewTreeNodeKey.
+  const inViewFnId =
+    getFunctionIdFromTreeNodeKey(uiState.inViewTreeNodeKey) || null;
+  if (inViewFnId) {
+    const inViewBlock = container.querySelector(
+      `.function-block[data-function-id="${CSS.escape(inViewFnId)}"]`
+    );
+    if (inViewBlock) inViewBlock.classList.add('in-view');
+  }
+
+  if (!container.dataset.scrollLinked) {
+    container.dataset.scrollLinked = '1';
+    container.addEventListener('scroll', () => {
+      if (scrollRAF) return;
+      scrollRAF = requestAnimationFrame(() => {
+        scrollRAF = null;
+        updateInViewFromScroll(container);
+      });
+    });
+  }
+  updateInViewFromScroll(container);
 }

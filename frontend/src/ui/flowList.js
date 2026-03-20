@@ -3,7 +3,7 @@
  * Test flows (file under tests/ or name starting with test_) are grouped under a "Tests" folder.
  */
 
-import { getState, setSelectedFlow } from '../state/store.js';
+import { getState, setSelectedFlow, setFlowListTestsExpanded } from '../state/store.js';
 import { isTestFunction } from '../parser/isTestFile.js';
 
 /**
@@ -27,7 +27,7 @@ function getFlowMetadata(flow, payload) {
     if (fn?.file) files.add(fn.file);
   }
   const depth = computeDepth(flow.rootId, payload.edges, new Set());
-  return { nodeCount: ids.size, files: Array.from(files), depth };
+  return { nodeCount: ids.size, ids, files: Array.from(files), depth };
 }
 
 function computeDepth(rootId, edges, visited) {
@@ -88,10 +88,37 @@ export function renderFlowList(container) {
     const metaEl = document.createElement('div');
     metaEl.className = 'flow-list-item-meta';
     const fileCountText = meta.files.length === 1 ? '1 file' : `${meta.files.length} files`;
-    metaEl.textContent = fileCountText;
-    if (meta.files.length > 0) {
-      metaEl.title = meta.files.join('\n');
+    const totalFns = meta.nodeCount || 0;
+    let doneFns = 0;
+    if (totalFns > 0 && uiState.readFunctionIds?.size) {
+      for (const id of meta.ids) {
+        if (uiState.readFunctionIds.has(id)) doneFns += 1;
+      }
     }
+    const pct = totalFns > 0 ? Math.round((doneFns / totalFns) * 100) : 0;
+
+    const barOuter = document.createElement('div');
+    barOuter.className = 'flow-progress-bar';
+    const barInner = document.createElement('div');
+    barInner.className = 'flow-progress-bar-fill';
+    barInner.style.width = `${pct}%`;
+    barOuter.appendChild(barInner);
+
+    const metaText = document.createElement('span');
+    metaText.className = 'flow-list-meta-text';
+    metaText.textContent = fileCountText;
+
+    metaEl.appendChild(metaText);
+    metaEl.appendChild(barOuter);
+
+    if (meta.files.length > 0) {
+      metaEl.title = `${meta.files.join('\n')}\n\nDone: ${doneFns}/${totalFns} (${pct}%)`;
+    }
+
+    if (pct === 100) {
+      item.classList.add('flow-list-item-complete');
+    }
+
     item.appendChild(metaEl);
 
     item.addEventListener('click', () => setSelectedFlow(flow.id, flow.rootId));
@@ -108,20 +135,23 @@ export function renderFlowList(container) {
     const header = document.createElement('button');
     header.type = 'button';
     header.className = 'flow-list-folder-header';
-    header.setAttribute('aria-expanded', 'false');
-    header.innerHTML = `<span class="flow-list-folder-icon">▸</span> Tests (${testFlows.length})`;
+    const testsExpanded = !!uiState.flowListTestsExpanded;
+    header.setAttribute('aria-expanded', testsExpanded ? 'true' : 'false');
+    header.innerHTML = `<span class="flow-list-folder-icon">${testsExpanded ? '▾' : '▸'}</span> Tests (${testFlows.length})`;
     header.title = 'Test flows (files under tests/ or names starting with test_)';
     const body = document.createElement('div');
     body.className = 'flow-list-folder-body';
-    body.hidden = true;
+    body.hidden = !testsExpanded;
     testFlows.forEach((entry) => appendFlowItem(body, entry));
     folder.appendChild(header);
     folder.appendChild(body);
     header.addEventListener('click', () => {
       const expanded = header.getAttribute('aria-expanded') === 'true';
-      header.setAttribute('aria-expanded', expanded ? 'false' : 'true');
-      body.hidden = expanded;
-      folder.querySelector('.flow-list-folder-icon').textContent = expanded ? '▸' : '▾';
+      const next = !expanded;
+      header.setAttribute('aria-expanded', next ? 'true' : 'false');
+      body.hidden = !next;
+      folder.querySelector('.flow-list-folder-icon').textContent = next ? '▾' : '▸';
+      setFlowListTestsExpanded(next);
     });
     list.appendChild(folder);
   }
