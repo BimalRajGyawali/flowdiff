@@ -30,6 +30,6 @@ npm test
 
 ## Structure
 
-- `frontend/` – Static app (HTML, CSS, vanilla JS)
-- `frontend/src/` – Main, UI, state, GitHub fetch, parser
+- `index.html` – App entry HTML (root)
+- `frontend/src/` – Main, UI, state, GitHub fetch, parser, styles
 - `test/` – Fixtures and smoke tests
