@@ -720,7 +720,8 @@ function appendFunctionBodyDiffLine(
   payload,
   uiState,
   pathFunctionIds,
-  calleesForFind
+  calleesForFind,
+  canonicalKeyByFunctionId
 ) {
   const line = rowData.content;
   const sites =
@@ -740,23 +741,23 @@ function appendFunctionBodyDiffLine(
       lineWithPlaceholders += (lastEnd === 0 ? indent : '') + line.slice(lastEnd, site.start);
       const ph = makePlaceholder(si);
       lineWithPlaceholders += ph;
-      const treeNodeKey = site.callIndex !== undefined ? `${pathPrefix}/e:${fn.id}:${site.callIndex}:${site.calleeId}` : '';
-      placeholders.push({ ...site, placeholder: ph, treeNodeKey });
+      placeholders.push({ ...site, placeholder: ph });
       lastEnd = site.end;
     }
     lineWithPlaceholders += line.slice(lastEnd);
     lineHtml = highlightPython(lineWithPlaceholders);
 
     for (let pi = 0; pi < placeholders.length; pi++) {
-      const { placeholder, calleeId, start, end, treeNodeKey } = placeholders[pi];
+      const { placeholder, calleeId, start, end } = placeholders[pi];
       const callText = line.slice(start, end);
       const isRecursive = pathFunctionIds.has(calleeId);
-      const dataKey = treeNodeKey && !isRecursive ? ` data-tree-node-key="${escapeHtml(treeNodeKey)}"` : '';
+      const navKey = canonicalKeyByFunctionId.get(calleeId) ?? '';
+      const dataKey = navKey ? ` data-tree-node-key="${escapeHtml(navKey)}"` : '';
       const recClass = isRecursive ? ' call-site-recursive' : '';
-      const title = isRecursive ? 'Recursive call — already shown in the path above' : 'Click to expand';
+      const title = isRecursive ? 'Jump to definition (already shown above in this flow)' : 'Go to function';
       const fnName = payload.functionsById[calleeId]?.name || calleeId;
       const recContent = isRecursive
-        ? `<span class="call-site-recursive-icon" aria-hidden="true">↻</span> ${escapeHtml(fnName)} <span class="call-site-recursive-hint">(recursive already above)</span>`
+        ? `<span class="call-site-recursive-icon" aria-hidden="true">↻</span> ${escapeHtml(fnName)} <span class="call-site-recursive-hint">(already above)</span>`
         : escapeHtml(callText);
       const callSpanHtml = `<span class="call-site${recClass}" data-callee-id="${escapeHtml(calleeId)}" data-recursive="${isRecursive}"${dataKey} title="${escapeHtml(title)}">${recContent}</span>`;
       lineHtml = lineHtml.replace(new RegExp(escapeRegex(placeholder), 'g'), callSpanHtml);
@@ -790,21 +791,23 @@ function appendFunctionBodyDiffLine(
     const isRecursive = el.dataset.recursive === 'true';
     const callee = payload.functionsById[calleeId];
     const isActive =
-      uiState.activeFunctionId === calleeId || (treeNodeKey && uiState.activeTreeNodeKey === treeNodeKey);
+      uiState.activeFunctionId === calleeId &&
+      (!treeNodeKey || !uiState.activeTreeNodeKey || uiState.activeTreeNodeKey === treeNodeKey);
     if (isRecursive) {
-      el.title = `Go to ${callee?.name || calleeId} (recursive, already above)`;
+      el.title = `Go to ${callee?.name || calleeId} (already shown above)`;
       el.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        setActiveFunction(calleeId, null);
+        setActiveFunction(calleeId, treeNodeKey || null);
       });
+      if (isActive) el.classList.add('active');
       return;
     }
     if (isActive) el.classList.add('active');
     el.title = `Go to ${callee?.name || calleeId}`;
     el.addEventListener('click', (e) => {
       e.stopPropagation();
-      setActiveFunction(calleeId, treeNodeKey);
+      setActiveFunction(calleeId, treeNodeKey || null);
     });
   });
 
@@ -942,6 +945,7 @@ function mountModuleContextSection(
  * @param {Set<string>} filesWithModuleContext - file paths that have module-scope changes
  * @param {Map<string, { moduleChangedRanges?: { start: number, end: number }[], moduleChangedSymbols?: string[] }>} moduleMetaByFile
  * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string } | null} [callSiteReturn]
+ * @param {Map<string, string>} canonicalKeyByFunctionId - first DFS tree key per function (matches code cards)
  */
 function renderFunctionBody(
   container,
@@ -957,7 +961,8 @@ function renderFunctionBody(
   pathPrefix,
   prContext,
   callSiteReturn,
-  collapsedMode = false
+  collapsedMode = false,
+  canonicalKeyByFunctionId = new Map()
 ) {
   const fileBlock = container.closest('[data-file]') || container;
 
@@ -1119,7 +1124,8 @@ function renderFunctionBody(
           payload,
           uiState,
           pathFunctionIds,
-          calleesForFind
+          calleesForFind,
+          canonicalKeyByFunctionId
         );
       }
       const persistenceKey = `${pathPrefix}::${fn.id}::ctx::${rowData.startLine}-${rowData.endLine}-${rowData.lineCount}`;
@@ -1138,7 +1144,8 @@ function renderFunctionBody(
       payload,
       uiState,
       pathFunctionIds,
-      calleesForFind
+      calleesForFind,
+      canonicalKeyByFunctionId
     );
   }
 
@@ -1212,6 +1219,10 @@ export function renderCodeView(container) {
   if (!root) return;
 
   const flowOrder = collectFlowOrder(selectedFlow.rootId, flowPayload);
+  /** First DFS key per function — matches each `.function-block[data-tree-node-key]`. */
+  const canonicalKeyByFunctionId = new Map(
+    flowOrder.map(({ functionId, treeNodeKey }) => [functionId, treeNodeKey])
+  );
   const fileSection = document.createElement('div');
   fileSection.className = 'file-section';
 
@@ -1309,7 +1320,8 @@ export function renderCodeView(container) {
       treeNodeKey,
       prContext,
       callSiteReturn,
-      isCollapsed
+      isCollapsed,
+      canonicalKeyByFunctionId
     );
 
     // Attach checkbox-style "done/read" control into the existing header inside this block:
