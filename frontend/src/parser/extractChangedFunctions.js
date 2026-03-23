@@ -56,10 +56,13 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
     // Decorators immediately above a `def` belong to the function, not module context.
     // This includes multi-line decorators where continuation lines are indented further.
     const decoratorLineNumbers = new Set();
+    const decoratorStartByDefLine = new Map();
     for (const d of defs) {
+      let decoratorStart = d.lineNum;
+      let seenDecoratorStart = false;
       // Walk upward from the line above `def`, collecting the contiguous decorator block:
       // - lines starting with '@' at the same indent as the def
-      // - any continuation lines more-indented than the def (e.g. decorator args split across lines)
+      // - continuation lines inside decorator arguments (indented lines and bare closing brackets)
       for (let idx = d.lineNum - 2; idx >= 0; idx--) {
         const text = sourceLines[idx] ?? '';
         if (text.trim().length === 0) break;
@@ -68,10 +71,36 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
 
         const isDecoratorStart = indentLen === d.indent && text.trimStart().startsWith('@');
         const isDecoratorContinuation = indentLen > d.indent;
+        const isDecoratorClosingLine = indentLen === d.indent && /^[)\]}]+,?\s*$/.test(text.trim());
 
-        if (!isDecoratorStart && !isDecoratorContinuation) break;
-        decoratorLineNumbers.add(idx + 1);
+        // Regular decorator line anchors the decorator block.
+        if (isDecoratorStart) {
+          seenDecoratorStart = true;
+          decoratorLineNumbers.add(idx + 1);
+          decoratorStart = idx + 1;
+          continue;
+        }
+
+        // Before seeing any '@', only allow a closing-bracket line (for multiline decorator args).
+        if (!seenDecoratorStart) {
+          if (isDecoratorClosingLine) {
+            decoratorLineNumbers.add(idx + 1);
+            decoratorStart = idx + 1;
+            continue;
+          }
+          break;
+        }
+
+        // After decorator block is anchored, allow continuation/closing lines.
+        if (isDecoratorContinuation || isDecoratorClosingLine) {
+          decoratorLineNumbers.add(idx + 1);
+          decoratorStart = idx + 1;
+          continue;
+        }
+
+        break;
       }
+      decoratorStartByDefLine.set(d.lineNum, decoratorStart);
     }
 
     /** @type {{ start: number, end: number }[]} */
@@ -79,6 +108,7 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
 
     for (let i = 0; i < defs.length; i++) {
       const { name, lineNum, snippet, indent, defAdded } = defs[i];
+      const startLine = decoratorStartByDefLine.get(lineNum) ?? lineNum;
       let endLine = fileEndLine;
       // Original heuristic for function boundaries: next def/class at same or lower indent.
       for (let j = lineNum; j < sourceLines.length; j++) {
@@ -93,13 +123,13 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
 
       // For module-context exclusion, treat the entire function span [startLine, endLine]
       // (including the def line) as "owned" by the function.
-      functionOwnedRanges.push({ start: lineNum, end: endLine });
+      functionOwnedRanges.push({ start: startLine, end: endLine });
 
       const hasAddedChange = visibleLines.some(
-        (line) => line.lineNumber >= lineNum && line.lineNumber <= endLine && line.added
+        (line) => line.lineNumber >= startLine && line.lineNumber <= endLine && line.added
       );
       const hasDeletedChange = visibleLines.some(
-        (line) => line.lineNumber >= lineNum && line.lineNumber <= endLine && line.touchedByDeletion
+        (line) => line.lineNumber >= startLine && line.lineNumber <= endLine && line.touchedByDeletion
       );
       const hasAnyChange = hasAddedChange || hasDeletedChange;
 
@@ -117,7 +147,7 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
         id,
         name,
         file: pf.path,
-        startLine: lineNum,
+        startLine,
         endLine,
         snippet: snippet ?? `def ${name}(`,
         changed: true,

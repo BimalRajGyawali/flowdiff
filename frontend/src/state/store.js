@@ -72,7 +72,7 @@ export function setFlowPayload(payload) {
     initialTree = keysToExpand;
   }
 
-   // Functions that participate in more than one flow are collapsed by default in the code view.
+  // Track functions that participate in more than one flow (used for shared-function hinting).
   // Payload flows exclude test roots (see buildFlows).
   const functionFlowCounts = new Map();
   for (const flow of payload.flows || []) {
@@ -92,7 +92,7 @@ export function setFlowPayload(payload) {
       functionFlowCounts.set(id, (functionFlowCounts.get(id) || 0) + 1);
     }
   }
-  const multiFlowCollapsedIds = new Set(
+  const multiFlowIds = new Set(
     [...functionFlowCounts.entries()]
       .filter(([, count]) => count > 1)
       .map(([id]) => id)
@@ -109,8 +109,9 @@ export function setFlowPayload(payload) {
     hoveredTreeNodeKey: null,
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
-    collapsedFunctionIds: multiFlowCollapsedIds,
-    multiFlowFunctionIds: new Set(multiFlowCollapsedIds),
+    // Do not auto-collapse shared functions; users reported this hides bodies unexpectedly.
+    collapsedFunctionIds: new Set(),
+    multiFlowFunctionIds: new Set(multiFlowIds),
   };
   flowTreeExpansionByFlowId.clear();
   notify();

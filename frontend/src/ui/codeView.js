@@ -161,6 +161,20 @@ function escapeRegex(s) {
 
 function highlightPython(code) {
   if (typeof window.Prism === 'undefined') return escapeHtml(code);
+
+  // Ensure decorators are consistently highlighted in the code pane.
+  const decMatch = code.match(/^(\s*)@([A-Za-z_][\w.]*)(.*)$/);
+  if (decMatch) {
+    const [, indent, decName, tail] = decMatch;
+    const tailHtml = window.Prism.highlight(tail, window.Prism.languages.python, 'python');
+    return (
+      escapeHtml(indent) +
+      '<span class="token decorator-at">@</span>' +
+      `<span class="token decorator-name">${escapeHtml(decName)}</span>` +
+      tailHtml
+    );
+  }
+
   return window.Prism.highlight(code, window.Prism.languages.python, 'python');
 }
 
@@ -415,6 +429,21 @@ function buildFunctionDisplayRows(fn, sourceLines, diffLines) {
     }
     return row.newLineNumber != null && row.newLineNumber >= fn.startLine && row.newLineNumber <= fn.endLine;
   });
+
+  // If we only have partial source for this file (e.g. fallback from patch-visible lines),
+  // avoid synthesizing blank context rows for out-of-range lines. Show raw diff rows instead.
+  if (sourceLines.length < fn.endLine) {
+    return relevantDiffLines;
+  }
+
+  // When a function is effectively "all deleted" in this range, render the patch
+  // rows directly instead of synthesizing from final source lines. This preserves
+  // visible '-' rows for fully removed bodies.
+  const hasDeleted = relevantDiffLines.some((row) => row.type === 'del');
+  const hasAdded = relevantDiffLines.some((row) => row.type === 'add');
+  if (hasDeleted && !hasAdded) {
+    return relevantDiffLines;
+  }
 
   const changeBlocksByAnchor = new Map();
   let currentBlock = [];
@@ -853,10 +882,11 @@ function mountModuleContextSection(
   const ctx = document.createElement('div');
   ctx.className = `module-context module-context--${slot}`;
   ctx.dataset.moduleContextSection = `${fn.file}::${fn.id}::${slot}`;
+  const showFileName = slot !== 'after';
   ctx.innerHTML = `
     <div class="module-context-header">
       <button type="button" class="module-context-toggle" aria-expanded="false" aria-controls="${escapeHtml(ctxId)}" title="${escapeHtml(titleText)}">${escapeHtml(buttonLabel)}</button>
-      <span class="module-context-file">${escapeHtml(baseName)}</span>
+      ${showFileName ? `<span class="module-context-file">${escapeHtml(baseName)}</span>` : ''}
       ${symText ? `<span class="module-context-syms" title="${escapeHtml(syms.join(', '))}">${escapeHtml(symText)}${escapeHtml(more)}</span>` : ''}
     </div>
     <div class="module-context-body" id="${escapeHtml(ctxId)}" hidden></div>
@@ -926,7 +956,8 @@ function renderFunctionBody(
   indent,
   pathPrefix,
   prContext,
-  callSiteReturn
+  callSiteReturn,
+  collapsedMode = false
 ) {
   const fileBlock = container.closest('[data-file]') || container;
 
@@ -978,6 +1009,34 @@ function renderFunctionBody(
   const pathFunctionIds = getPathFunctionIds(pathPrefix);
   const sourceLines = sourceLinesByFile[fn.file] || [];
 
+  if (collapsedMode) {
+    const body = document.createElement('div');
+    body.className = 'function-body';
+    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigHtml = highlightPython(sigSource);
+    body.innerHTML = `<pre class="code-line"><code class="language-python">${sigHtml}</code></pre>`;
+    container.appendChild(body);
+    if (rangesAfter.length && fileMeta) {
+      mountModuleContextSection(
+        container,
+        'end',
+        fileMeta,
+        rangesAfter,
+        fn,
+        sourceLinesByFile,
+        diffLinesByFile,
+        pathPrefix,
+        prContext,
+        'after',
+        'Module changes',
+        'Edits outside any function from after this function through the end of the file',
+        callSiteReturn
+      );
+    }
+    mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
+    return;
+  }
+
   // If we don't have any source or diff lines for this file/function (e.g. it wasn't in the git diff),
   // still show at least a best-effort function definition line so the block is never empty.
   if (!sourceLines.length && !(diffLinesByFile[fn.file] || []).length) {
@@ -1009,6 +1068,33 @@ function renderFunctionBody(
   }
 
   const fnDiffLines = buildFunctionDisplayRows(fn, sourceLines, diffLinesByFile[fn.file] || []);
+  if (fnDiffLines.length === 0) {
+    const body = document.createElement('div');
+    body.className = 'function-body';
+    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigHtml = highlightPython(sigSource);
+    body.innerHTML = `<pre class="code-line"><code class="language-python">${sigHtml}</code></pre>`;
+    container.appendChild(body);
+    if (rangesAfter.length && fileMeta) {
+      mountModuleContextSection(
+        container,
+        'end',
+        fileMeta,
+        rangesAfter,
+        fn,
+        sourceLinesByFile,
+        diffLinesByFile,
+        pathPrefix,
+        prContext,
+        'after',
+        'Module changes',
+        'Edits outside any function from after this function through the end of the file',
+        callSiteReturn
+      );
+    }
+    mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
+    return;
+  }
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
   const calleesForFind = [...new Map(calleesWithIndex.map((e) => [e.calleeId, { calleeId: e.calleeId, name: payload.functionsById[e.calleeId]?.name }])).values()].filter((x) => x.name);
   attachCallSitesToRows(fnDiffLines, calleesWithIndex, calleesForFind);
@@ -1149,17 +1235,45 @@ export function renderCodeView(container) {
 
     // Collapsible content wrapper (function body and caller info).
     const content = document.createElement('div');
-    content.className = 'function-block-content' + (isCollapsed ? ' collapsed' : '');
+    content.className = 'function-block-content';
     block.appendChild(content);
 
-    // Title shown only when collapsed, as a one-line function "signature" with syntax highlighting.
-    const titleRow = document.createElement('div');
-    titleRow.className = 'function-block-title';
-    const sigSource = fn.snippet || `def ${fn.name}(`;
-    const sigHtml = highlightPython(sigSource);
-    // Use the highlighted HTML directly (Prism returns span-based markup, no box).
-    titleRow.innerHTML = sigHtml;
-    block.appendChild(titleRow);
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'function-block-toggle-btn';
+    const updateToggleLabel = () => {
+      const nowCollapsed = uiState.collapsedFunctionIds?.has?.(functionId);
+      toggleBtn.textContent = nowCollapsed ? '+' : '–';
+      toggleBtn.title = nowCollapsed ? 'Expand function body' : 'Collapse function body';
+      toggleBtn.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
+    };
+    updateToggleLabel();
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setFunctionCollapsedState(functionId);
+    });
+
+    const doneBtn = document.createElement('button');
+    doneBtn.type = 'button';
+    doneBtn.className = 'function-block-done-btn';
+    doneBtn.textContent = '✓';
+    const updateDoneLabel = () => {
+      const nowRead = uiState.readFunctionIds?.has?.(functionId);
+      if (nowRead) {
+        doneBtn.classList.add('checked');
+        doneBtn.title = 'Marked as done (click to mark as not done)';
+        doneBtn.setAttribute('aria-pressed', 'true');
+      } else {
+        doneBtn.classList.remove('checked');
+        doneBtn.title = 'Mark this function as done/read';
+        doneBtn.setAttribute('aria-pressed', 'false');
+      }
+    };
+    updateDoneLabel();
+    doneBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setFunctionReadState(functionId);
+    });
 
     // Prefer the currently active path-key when it points at this function
     // (e.g. arrived via call-site click from a specific caller occurrence).
@@ -1194,7 +1308,8 @@ export function renderCodeView(container) {
       '',
       treeNodeKey,
       prContext,
-      callSiteReturn
+      callSiteReturn,
+      isCollapsed
     );
 
     // Attach checkbox-style "done/read" control into the existing header inside this block:
@@ -1205,46 +1320,18 @@ export function renderCodeView(container) {
     if (headerEl) {
       const controls = document.createElement('div');
       controls.className = 'function-block-header-controls';
-
-      const toggleBtn = document.createElement('button');
-      toggleBtn.type = 'button';
-      toggleBtn.className = 'function-block-toggle-btn';
-      const updateToggleLabel = () => {
-        const nowCollapsed = uiState.collapsedFunctionIds?.has?.(functionId);
-        toggleBtn.textContent = nowCollapsed ? '+' : '–';
-        toggleBtn.title = nowCollapsed ? 'Expand function body' : 'Collapse function body';
-        toggleBtn.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
-      };
-      updateToggleLabel();
-      toggleBtn.addEventListener('click', (e) => {
+      const headerToggleBtn = toggleBtn.cloneNode(true);
+      const headerDoneBtn = doneBtn.cloneNode(true);
+      headerToggleBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         setFunctionCollapsedState(functionId);
       });
-
-      const doneBtn = document.createElement('button');
-      doneBtn.type = 'button';
-      doneBtn.className = 'function-block-done-btn';
-      doneBtn.textContent = '✓';
-      const updateDoneLabel = () => {
-        const nowRead = uiState.readFunctionIds?.has?.(functionId);
-        if (nowRead) {
-          doneBtn.classList.add('checked');
-          doneBtn.title = 'Marked as done (click to mark as not done)';
-          doneBtn.setAttribute('aria-pressed', 'true');
-        } else {
-          doneBtn.classList.remove('checked');
-          doneBtn.title = 'Mark this function as done/read';
-          doneBtn.setAttribute('aria-pressed', 'false');
-        }
-      };
-      updateDoneLabel();
-      doneBtn.addEventListener('click', (e) => {
+      headerDoneBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         setFunctionReadState(functionId);
       });
-
-      controls.appendChild(toggleBtn);
-      controls.appendChild(doneBtn);
+      controls.appendChild(headerToggleBtn);
+      controls.appendChild(headerDoneBtn);
       headerEl.appendChild(controls);
     }
     fileSection.appendChild(block);

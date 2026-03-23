@@ -211,6 +211,34 @@ test('extractChangedFunctions marks functions with deletions as modified', () =>
   assert(fn.changeType === 'modified', 'function with deletions marked modified');
 });
 
+test('extractChangedFunctions includes decorators in function span', () => {
+  const path = 'pkg/decorators.py';
+  const content = [
+    '@retry(',
+    '    times=3,',
+    ')',
+    '@logged',
+    'def worker():',
+    '    return 1',
+    ''
+  ].join('\n');
+  const diff = [
+    'diff --git a/pkg/decorators.py b/pkg/decorators.py',
+    '--- a/pkg/decorators.py',
+    '+++ b/pkg/decorators.py',
+    '@@ -2,1 +2,1 @@',
+    '-    times=2,',
+    '+    times=3,',
+    ''
+  ].join('\n');
+  const parsed = parseDiff(diff);
+  const { functionsById } = extractChangedFunctions(parsed, { [path]: content });
+  const fn = functionsById[`${path}:worker`];
+  assert(fn, 'decorated function detected');
+  assert(fn.startLine === 1, 'function startLine includes top decorator line');
+  assert(fn.endLine >= 6, 'function span still includes body');
+});
+
 test('augmentCallersInFunctionsById roots flow at unchanged caller of changed callee', () => {
   const modPath = 'pkg/mod.py';
   const fullFile = ['def run():', '    helper()', '', 'def helper():', '    x = 2', ''].join('\n');

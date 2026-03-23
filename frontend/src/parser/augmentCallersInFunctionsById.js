@@ -29,7 +29,8 @@ export function augmentCallersInFunctionsById(functionsById, fileContentsByPath)
     for (const c of changedInFile) {
       const callRe = new RegExp(`\\b${escapeRe(c.name)}\\s*\\(`);
       for (const d of allDefs) {
-        if (d.name === c.name && d.startLine === c.startLine) continue;
+        // Changed functions may include decorators in startLine; match by function extent.
+        if (d.name === c.name && d.endLine === c.endLine) continue;
 
         const body = sourceLines.slice(d.startLine - 1, d.endLine).join('\n');
         if (!callRe.test(body)) continue;

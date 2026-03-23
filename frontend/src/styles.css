@@ -688,23 +688,6 @@ body {
 /* (no "you are here" styling in code view; flow tree owns that indicator) */
 
 .function-block-title {
-  font-size: 12px;
-  font-weight: 400;
-  padding: 4px 16px 4px;
-  color: #111827;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: none;
-}
-
-.function-block.collapsed .function-block-title {
-  display: block;
-}
-
-/* (no extra box; title row is just plain text when collapsed) */
-
-.function-block-content.collapsed {
   display: none;
 }
 
@@ -1128,6 +1111,14 @@ body {
 
 .code-pane .token.function,
 .code-pane .token.class-name {
+  color: #8250df;
+}
+
+.code-pane .token.decorator-at {
+  color: #cf222e;
+}
+
+.code-pane .token.decorator-name {
   color: #8250df;
 }
 
