@@ -4,10 +4,13 @@
  */
 
 import { getState, setActiveFunction, setInViewTreeNodeKey, setFunctionReadState, setFunctionCollapsedState } from '../state/store.js';
+import { normalizeMergedPatchDiffLines } from '../parser/mergeDiffArtifacts.js';
 
 let lastScrolledToActiveKey = null;
 let scrollRAF = null;
 let moduleContextExpandedKeys = new Set();
+/** Expanded "unchanged lines" collapse toggles; survives scroll-driven re-renders. */
+let ctxCollapseExpandedKeys = new Set();
 let moduleContextFlowId = null;
 
 function updateInViewFromScroll(container) {
@@ -164,8 +167,143 @@ function applyIntralineHighlight(text, range, cls) {
   return `${a}<span class="${cls}">${b}</span>${c}`;
 }
 
+/** True when diff pairing produced a non-empty replace span (vs whole-line add/del). */
+function hasMeaningfulIntraline(range) {
+  return !!(range && range.end > range.start);
+}
+
+/** Minimum consecutive unchanged (`ctx`) lines before collapsing the middle (GitHub-style). */
+const CTX_COLLAPSE_MIN_RUN = 10;
+/** Lines of context kept visible above / below a collapsed block. */
+const CTX_COLLAPSE_HEAD_LINES = 3;
+const CTX_COLLAPSE_TAIL_LINES = 3;
+
+/**
+ * Split long runs of context rows: show head/tail, collapse the middle behind a toggle.
+ * @param {any[]} rows
+ * @returns {any[]}
+ */
+function expandContextCollapseRows(rows) {
+  const out = [];
+  let i = 0;
+  while (i < rows.length) {
+    const row = rows[i];
+    if (row.type !== 'ctx') {
+      out.push(row);
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < rows.length && rows[j].type === 'ctx') j++;
+    const run = rows.slice(i, j);
+    if (run.length < CTX_COLLAPSE_MIN_RUN) {
+      out.push(...run);
+    } else {
+      const h = CTX_COLLAPSE_HEAD_LINES;
+      const t = CTX_COLLAPSE_TAIL_LINES;
+      if (run.length <= h + t) {
+        out.push(...run);
+      } else {
+        const head = run.slice(0, h);
+        const tail = run.slice(-t);
+        const hidden = run.slice(h, run.length - t);
+        out.push(...head);
+        out.push({
+          type: 'ctx-collapse',
+          hiddenRows: hidden,
+          lineCount: hidden.length,
+          startLine: hidden[0]?.newLineNumber ?? hidden[0]?.oldLineNumber,
+          endLine: hidden[hidden.length - 1]?.newLineNumber ?? hidden[hidden.length - 1]?.oldLineNumber
+        });
+        out.push(...tail);
+      }
+    }
+    i = j;
+  }
+  return out;
+}
+
+function ctxCollapseHoverText(n, startLine, endLine, expanded) {
+  const range =
+    startLine != null && endLine != null ? ` (lines ${startLine}–${endLine})` : '';
+  const noun = n === 1 ? 'line' : 'lines';
+  return expanded
+    ? `Hide ${n} unchanged ${noun}${range}`
+    : `Show ${n} unchanged ${noun}${range}`;
+}
+
+function ctxCollapseAriaLabel(n, startLine, endLine, expanded) {
+  const range =
+    startLine != null && endLine != null ? ` Lines ${startLine} to ${endLine}.` : '';
+  const noun = n === 1 ? 'line' : 'lines';
+  return expanded
+    ? `Collapse ${n} unchanged ${noun}.${range}`
+    : `Expand ${n} unchanged ${noun}.${range}`;
+}
+
+/**
+ * Minimal visible label; full wording only in title / aria (easier to read past).
+ * @param {HTMLButtonElement} btn
+ * @param {HTMLElement} body
+ * @param {{ lineCount: number, startLine?: number, endLine?: number }} rowData
+ * @param {string | null} persistenceKey - if null, toggle is not remembered across re-renders
+ */
+function setupCtxCollapseToggle(btn, body, rowData, persistenceKey) {
+  const n = rowData.lineCount;
+  const { startLine, endLine } = rowData;
+
+  function applyView(expanded) {
+    body.hidden = !expanded;
+    btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    btn.textContent = expanded ? '▲' : `⋯ ${n}`;
+    btn.title = ctxCollapseHoverText(n, startLine, endLine, expanded);
+    btn.setAttribute('aria-label', ctxCollapseAriaLabel(n, startLine, endLine, expanded));
+  }
+
+  const expanded = !!(persistenceKey && ctxCollapseExpandedKeys.has(persistenceKey));
+  applyView(expanded);
+
+  btn.addEventListener('click', () => {
+    const isOpen = btn.getAttribute('aria-expanded') === 'true';
+    const next = !isOpen;
+    applyView(next);
+    if (persistenceKey) {
+      if (next) ctxCollapseExpandedKeys.add(persistenceKey);
+      else ctxCollapseExpandedKeys.delete(persistenceKey);
+    }
+  });
+}
+
+/**
+ * Assigns call-site indices in source order so collapsed context does not steal indices from later lines.
+ * Mutates rows with `_sites` (empty for `del`).
+ * @param {any[]} rows
+ * @param {{ calleeId: string, callIndex: number }[]} calleesWithIndex
+ * @param {{ calleeId: string, name: string }[]} calleesForFind
+ */
+function attachCallSitesToRows(rows, calleesWithIndex, calleesForFind) {
+  const remainingByCallee = new Map();
+  for (const { calleeId, callIndex } of calleesWithIndex) {
+    if (!remainingByCallee.has(calleeId)) remainingByCallee.set(calleeId, []);
+    remainingByCallee.get(calleeId).push(callIndex);
+  }
+  for (const rowData of rows) {
+    if (rowData.type === 'del') {
+      rowData._sites = [];
+      continue;
+    }
+    const line = rowData.content;
+    const sites = findCallSitesInLine(line, calleesForFind);
+    for (const site of sites) {
+      const indices = remainingByCallee.get(site.calleeId);
+      if (indices?.length) site.callIndex = indices.shift();
+    }
+    rowData._sites = sites;
+  }
+}
+
 function buildDiffLines(hunks) {
-  const diffLines = [];
+  let diffLines = [];
 
   for (const hunk of hunks || []) {
     let oldLineNumber = hunk.oldStart;
@@ -207,6 +345,8 @@ function buildDiffLines(hunks) {
       newLineNumber += 1;
     }
   }
+
+  diffLines = normalizeMergedPatchDiffLines(diffLines);
 
   // GitHub-style intraline highlighting for "replace" blocks (runs of - then +).
   // We only attempt a simple prefix/suffix based range per paired line.
@@ -324,8 +464,10 @@ function buildRangeDisplayRows(ranges, sourceLines, diffLines, excludedLineNumbe
 
   const rows = [];
   for (const r of ranges) {
-    // Include any diff rows anchored in this range.
+    // Only del/add from the patch; context comes from sourceLines below. Including raw `ctx`
+    // rows here duplicated every unchanged line (ctx row + synthetic ctx for the same number).
     for (const row of relevantDiffLines) {
+      if (row.type === 'ctx') continue;
       const anchor = row.type === 'del' ? (row.anchorNewLineNumber ?? 0) : (row.newLineNumber ?? 0);
       if (anchor >= r.start && anchor <= r.end) rows.push(row);
     }
@@ -343,31 +485,65 @@ function buildRangeDisplayRows(ranges, sourceLines, diffLines, excludedLineNumbe
   return rows.sort((a, b) => key(a) - key(b));
 }
 
-function renderDiffRows(container, filePath, rows, prContext) {
-  for (const rowData of rows) {
-    const line = rowData.content;
-    const lineHtml =
-      rowData.type === 'add'
+/**
+ * One diff row for module-context / plain views (no call-site links).
+ * @param {HTMLElement} container
+ */
+function appendPlainDiffRow(container, rowData) {
+  const line = rowData.content;
+  const lineHtml =
+    rowData.type === 'add'
+      ? hasMeaningfulIntraline(rowData.intraline)
         ? applyIntralineHighlight(line, rowData.intraline, 'intraline intraline-add')
-        : rowData.type === 'del'
+        : highlightPython(line)
+      : rowData.type === 'del'
+        ? hasMeaningfulIntraline(rowData.intraline)
           ? applyIntralineHighlight(line, rowData.intraline, 'intraline intraline-del')
-          : highlightPython(line);
+          : highlightPython(line)
+        : highlightPython(line);
 
-    const lineNum = rowData.newLineNumber ?? rowData.oldLineNumber;
-    const oldNumHtml = rowData.oldLineNumber != null ? String(rowData.oldLineNumber) : '';
-    const newNumHtml = rowData.newLineNumber != null
-      ? String(rowData.newLineNumber)
-      : '';
+  const oldNumHtml = rowData.oldLineNumber != null && rowData.oldLineNumber !== '' ? String(rowData.oldLineNumber) : '';
+  const newNumHtml = rowData.newLineNumber != null ? String(rowData.newLineNumber) : '';
 
-    const row = document.createElement('div');
-    row.className = `diff-line diff-line-${rowData.type}`;
-    row.innerHTML = `
-      <span class="diff-num diff-num-${rowData.type}">${oldNumHtml}</span>
-      <span class="diff-num diff-num-${rowData.type}">${newNumHtml}</span>
-      <span class="diff-sign diff-sign-${rowData.type}">${rowData.type === 'add' ? '+' : rowData.type === 'del' ? '-' : ''}</span>
-      <pre class="diff-code diff-code-${rowData.type}"><code class="language-python">${lineHtml}</code></pre>
-    `;
-    container.appendChild(row);
+  const row = document.createElement('div');
+  row.className = `diff-line diff-line-${rowData.type}`;
+  row.innerHTML = `
+    <span class="diff-num diff-num-${rowData.type}">${oldNumHtml}</span>
+    <span class="diff-num diff-num-${rowData.type}">${newNumHtml}</span>
+    <span class="diff-sign diff-sign-${rowData.type}">${rowData.type === 'add' ? '+' : rowData.type === 'del' ? '-' : ''}</span>
+    <pre class="diff-code diff-code-${rowData.type}"><code class="language-python">${lineHtml}</code></pre>
+  `;
+  container.appendChild(row);
+}
+
+/**
+ * @param {string | null} [collapseScopeKey] - prefix for persisting expand state (e.g. module-context scope)
+ */
+function renderDiffRows(container, filePath, rows, prContext, collapseScopeKey = null) {
+  const toRender = expandContextCollapseRows(rows);
+  for (const rowData of toRender) {
+    if (rowData.type === 'ctx-collapse') {
+      const wrap = document.createElement('div');
+      wrap.className = 'diff-ctx-collapse';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'diff-ctx-collapse-btn';
+      const body = document.createElement('div');
+      body.className = 'diff-ctx-collapse-body';
+      for (const hr of rowData.hiddenRows) {
+        appendPlainDiffRow(body, hr);
+      }
+      const persistenceKey =
+        collapseScopeKey != null && collapseScopeKey !== ''
+          ? `${collapseScopeKey}::ctx::${rowData.startLine}-${rowData.endLine}-${rowData.lineCount}`
+          : null;
+      setupCtxCollapseToggle(btn, body, rowData, persistenceKey);
+      wrap.appendChild(btn);
+      wrap.appendChild(body);
+      container.appendChild(wrap);
+      continue;
+    }
+    appendPlainDiffRow(container, rowData);
   }
 }
 
@@ -473,6 +649,225 @@ function findCallSitesInLine(line, callees) {
 }
 
 /**
+ * Renders one diff row in a function body (syntax highlight + optional call-site links).
+ * @param {HTMLElement} container
+ */
+function appendFunctionBodyDiffLine(
+  container,
+  rowData,
+  indent,
+  pathPrefix,
+  fn,
+  payload,
+  uiState,
+  pathFunctionIds,
+  calleesForFind
+) {
+  const line = rowData.content;
+  const sites =
+    rowData.type === 'del'
+      ? []
+      : (rowData._sites ?? findCallSitesInLine(line, calleesForFind));
+
+  let lineHtml;
+  const placeholders = [];
+
+  // Call-site links on added lines too (previously only context lines used the placeholder path).
+  if (rowData.type !== 'del' && sites.length > 0) {
+    let lineWithPlaceholders = '';
+    let lastEnd = 0;
+    for (let si = 0; si < sites.length; si++) {
+      const site = sites[si];
+      lineWithPlaceholders += (lastEnd === 0 ? indent : '') + line.slice(lastEnd, site.start);
+      const ph = makePlaceholder(si);
+      lineWithPlaceholders += ph;
+      const treeNodeKey = site.callIndex !== undefined ? `${pathPrefix}/e:${fn.id}:${site.callIndex}:${site.calleeId}` : '';
+      placeholders.push({ ...site, placeholder: ph, treeNodeKey });
+      lastEnd = site.end;
+    }
+    lineWithPlaceholders += line.slice(lastEnd);
+    lineHtml = highlightPython(lineWithPlaceholders);
+
+    for (let pi = 0; pi < placeholders.length; pi++) {
+      const { placeholder, calleeId, start, end, treeNodeKey } = placeholders[pi];
+      const callText = line.slice(start, end);
+      const isRecursive = pathFunctionIds.has(calleeId);
+      const dataKey = treeNodeKey && !isRecursive ? ` data-tree-node-key="${escapeHtml(treeNodeKey)}"` : '';
+      const recClass = isRecursive ? ' call-site-recursive' : '';
+      const title = isRecursive ? 'Recursive call — already shown in the path above' : 'Click to expand';
+      const fnName = payload.functionsById[calleeId]?.name || calleeId;
+      const recContent = isRecursive
+        ? `<span class="call-site-recursive-icon" aria-hidden="true">↻</span> ${escapeHtml(fnName)} <span class="call-site-recursive-hint">(recursive already above)</span>`
+        : escapeHtml(callText);
+      const callSpanHtml = `<span class="call-site${recClass}" data-callee-id="${escapeHtml(calleeId)}" data-recursive="${isRecursive}"${dataKey} title="${escapeHtml(title)}">${recContent}</span>`;
+      lineHtml = lineHtml.replace(new RegExp(escapeRegex(placeholder), 'g'), callSpanHtml);
+    }
+  } else if (rowData.type === 'add') {
+    lineHtml = hasMeaningfulIntraline(rowData.intraline)
+      ? applyIntralineHighlight(indent + line, rowData.intraline, 'intraline intraline-add')
+      : highlightPython(indent + line);
+  } else if (rowData.type === 'del') {
+    lineHtml = hasMeaningfulIntraline(rowData.intraline)
+      ? applyIntralineHighlight(indent + line, rowData.intraline, 'intraline intraline-del')
+      : highlightPython(indent + line);
+  } else {
+    lineHtml = highlightPython(indent + line);
+  }
+
+  const oldNumHtml = rowData.oldLineNumber != null && rowData.oldLineNumber !== '' ? String(rowData.oldLineNumber) : '';
+  const newNumHtml = rowData.newLineNumber != null ? String(rowData.newLineNumber) : '';
+  const row = document.createElement('div');
+  row.className = `diff-line diff-line-${rowData.type}`;
+  row.innerHTML = `
+    <span class="diff-num diff-num-${rowData.type}">${oldNumHtml}</span>
+    <span class="diff-num diff-num-${rowData.type}">${newNumHtml}</span>
+    <span class="diff-sign diff-sign-${rowData.type}">${rowData.type === 'add' ? '+' : rowData.type === 'del' ? '-' : ''}</span>
+    <pre class="diff-code diff-code-${rowData.type}"><code class="language-python">${lineHtml}</code></pre>
+  `;
+
+  row.querySelectorAll('.call-site').forEach((el) => {
+    const calleeId = el.dataset.calleeId;
+    const treeNodeKey = el.dataset.treeNodeKey;
+    const isRecursive = el.dataset.recursive === 'true';
+    const callee = payload.functionsById[calleeId];
+    const isActive =
+      uiState.activeFunctionId === calleeId || (treeNodeKey && uiState.activeTreeNodeKey === treeNodeKey);
+    if (isRecursive) {
+      el.title = `Go to ${callee?.name || calleeId} (recursive, already above)`;
+      el.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setActiveFunction(calleeId, null);
+      });
+      return;
+    }
+    if (isActive) el.classList.add('active');
+    el.title = `Go to ${callee?.name || calleeId}`;
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setActiveFunction(calleeId, treeNodeKey);
+    });
+  });
+
+  container.appendChild(row);
+}
+
+/**
+ * Module-scope changed line ranges strictly before `startLine` (1-based def line).
+ * @param {{ start: number, end: number }[]} ranges
+ * @param {number} startLine
+ */
+function moduleRangesBeforeFunction(ranges, startLine) {
+  const out = [];
+  for (const r of ranges) {
+    if (r.end < startLine) out.push({ start: r.start, end: r.end });
+    else if (r.start < startLine) out.push({ start: r.start, end: startLine - 1 });
+  }
+  return out.filter((x) => x.start <= x.end);
+}
+
+/**
+ * Module-scope ranges strictly after `endLine` (1-based last line of function body).
+ */
+function moduleRangesAfterFunction(ranges, endLine) {
+  const out = [];
+  for (const r of ranges) {
+    if (r.start > endLine) out.push({ start: r.start, end: r.end });
+    else if (r.end > endLine) out.push({ start: endLine + 1, end: r.end });
+  }
+  return out.filter((x) => x.start <= x.end);
+}
+
+function moduleSymbolsInRanges(symbols, sourceLines, ranges) {
+  if (!symbols?.length || !ranges?.length) return [];
+  const hit = new Set();
+  for (const r of ranges) {
+    for (let ln = r.start; ln <= r.end; ln++) {
+      const text = sourceLines[ln - 1] ?? '';
+      if (/^\s+/.test(text)) continue;
+      const m = text.match(/^\s*([A-Za-z_]\w*)\s*=/);
+      if (m && symbols.includes(m[1])) hit.add(m[1]);
+    }
+  }
+  return [...hit].sort();
+}
+
+/**
+ * @param {'start' | 'end'} where - insert at start of container or append at end
+ */
+function mountModuleContextSection(
+  container,
+  where,
+  fileMeta,
+  ranges,
+  fn,
+  sourceLinesByFile,
+  diffLinesByFile,
+  pathPrefix,
+  prContext,
+  slot,
+  buttonLabel,
+  titleText
+) {
+  if (!ranges?.length) return;
+  const expandedKey = `${pathPrefix}::${fn.file}::module-${slot}::${fn.id}`;
+  const ctxId = `module-ctx-${slot}-${String(fn.id).replace(/[^a-zA-Z0-9]+/g, '_').slice(0, 96)}`;
+  const baseName = fn.file.replace(/^.*\//, '');
+  const sourceLines = sourceLinesByFile[fn.file] || [];
+  const syms = moduleSymbolsInRanges(fileMeta.moduleChangedSymbols || [], sourceLines, ranges);
+  const symText = syms.slice(0, 8).join(', ');
+  const more = syms.length > 8 ? ` (+${syms.length - 8} more)` : '';
+
+  const ctx = document.createElement('div');
+  ctx.className = `module-context module-context--${slot}`;
+  ctx.dataset.moduleContextSection = `${fn.file}::${fn.id}::${slot}`;
+  ctx.innerHTML = `
+    <div class="module-context-header">
+      <button type="button" class="module-context-toggle" aria-expanded="false" aria-controls="${escapeHtml(ctxId)}" title="${escapeHtml(titleText)}">${escapeHtml(buttonLabel)}</button>
+      <span class="module-context-file">${escapeHtml(baseName)}</span>
+      ${symText ? `<span class="module-context-syms" title="${escapeHtml(syms.join(', '))}">${escapeHtml(symText)}${escapeHtml(more)}</span>` : ''}
+    </div>
+    <div class="module-context-body" id="${escapeHtml(ctxId)}" hidden></div>
+  `;
+  const body = ctx.querySelector('.module-context-body');
+  const toggle = ctx.querySelector('.module-context-toggle');
+
+  const ensureModuleContextBodyPopulated = () => {
+    if (!body) return;
+    if (body.childElementCount > 0) return;
+    const rows = buildRangeDisplayRows(
+      ranges,
+      sourceLines,
+      diffLinesByFile[fn.file] || [],
+      new Set(fileMeta.moduleExcludedLineNumbers || [])
+    );
+    const lines = document.createElement('div');
+    lines.className = 'module-context-lines';
+    renderDiffRows(lines, fn.file, rows, prContext, expandedKey);
+    body.appendChild(lines);
+  };
+
+  const isInitiallyExpanded = moduleContextExpandedKeys.has(expandedKey);
+  toggle?.setAttribute('aria-expanded', isInitiallyExpanded ? 'true' : 'false');
+  if (body) body.hidden = !isInitiallyExpanded;
+  if (isInitiallyExpanded) ensureModuleContextBodyPopulated();
+
+  toggle?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const expanded = toggle.getAttribute('aria-expanded') === 'true';
+    const next = !expanded;
+    toggle.setAttribute('aria-expanded', next ? 'true' : 'false');
+    if (body) body.hidden = !next;
+    if (next) ensureModuleContextBodyPopulated();
+    if (next) moduleContextExpandedKeys.add(expandedKey);
+    else moduleContextExpandedKeys.delete(expandedKey);
+  });
+
+  if (where === 'start') container.insertBefore(ctx, container.firstChild);
+  else container.appendChild(ctx);
+}
+
+/**
  * Renders a function body with clickable call sites and inline expansion.
  * @param {string} pathPrefix - path-based tree key for this block (root:rootId or parentPath/e:caller:idx:callee)
  * @param {Record<string, string[]>} sourceLinesByFile - file path -> full current source lines
@@ -483,9 +878,20 @@ function findCallSitesInLine(line, callees) {
 function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, diffLinesByFile, filesWithModuleContext, moduleMetaByFile, calleesByCaller, indent, pathPrefix, prContext) {
   const fileBlock = container.closest('[data-file]') || container;
 
-  // Show file name only when there are no module-level changes (module-context already shows the file name).
+  const fileMeta = moduleMetaByFile.get(fn.file);
+  const rangesBefore =
+    filesWithModuleContext.has(fn.file) && fileMeta?.moduleChangedRanges?.length
+      ? moduleRangesBeforeFunction(fileMeta.moduleChangedRanges, fn.startLine)
+      : [];
+  const rangesAfter =
+    filesWithModuleContext.has(fn.file) && fileMeta?.moduleChangedRanges?.length
+      ? moduleRangesAfterFunction(fileMeta.moduleChangedRanges, fn.endLine)
+      : [];
+
+  // Show file name when this file has no module panels in this block (panels include the file name).
+  const hasModulePanelHere = rangesBefore.length > 0 || rangesAfter.length > 0;
   const hasFileHeader = fileBlock.querySelector?.('.file-name-header, [data-module-context-section]');
-  if (!hasFileHeader && !filesWithModuleContext.has(fn.file) && fileBlock.dataset?.file === fn.file) {
+  if (!hasFileHeader && !hasModulePanelHere && !filesWithModuleContext.has(fn.file) && fileBlock.dataset?.file === fn.file) {
     const fileHeader = document.createElement('div');
     fileHeader.className = 'file-name-header';
     const baseName = fn.file.replace(/^.*\//, '');
@@ -493,68 +899,21 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
     fileBlock.prepend(fileHeader);
   }
 
-  // Ensure a module-context section exists within this file block (root or inline)
-  // so any "module context" pills have a reliable scroll target.
-  if (filesWithModuleContext.has(fn.file)) {
-    const fileBlock = container.closest('[data-file]') || container;
-    const already = fileBlock.querySelector?.('[data-module-context-section]');
-    if (!already) {
-      const fileMeta = moduleMetaByFile.get(fn.file);
-      if (fileMeta?.moduleChangedRanges?.length) {
-        const ctx = document.createElement('div');
-        ctx.className = 'module-context';
-        ctx.dataset.moduleContextSection = fn.file;
-        const symText = (fileMeta.moduleChangedSymbols || []).slice(0, 8).join(', ');
-        const more = (fileMeta.moduleChangedSymbols || []).length > 8 ? ` (+${(fileMeta.moduleChangedSymbols || []).length - 8} more)` : '';
-        const ctxId = `module-ctx:${fn.file}`;
-        const baseName = fn.file.replace(/^.*\//, '');
-        ctx.innerHTML = `
-          <div class="module-context-header">
-            <button type="button" class="module-context-toggle" aria-expanded="false" aria-controls="${escapeHtml(ctxId)}" title="Changes outside function bodies">Module changes</button>
-            <span class="module-context-file">${escapeHtml(baseName)}</span>
-            ${symText ? `<span class="module-context-syms" title="${escapeHtml((fileMeta.moduleChangedSymbols || []).join(', '))}">${escapeHtml(symText)}${more}</span>` : ''}
-          </div>
-          <div class="module-context-body" id="${escapeHtml(ctxId)}" hidden></div>
-        `;
-        const body = ctx.querySelector('.module-context-body');
-        const toggle = ctx.querySelector('.module-context-toggle');
-        const expandedKey = `${pathPrefix}::${fn.file}`;
-
-        const ensureModuleContextBodyPopulated = () => {
-          if (!body) return;
-          if (body.childElementCount > 0) return;
-          const rows = buildRangeDisplayRows(
-            fileMeta.moduleChangedRanges,
-            sourceLinesByFile[fn.file] || [],
-            diffLinesByFile[fn.file] || [],
-            new Set(fileMeta.moduleExcludedLineNumbers || [])
-          );
-          const lines = document.createElement('div');
-          lines.className = 'module-context-lines';
-          renderDiffRows(lines, fn.file, rows, prContext);
-          body.appendChild(lines);
-        };
-
-        // Initialize expanded/collapsed state from an in-memory cache (per flow),
-        // so scroll-driven re-renders don't reset the UI, but nothing is persisted across flows.
-        const isInitiallyExpanded = moduleContextExpandedKeys.has(expandedKey);
-        toggle.setAttribute('aria-expanded', isInitiallyExpanded ? 'true' : 'false');
-        if (body) body.hidden = !isInitiallyExpanded;
-        if (isInitiallyExpanded) ensureModuleContextBodyPopulated();
-
-        toggle?.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const expanded = toggle.getAttribute('aria-expanded') === 'true';
-          const next = !expanded;
-          toggle.setAttribute('aria-expanded', next ? 'true' : 'false');
-          if (body) body.hidden = !next;
-          if (next) ensureModuleContextBodyPopulated();
-          if (next) moduleContextExpandedKeys.add(expandedKey);
-          else moduleContextExpandedKeys.delete(expandedKey);
-        });
-        fileBlock.prepend(ctx);
-      }
-    }
+  if (rangesBefore.length && fileMeta) {
+    mountModuleContextSection(
+      container,
+      'start',
+      fileMeta,
+      rangesBefore,
+      fn,
+      sourceLinesByFile,
+      diffLinesByFile,
+      pathPrefix,
+      prContext,
+      'before',
+      'Module changes',
+      'Edits outside any function from the start of the file up to this function'
+    );
   }
 
   const pathFunctionIds = getPathFunctionIds(pathPrefix);
@@ -569,106 +928,88 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
     const sigHtml = highlightPython(sigSource);
     body.innerHTML = `<pre class="code-line"><code class="language-python">${sigHtml}</code></pre>`;
     container.appendChild(body);
+    if (rangesAfter.length && fileMeta) {
+      mountModuleContextSection(
+        container,
+        'end',
+        fileMeta,
+        rangesAfter,
+        fn,
+        sourceLinesByFile,
+        diffLinesByFile,
+        pathPrefix,
+        prContext,
+        'after',
+        'Module changes',
+        'Edits outside any function from after this function through the end of the file'
+      );
+    }
     return;
   }
 
   const fnDiffLines = buildFunctionDisplayRows(fn, sourceLines, diffLinesByFile[fn.file] || []);
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
   const calleesForFind = [...new Map(calleesWithIndex.map((e) => [e.calleeId, { calleeId: e.calleeId, name: payload.functionsById[e.calleeId]?.name }])).values()].filter((x) => x.name);
-  const remainingByCallee = new Map();
-  for (const { calleeId, callIndex } of calleesWithIndex) {
-    if (!remainingByCallee.has(calleeId)) remainingByCallee.set(calleeId, []);
-    remainingByCallee.get(calleeId).push(callIndex);
+  attachCallSitesToRows(fnDiffLines, calleesWithIndex, calleesForFind);
+  const rowsToRender = expandContextCollapseRows(fnDiffLines);
+
+  for (const rowData of rowsToRender) {
+    if (rowData.type === 'ctx-collapse') {
+      const wrap = document.createElement('div');
+      wrap.className = 'diff-ctx-collapse';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'diff-ctx-collapse-btn';
+      const body = document.createElement('div');
+      body.className = 'diff-ctx-collapse-body';
+      for (const hr of rowData.hiddenRows) {
+        appendFunctionBodyDiffLine(
+          body,
+          hr,
+          indent,
+          pathPrefix,
+          fn,
+          payload,
+          uiState,
+          pathFunctionIds,
+          calleesForFind
+        );
+      }
+      const persistenceKey = `${pathPrefix}::${fn.id}::ctx::${rowData.startLine}-${rowData.endLine}-${rowData.lineCount}`;
+      setupCtxCollapseToggle(btn, body, rowData, persistenceKey);
+      wrap.appendChild(btn);
+      wrap.appendChild(body);
+      container.appendChild(wrap);
+      continue;
+    }
+    appendFunctionBodyDiffLine(
+      container,
+      rowData,
+      indent,
+      pathPrefix,
+      fn,
+      payload,
+      uiState,
+      pathFunctionIds,
+      calleesForFind
+    );
   }
 
-  for (const rowData of fnDiffLines) {
-    const line = rowData.content;
-    const sites = rowData.type === 'del' ? [] : findCallSitesInLine(line, calleesForFind);
-    for (const site of sites) {
-      const indices = remainingByCallee.get(site.calleeId);
-      if (indices?.length) site.callIndex = indices.shift();
-    }
-
-    let lineHtml;
-    const placeholders = [];
-
-    if (rowData.type === 'add') {
-      lineHtml = applyIntralineHighlight(indent + line, rowData.intraline, 'intraline intraline-add');
-    } else if (rowData.type === 'del') {
-      lineHtml = applyIntralineHighlight(indent + line, rowData.intraline, 'intraline intraline-del');
-    } else if (sites.length === 0) {
-      lineHtml = highlightPython(indent + line);
-    } else {
-      let lineWithPlaceholders = '';
-      let lastEnd = 0;
-      for (let si = 0; si < sites.length; si++) {
-        const site = sites[si];
-        lineWithPlaceholders += (lastEnd === 0 ? indent : '') + line.slice(lastEnd, site.start);
-        const ph = makePlaceholder(si);
-        lineWithPlaceholders += ph;
-        const treeNodeKey = site.callIndex !== undefined ? `${pathPrefix}/e:${fn.id}:${site.callIndex}:${site.calleeId}` : '';
-        placeholders.push({ ...site, placeholder: ph, treeNodeKey });
-        lastEnd = site.end;
-      }
-      lineWithPlaceholders += line.slice(lastEnd);
-      lineHtml = highlightPython(lineWithPlaceholders);
-
-      for (let pi = 0; pi < placeholders.length; pi++) {
-        const { placeholder, calleeId, start, end, treeNodeKey } = placeholders[pi];
-        const callText = line.slice(start, end);
-        const isRecursive = pathFunctionIds.has(calleeId);
-        const dataKey = treeNodeKey && !isRecursive ? ` data-tree-node-key="${escapeHtml(treeNodeKey)}"` : '';
-        const recClass = isRecursive ? ' call-site-recursive' : '';
-        const title = isRecursive ? 'Recursive call — already shown in the path above' : 'Click to expand';
-        const fnName = payload.functionsById[calleeId]?.name || calleeId;
-        const recContent = isRecursive
-          ? `<span class="call-site-recursive-icon" aria-hidden="true">↻</span> ${escapeHtml(fnName)} <span class="call-site-recursive-hint">(recursive already above)</span>`
-          : escapeHtml(callText);
-        const callSpanHtml = `<span class="call-site${recClass}" data-callee-id="${escapeHtml(calleeId)}" data-recursive="${isRecursive}"${dataKey} title="${escapeHtml(title)}">${recContent}</span>`;
-        lineHtml = lineHtml.replace(new RegExp(escapeRegex(placeholder), 'g'), callSpanHtml);
-      }
-    }
-
-    const lineNum = rowData.newLineNumber ?? rowData.oldLineNumber;
-    const oldNumHtml = rowData.oldLineNumber != null ? String(rowData.oldLineNumber) : '';
-    const newNumHtml = rowData.newLineNumber != null
-      ? String(rowData.newLineNumber)
-      : '';
-    const row = document.createElement('div');
-    row.className = `diff-line diff-line-${rowData.type}`;
-    row.innerHTML = `
-      <span class="diff-num diff-num-${rowData.type}">${oldNumHtml}</span>
-      <span class="diff-num diff-num-${rowData.type}">${newNumHtml}</span>
-      <span class="diff-sign diff-sign-${rowData.type}">${rowData.type === 'add' ? '+' : rowData.type === 'del' ? '-' : ''}</span>
-      <pre class="diff-code diff-code-${rowData.type}"><code class="language-python">${lineHtml}</code></pre>
-    `;
-
-    row.querySelectorAll('.call-site').forEach((el) => {
-      const calleeId = el.dataset.calleeId;
-      const treeNodeKey = el.dataset.treeNodeKey;
-      const isRecursive = el.dataset.recursive === 'true';
-      const callee = payload.functionsById[calleeId];
-      const isActive =
-        uiState.activeFunctionId === calleeId ||
-        (treeNodeKey && uiState.activeTreeNodeKey === treeNodeKey);
-      if (isRecursive) {
-        el.title = `Go to ${callee?.name || calleeId} (recursive, already above)`;
-        el.addEventListener('click', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          setActiveFunction(calleeId, null);
-        });
-        return;
-      }
-      if (isActive) el.classList.add('active');
-      el.title = `Go to ${callee?.name || calleeId}`;
-      el.addEventListener('click', (e) => {
-        e.stopPropagation();
-        setActiveFunction(calleeId, treeNodeKey);
-      });
-    });
-
-    container.appendChild(row);
+  if (rangesAfter.length && fileMeta) {
+    mountModuleContextSection(
+      container,
+      'end',
+      fileMeta,
+      rangesAfter,
+      fn,
+      sourceLinesByFile,
+      diffLinesByFile,
+      pathPrefix,
+      prContext,
+      'after',
+      'Module changes',
+      'Edits outside any function from after this function through the end of the file'
+    );
   }
 }
 
@@ -686,6 +1027,7 @@ export function renderCodeView(container) {
   if (selectedFlow?.id !== moduleContextFlowId) {
     moduleContextFlowId = selectedFlow?.id ?? null;
     moduleContextExpandedKeys = new Set();
+    ctxCollapseExpandedKeys = new Set();
   }
 
   if (flowFnIds.size === 0) {

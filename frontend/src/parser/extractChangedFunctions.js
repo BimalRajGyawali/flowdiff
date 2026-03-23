@@ -1,15 +1,15 @@
 /**
  * Extracts changed/added functions from parsed diff.
  * Python only: detects `def name(...):` and `async def name(...):`.
- * Includes all .py files (test files are included; test flows are grouped in the UI).
+ * Includes all .py files (tests appear in the file list; test roots are not listed as flows).
  */
 
 /** @typedef {import('./parseDiff.js').ParsedFile} ParsedFile */
 import { buildVisibleLines } from './buildVisibleLines.js';
 
-const PY_FN_REGEX = /(?:async\s+)?def\s+(\w+)\s*\(/g;
-const PY_DEF_LINE_REGEX = /^(\s*)(?:async\s+)?def\s+(\w+)\s*\(/;
-const PY_BLOCK_START_REGEX = /^(\s*)(?:async\s+)?def\s+\w+\s*\(|^(\s*)class\s+\w+/;
+const PY_DEF_LINE_REGEX = /^(\s*)(?:async\s+)?def\s+(\w+)\b/;
+// Next top-level block: `def`/`class` line (paren or generics may continue on following lines).
+const PY_BLOCK_START_REGEX = /^(\s*)(?:async\s+)?def\s+\w+\b|^(\s*)class\s+\w+\b/;
 
 /**
  * @param {{ files: ParsedFile[] }} parsed

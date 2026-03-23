@@ -12,7 +12,7 @@ let flowPayload = { ...emptyFlowPayload };
 /** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
 let prContext = null;
 
-/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string>, flowListTestsExpanded?: boolean }} */
+/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
 let uiState = {
   selectedFlowId: null,
   selectedFileInFlow: null,
@@ -26,7 +26,6 @@ let uiState = {
   readFunctionIds: new Set(),
   collapsedFunctionIds: new Set(),
   multiFlowFunctionIds: new Set(),
-  flowListTestsExpanded: false,
 };
 
 // Per-flow cache of tree expansion state so navigating back to a flow restores
@@ -74,6 +73,7 @@ export function setFlowPayload(payload) {
   }
 
    // Functions that participate in more than one flow are collapsed by default in the code view.
+  // Payload flows exclude test roots (see buildFlows).
   const functionFlowCounts = new Map();
   for (const flow of payload.flows || []) {
     if (!flow.rootId) continue;
@@ -111,7 +111,6 @@ export function setFlowPayload(payload) {
     readFunctionIds: new Set(),
     collapsedFunctionIds: multiFlowCollapsedIds,
     multiFlowFunctionIds: new Set(multiFlowCollapsedIds),
-    flowListTestsExpanded: uiState.flowListTestsExpanded ?? false
   };
   flowTreeExpansionByFlowId.clear();
   notify();
@@ -426,11 +425,5 @@ export function initStore() {
     readFunctionIds: new Set(),
     collapsedFunctionIds: new Set(),
     multiFlowFunctionIds: new Set(),
-    flowListTestsExpanded: false
   };
-}
-
-export function setFlowListTestsExpanded(expanded) {
-  uiState.flowListTestsExpanded = !!expanded;
-  notify();
 }

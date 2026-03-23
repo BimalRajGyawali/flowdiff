@@ -1,5 +1,7 @@
 /**
  * Parses raw diff text into structured files and hunks.
+ * Multi-commit PR patches may repeat the same path in several `diff --git` sections;
+ * we merge hunks in order so line maps match GitHub's full file view.
  */
 
 /**
@@ -12,7 +14,11 @@
  * @returns {{ files: ParsedFile[] }}
  */
 export function parseDiff(diffText) {
-  const files = [];
+  /** @type {Map<string, ParsedFile>} */
+  const byPath = new Map();
+  /** @type {string[]} */
+  const order = [];
+
   const fileBlocks = diffText.split(/(?=^diff --git )/m).filter(Boolean);
 
   for (const block of fileBlocks) {
@@ -35,8 +41,14 @@ export function parseDiff(diffText) {
       hunks.push({ oldStart, oldLines, newStart, newLines, lines });
     }
 
-    files.push({ path, hunks });
+    const existing = byPath.get(path);
+    if (existing) {
+      existing.hunks.push(...hunks);
+    } else {
+      byPath.set(path, { path, hunks });
+      order.push(path);
+    }
   }
 
-  return { files };
+  return { files: order.map((p) => byPath.get(p)) };
 }

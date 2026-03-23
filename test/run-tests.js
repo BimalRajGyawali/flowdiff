@@ -9,8 +9,10 @@ import { dirname, join } from 'path';
 import { parseDiff } from '../frontend/src/parser/parseDiff.js';
 import { extractChangedFunctions } from '../frontend/src/parser/extractChangedFunctions.js';
 import { buildFlows } from '../frontend/src/parser/buildFlows.js';
+import { augmentCallersInFunctionsById } from '../frontend/src/parser/augmentCallersInFunctionsById.js';
 import { isTestFile } from '../frontend/src/parser/isTestFile.js';
 import { parsePrUrl } from '../frontend/src/github/parsePrUrl.js';
+import { normalizeMergedPatchDiffLines } from '../frontend/src/parser/mergeDiffArtifacts.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -37,6 +39,13 @@ test('parsePrUrl extracts owner, repo, number', () => {
   assert(number === 123);
 });
 
+test('parsePrUrl accepts /changes and /files suffixes', () => {
+  const a = parsePrUrl('https://github.com/owner/repo/pull/123/changes');
+  assert(a.number === 123);
+  const b = parsePrUrl('https://github.com/owner/repo/pull/123/files');
+  assert(b.number === 123);
+});
+
 test('parsePrUrl throws on invalid URL', () => {
   let threw = false;
   try {
@@ -55,6 +64,75 @@ test('parseDiff extracts files and hunks', () => {
   assert(files[0].hunks.length >= 1);
 });
 
+test('normalizeMergedPatchDiffLines drops ctx when same new line is also added (merged hunks)', () => {
+  const rows = [
+    { type: 'ctx', newLineNumber: 5, content: '    perm_token = None' },
+    { type: 'add', newLineNumber: 5, content: '    perm_token = None' }
+  ];
+  const out = normalizeMergedPatchDiffLines(rows);
+  assert(out.length === 1);
+  assert(out[0].type === 'add');
+});
+
+test('normalizeMergedPatchDiffLines drops ctx before -/+ when ctx duplicates the + line', () => {
+  const rows = [
+    { type: 'ctx', newLineNumber: 9, content: 'from backend.copilot.model import create_chat_session  # avoid circular import' },
+    { type: 'del', newLineNumber: null, content: 'from backend.copilot.model import create_chat_session' },
+    {
+      type: 'add',
+      newLineNumber: 10,
+      content: 'from backend.copilot.model import create_chat_session  # avoid circular import'
+    }
+  ];
+  const out = normalizeMergedPatchDiffLines(rows);
+  assert(out.length === 2);
+  assert(out[0].type === 'del');
+  assert(out[1].type === 'add');
+});
+
+test('normalizeMergedPatchDiffLines removes duplicate consecutive context rows', () => {
+  const rows = [
+    { type: 'ctx', newLineNumber: 3, content: '    x = 1' },
+    { type: 'ctx', newLineNumber: 3, content: '    x = 1' },
+    { type: 'add', newLineNumber: 4, content: '    y = 2' }
+  ];
+  const out = normalizeMergedPatchDiffLines(rows);
+  assert(out.length === 2);
+  assert(out[0].type === 'ctx' && out[1].type === 'add');
+});
+
+test('parseDiff merges repeated diff --git blocks for the same path (multi-commit patches)', () => {
+  const diff = [
+    'diff --git a/pkg/a.py b/pkg/a.py',
+    '--- a/pkg/a.py',
+    '+++ b/pkg/a.py',
+    '@@ -1,2 +1,3 @@',
+    ' x',
+    '+y',
+    ' z',
+    '',
+    'diff --git a/other.py b/other.py',
+    '--- a/other.py',
+    '+++ b/other.py',
+    '@@ -1 +1 @@',
+    '-a',
+    '+b',
+    '',
+    'diff --git a/pkg/a.py b/pkg/a.py',
+    '--- a/pkg/a.py',
+    '+++ b/pkg/a.py',
+    '@@ -10,1 +10,2 @@',
+    ' tail',
+    '+more',
+    ''
+  ].join('\n');
+  const { files } = parseDiff(diff);
+  const a = files.find((f) => f.path === 'pkg/a.py');
+  assert(a, 'single merged entry for pkg/a.py');
+  assert(a.hunks.length === 2, 'hunks from both sections are concatenated');
+  assert(files.filter((f) => f.path === 'pkg/a.py').length === 1);
+});
+
 test('extractChangedFunctions finds func1, func2, func3, func4, func5', () => {
   const diff = readFileSync(join(__dirname, 'fixtures/sample.diff'), 'utf8');
   const parsed = parseDiff(diff);
@@ -67,7 +145,7 @@ test('extractChangedFunctions finds func1, func2, func3, func4, func5', () => {
   assert(names.has('func5'));
 });
 
-test('extractChangedFunctions marks added-only functions as added', () => {
+test('extractChangedFunctions marks existing def with only +lines as modified', () => {
   const diff = [
     'diff --git a/src/example.py b/src/example.py',
     'index 123..456 100644',
@@ -83,7 +161,34 @@ test('extractChangedFunctions marks added-only functions as added', () => {
   const { functionsById } = extractChangedFunctions(parsed);
   const fn = Object.values(functionsById).find((f) => f.name === 'convert_command');
   assert(fn, 'changed function found');
-  assert(fn.changeType === 'added', 'added-only function marked added');
+  assert(fn.changeType === 'modified', 'context def line + body additions is modified');
+});
+
+test('extractChangedFunctions finds def when signature opens on the next line', () => {
+  const path = 'pkg/sandbox.py';
+  const content = [
+    'def get_current_sandbox(',
+    '):',
+    '    """Return the E2B sandbox for the current session, or None if not active."""',
+    '    return _current_sandbox.get()',
+    ''
+  ].join('\n');
+  const diff = [
+    'diff --git a/pkg/sandbox.py b/pkg/sandbox.py',
+    '--- a/pkg/sandbox.py',
+    '+++ b/pkg/sandbox.py',
+    '@@ -3,2 +3,2 @@',
+    '     """Return the E2B sandbox for the current session, or None if not active."""',
+    '-    return None',
+    '+    return _current_sandbox.get()',
+    ''
+  ].join('\n');
+  const parsed = parseDiff(diff);
+  const { functionsById } = extractChangedFunctions(parsed, { [path]: content });
+  const fn = functionsById[`${path}:get_current_sandbox`];
+  assert(fn, 'function detected when ( is not on the def line');
+  assert(fn.startLine === 1, 'startLine is the def line');
+  assert(fn.endLine >= 4, 'body spans docstring and return');
 });
 
 test('extractChangedFunctions marks functions with deletions as modified', () => {
@@ -104,6 +209,60 @@ test('extractChangedFunctions marks functions with deletions as modified', () =>
   const fn = Object.values(functionsById).find((f) => f.name === 'convert_command');
   assert(fn, 'modified function found');
   assert(fn.changeType === 'modified', 'function with deletions marked modified');
+});
+
+test('augmentCallersInFunctionsById roots flow at unchanged caller of changed callee', () => {
+  const modPath = 'pkg/mod.py';
+  const fullFile = ['def run():', '    helper()', '', 'def helper():', '    x = 2', ''].join('\n');
+  const diff = [
+    'diff --git a/pkg/mod.py b/pkg/mod.py',
+    '--- a/pkg/mod.py',
+    '+++ b/pkg/mod.py',
+    '@@ -4,3 +4,3 @@',
+    ' def helper():',
+    '-    x = 1',
+    '+    x = 2',
+    ''
+  ].join('\n');
+  const parsed = parseDiff(diff);
+  const contents = { [modPath]: fullFile };
+  const { functionsById } = extractChangedFunctions(parsed, contents);
+  const merged = augmentCallersInFunctionsById(functionsById, contents);
+  const { flows, edges } = buildFlows(merged, parsed, contents);
+  const runFlow = flows.find((f) => merged[f.rootId]?.name === 'run');
+  assert(runFlow, 'unchanged run becomes flow root');
+  assert(!flows.some((f) => merged[f.rootId]?.name === 'helper'), 'changed helper is not a separate root');
+  assert(merged[`${modPath}:run`]?.changed === false);
+  assert(
+    edges.some((e) => e.callerId === `${modPath}:run` && e.calleeId === `${modPath}:helper`),
+    'edge from run to helper'
+  );
+});
+
+test('buildFlows keeps production roots when only tests call them', () => {
+  const diff = [
+    'diff --git a/pkg/mod.py b/pkg/mod.py',
+    '--- a/pkg/mod.py',
+    '+++ b/pkg/mod.py',
+    '@@ -1,3 +1,4 @@',
+    ' def run():',
+    '+    x = 1',
+    '     helper()',
+    '',
+    'diff --git a/tests/test_mod.py b/tests/test_mod.py',
+    '--- a/tests/test_mod.py',
+    '+++ b/tests/test_mod.py',
+    '@@ -1,3 +1,4 @@',
+    ' def test_it():',
+    '+    run()',
+    '     assert True',
+    ''
+  ].join('\n');
+  const parsed = parseDiff(diff);
+  const { functionsById, files } = extractChangedFunctions(parsed);
+  const { flows } = buildFlows(functionsById, parsed);
+  const runFlow = flows.find((f) => functionsById[f.rootId]?.name === 'run');
+  assert(runFlow, 'run stays a flow root despite test calling it');
 });
 
 test('buildFlows produces flows with correct sibling order (func2 before func5, func3 before func4)', () => {
@@ -135,7 +294,24 @@ test('buildFlows produces flows with correct sibling order (func2 before func5, 
   assert(f3Idx < f4Idx, 'func3 before func4 in call order');
 });
 
-test('test files are excluded from flows', () => {
+test('buildFlows omits test roots from the flow list', () => {
+  const diff = [
+    'diff --git a/tests/test_example.py b/tests/test_example.py',
+    '--- a/tests/test_example.py',
+    '+++ b/tests/test_example.py',
+    '@@ -1,3 +1,4 @@',
+    ' def test_foo():',
+    '+    assert 1',
+    '     pass',
+    ''
+  ].join('\n');
+  const parsed = parseDiff(diff);
+  const { functionsById } = extractChangedFunctions(parsed);
+  const { flows } = buildFlows(functionsById, parsed);
+  assert(flows.length === 0, 'test-only root is not a flow');
+});
+
+test('isTestFile classifies paths; extractChangedFunctions still parses test files', () => {
   assert(isTestFile('tests/test_foo.py'));
   assert(isTestFile('test_utils.py'));
   assert(isTestFile('src/foo_test.py'));
@@ -153,7 +329,7 @@ test('test files are excluded from flows', () => {
   ].join('\n');
   const parsed = parseDiff(diff);
   const { functionsById } = extractChangedFunctions(parsed);
-  assert(Object.keys(functionsById).length === 0, 'test file functions excluded');
+  assert(Object.keys(functionsById).length >= 1, 'test modules are parsed like other .py files');
 });
 
 test('flow name is root function name', () => {

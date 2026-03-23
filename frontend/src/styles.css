@@ -612,6 +612,38 @@ body {
   background: #ffffff;
 }
 
+/* Collapsed unchanged context — no box around it; reads as part of the same block */
+.diff-ctx-collapse {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.diff-ctx-collapse-btn {
+  display: block;
+  width: 100%;
+  padding: 1px 6px;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: #8c959f;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.diff-ctx-collapse-btn:hover {
+  color: #57606a;
+  background: rgba(175, 184, 193, 0.2);
+}
+
 .file-content {
   margin: 0;
   font-family: ui-monospace, monospace;
@@ -783,11 +815,19 @@ body {
   justify-content: space-between;
 }
 
-/* Sits at top of function block; header bar then divider then function code */
+/* Module diff panels: “before” tucks under block top padding; “after” sits below the function body */
 .module-context {
-  margin: -12px 0 0 0;
+  margin: 0;
   padding: 0;
   background: transparent;
+}
+
+.module-context--before {
+  margin: -12px 0 0 0;
+}
+
+.module-context--after {
+  margin: 16px 0 0 0;
 }
 
 .module-context-header {

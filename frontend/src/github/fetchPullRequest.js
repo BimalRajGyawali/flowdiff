@@ -8,6 +8,7 @@ import { parsePrUrl } from './parsePrUrl.js';
 import { fetchDiff } from './fetchDiff.js';
 import { parseDiff } from '../parser/parseDiff.js';
 import { extractChangedFunctions } from '../parser/extractChangedFunctions.js';
+import { augmentCallersInFunctionsById } from '../parser/augmentCallersInFunctionsById.js';
 import { buildFlows } from '../parser/buildFlows.js';
 
 const CACHE_VERSION = 'v2';
@@ -43,8 +44,9 @@ function writeCachedRawData(cacheKey, rawData) {
 function analyzeRawPullRequestData(diffText, fileContentsByPath) {
   const parsed = parseDiff(diffText);
   const { functionsById, files } = extractChangedFunctions(parsed, fileContentsByPath);
-  const { flows, edges } = buildFlows(functionsById, parsed, fileContentsByPath);
-  return { files, functionsById, flows, edges };
+  const mergedById = augmentCallersInFunctionsById(functionsById, fileContentsByPath);
+  const { flows, edges } = buildFlows(mergedById, parsed, fileContentsByPath);
+  return { files, functionsById: mergedById, flows, edges };
 }
 
 async function fetchPullRequestMeta(owner, repo, number) {
