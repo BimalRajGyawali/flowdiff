@@ -3,7 +3,14 @@
  * No inline expansion; call-site and flow-tree clicks navigate (scroll to + highlight) the function block.
  */
 
-import { getState, setActiveFunction, setInViewTreeNodeKey, setFunctionReadState, setFunctionCollapsedState } from '../state/store.js';
+import {
+  getState,
+  setActiveFunction,
+  setInViewTreeNodeKey,
+  setFunctionReadState,
+  setFunctionCollapsedState,
+  setHoveredTreeNodeKey
+} from '../state/store.js';
 import { normalizeMergedPatchDiffLines } from '../parser/mergeDiffArtifacts.js';
 
 let lastScrolledToActiveKey = null;
@@ -800,6 +807,12 @@ function appendFunctionBodyDiffLine(
         e.stopPropagation();
         setActiveFunction(calleeId, treeNodeKey || null);
       });
+      el.addEventListener('mouseenter', () => {
+        if (treeNodeKey) setHoveredTreeNodeKey(treeNodeKey);
+      });
+      el.addEventListener('mouseleave', () => {
+        setHoveredTreeNodeKey(null);
+      });
       if (isActive) el.classList.add('active');
       return;
     }
@@ -808,6 +821,12 @@ function appendFunctionBodyDiffLine(
     el.addEventListener('click', (e) => {
       e.stopPropagation();
       setActiveFunction(calleeId, treeNodeKey || null);
+    });
+    el.addEventListener('mouseenter', () => {
+      if (treeNodeKey) setHoveredTreeNodeKey(treeNodeKey);
+    });
+    el.addEventListener('mouseleave', () => {
+      setHoveredTreeNodeKey(null);
     });
   });
 

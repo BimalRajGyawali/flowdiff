@@ -110,6 +110,7 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   item.className = 'flow-tree-item' + (isLast ? ' flow-tree-item-last' : '');
 
   const isInView = uiState.inViewTreeNodeKey === treeNodeKey;
+  const isCallHover = uiState.hoveredTreeNodeKey === treeNodeKey;
   const isRead = uiState.readFunctionIds?.has?.(fn.id);
   const isMultiFlow = uiState.multiFlowFunctionIds?.has?.(fn.id);
   const row = document.createElement('div');
@@ -117,6 +118,7 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
     'flow-tree-node' +
     (isActive ? ' active' : '') +
     (isInView ? ' in-view' : '') +
+    (isCallHover ? ' call-hover-target' : '') +
     (isRead ? ' read' : '');
   const hasChildren = children.length > 0;
   const expandIcon = hasChildren ? (expanded ? '▾' : '▸') : '◦';
@@ -171,11 +173,13 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
         recItem.className = 'flow-tree-item flow-tree-item-recursive';
         const recRow = document.createElement('div');
         const recInView = uiState.inViewTreeNodeKey === originalKey;
+        const recCallHover = uiState.hoveredTreeNodeKey === originalKey;
         const recIsRead = uiState.readFunctionIds?.has?.(child.id);
         recRow.className =
           'flow-tree-node flow-tree-node-recursive' +
           (uiState.activeTreeNodeKey === originalKey ? ' active' : '') +
           (recInView ? ' in-view' : '') +
+          (recCallHover ? ' call-hover-target' : '') +
           (recIsRead ? ' read' : '');
         recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${escapeHtml(child.name)}</span>`;
         recRow.title = 'Click to jump to where this function is shown above';

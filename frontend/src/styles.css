@@ -235,6 +235,18 @@ body {
   box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.4);
 }
 
+/* Code view call-site hover → matching flow tree row */
+.flow-tree-node.call-hover-target {
+  background: rgba(9, 105, 218, 0.12);
+  box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.45);
+}
+
+.flow-tree-node.call-hover-target .flow-tree-icon {
+  border-color: rgba(9, 105, 218, 0.55);
+  background: rgba(9, 105, 218, 0.08);
+  color: #0550ae;
+}
+
 /* "You are here" indication (node currently centered in code view):
    use a thin blue border accent so it's easy to see but still distinct from the active (clicked) state. */
 .flow-tree-node.in-view {
@@ -924,6 +936,14 @@ body {
   color: #0550ae;
 }
 
+/* Call-site hover: clear rectangle so the target call is obvious */
+.code-pane .call-site:hover {
+  outline: 2px solid rgba(9, 105, 218, 0.5);
+  outline-offset: 1px;
+  border-radius: 3px;
+  background: rgba(9, 105, 218, 0.1);
+}
+
 .call-site.active {
   background: #ddf4ff;
   border-radius: 2px;
@@ -977,6 +997,11 @@ body {
 
 .call-site-recursive:hover {
   color: #57606a;
+}
+
+.code-pane .call-site-recursive:hover {
+  cursor: pointer;
+  color: #0550ae;
 }
 
 .call-site-recursive-icon {
