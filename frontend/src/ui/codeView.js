@@ -78,13 +78,13 @@ function scrollToVerticalCenter(container, el) {
 
 function getFunctionIdFromTreeNodeKey(treeNodeKey) {
   if (!treeNodeKey) return null;
-  if (treeNodeKey.startsWith('root:')) return treeNodeKey.slice(5);
   const parts = treeNodeKey.split('/');
   const last = parts[parts.length - 1];
   if (last.startsWith('e:')) {
     const p = last.split(':');
     if (p.length >= 4) return p[3];
   }
+  if (treeNodeKey.startsWith('root:')) return treeNodeKey.slice(5);
   return null;
 }
 
@@ -92,7 +92,7 @@ function getFunctionIdFromTreeNodeKey(treeNodeKey) {
  * Returns callerId for a tree node key (from last segment e:callerId:callIndex:calleeId), or null for root.
  */
 function getCallerFromTreeNodeKey(treeNodeKey) {
-  if (!treeNodeKey || treeNodeKey.startsWith('root:')) return null;
+  if (!treeNodeKey) return null;
   const parts = treeNodeKey.split('/');
   const last = parts[parts.length - 1];
   if (last.startsWith('e:')) {
@@ -106,9 +106,39 @@ function getCallerFromTreeNodeKey(treeNodeKey) {
  * Returns parent tree node key (prefix without last segment), or null for root.
  */
 function getParentTreeNodeKey(treeNodeKey) {
-  if (!treeNodeKey || treeNodeKey.startsWith('root:')) return null;
+  if (!treeNodeKey) return null;
   const idx = treeNodeKey.lastIndexOf('/');
   return idx > 0 ? treeNodeKey.slice(0, idx) : null;
+}
+
+/**
+ * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string }} info
+ */
+function createCallSiteBackButton(info) {
+  const link = document.createElement('button');
+  link.type = 'button';
+  link.className = 'function-block-caller-link function-block-callsite-back';
+  link.textContent = 'Return to call site';
+  link.title = `Go to ${info.callerName}()`;
+  link.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setActiveFunction(info.callerId, info.parentTreeNodeKey);
+  });
+  return link;
+}
+
+/**
+ * When this function was opened via a call-site click, show a back control in a header if possible;
+ * otherwise a slim bar at the top of the block body.
+ * @param {HTMLElement} container - function-block-content
+ * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string } | null} callSiteReturn
+ */
+function mountCallSiteReturnBarIfNeeded(container, callSiteReturn) {
+  if (!callSiteReturn || container.querySelector('.function-block-callsite-back')) return;
+  const bar = document.createElement('div');
+  bar.className = 'function-block-callsite-bar';
+  bar.appendChild(createCallSiteBackButton(callSiteReturn));
+  container.insertBefore(bar, container.firstChild);
 }
 
 // Breadcrumb support was removed based on UI feedback.
@@ -794,6 +824,7 @@ function moduleSymbolsInRanges(symbols, sourceLines, ranges) {
 
 /**
  * @param {'start' | 'end'} where - insert at start of container or append at end
+ * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string } | null} [callSiteReturn]
  */
 function mountModuleContextSection(
   container,
@@ -807,7 +838,8 @@ function mountModuleContextSection(
   prContext,
   slot,
   buttonLabel,
-  titleText
+  titleText,
+  callSiteReturn
 ) {
   if (!ranges?.length) return;
   const expandedKey = `${pathPrefix}::${fn.file}::module-${slot}::${fn.id}`;
@@ -831,6 +863,11 @@ function mountModuleContextSection(
   `;
   const body = ctx.querySelector('.module-context-body');
   const toggle = ctx.querySelector('.module-context-toggle');
+  const headerRow = ctx.querySelector('.module-context-header');
+  // Only the top "before" panel gets the link; "after" sits below the body so a second link would be easy to miss.
+  if (callSiteReturn && headerRow && slot === 'before') {
+    headerRow.appendChild(createCallSiteBackButton(callSiteReturn));
+  }
 
   const ensureModuleContextBodyPopulated = () => {
     if (!body) return;
@@ -874,8 +911,23 @@ function mountModuleContextSection(
  * @param {Record<string, { type: string, oldLineNumber: number | null, newLineNumber: number | null, content: string }[]>} diffLinesByFile
  * @param {Set<string>} filesWithModuleContext - file paths that have module-scope changes
  * @param {Map<string, { moduleChangedRanges?: { start: number, end: number }[], moduleChangedSymbols?: string[] }>} moduleMetaByFile
+ * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string } | null} [callSiteReturn]
  */
-function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, diffLinesByFile, filesWithModuleContext, moduleMetaByFile, calleesByCaller, indent, pathPrefix, prContext) {
+function renderFunctionBody(
+  container,
+  payload,
+  uiState,
+  fn,
+  sourceLinesByFile,
+  diffLinesByFile,
+  filesWithModuleContext,
+  moduleMetaByFile,
+  calleesByCaller,
+  indent,
+  pathPrefix,
+  prContext,
+  callSiteReturn
+) {
   const fileBlock = container.closest('[data-file]') || container;
 
   const fileMeta = moduleMetaByFile.get(fn.file);
@@ -895,7 +947,13 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
     const fileHeader = document.createElement('div');
     fileHeader.className = 'file-name-header';
     const baseName = fn.file.replace(/^.*\//, '');
-    fileHeader.textContent = baseName;
+    const label = document.createElement('span');
+    label.className = 'file-name-header-label';
+    label.textContent = baseName;
+    fileHeader.appendChild(label);
+    if (callSiteReturn) {
+      fileHeader.appendChild(createCallSiteBackButton(callSiteReturn));
+    }
     fileBlock.prepend(fileHeader);
   }
 
@@ -912,7 +970,8 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       prContext,
       'before',
       'Module changes',
-      'Edits outside any function from the start of the file up to this function'
+      'Edits outside any function from the start of the file up to this function',
+      callSiteReturn
     );
   }
 
@@ -941,9 +1000,11 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
         prContext,
         'after',
         'Module changes',
-        'Edits outside any function from after this function through the end of the file'
+        'Edits outside any function from after this function through the end of the file',
+        callSiteReturn
       );
     }
+    mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
     return;
   }
 
@@ -1008,9 +1069,12 @@ function renderFunctionBody(container, payload, uiState, fn, sourceLinesByFile, 
       prContext,
       'after',
       'Module changes',
-      'Edits outside any function from after this function through the end of the file'
+      'Edits outside any function from after this function through the end of the file',
+      callSiteReturn
     );
   }
+
+  mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
 }
 
 export function renderCodeView(container) {
@@ -1097,26 +1161,25 @@ export function renderCodeView(container) {
     titleRow.innerHTML = sigHtml;
     block.appendChild(titleRow);
 
-    const callerId = getCallerFromTreeNodeKey(treeNodeKey);
-    if (callerId) {
-      const caller = flowPayload.functionsById[callerId];
-      const callerName = caller?.name || callerId;
-      const parentKey = getParentTreeNodeKey(treeNodeKey);
-      const callerLine = document.createElement('div');
-      callerLine.className = 'function-block-caller';
-      const link = document.createElement('button');
-      link.type = 'button';
-      link.className = 'function-block-caller-link';
-      link.textContent = `${callerName}()`;
-      link.title = 'Go to caller';
-      link.addEventListener('click', (e) => {
-        e.stopPropagation();
-        setActiveFunction(callerId, parentKey);
-      });
-      callerLine.appendChild(document.createTextNode('Called from: '));
-      callerLine.appendChild(link);
-      content.appendChild(callerLine);
-    }
+    // Prefer the currently active path-key when it points at this function
+    // (e.g. arrived via call-site click from a specific caller occurrence).
+    // Fall back to this block's canonical flow-order key.
+    const activePathForThisFn =
+      uiState.activeTreeNodeKey &&
+      getFunctionIdFromTreeNodeKey(uiState.activeTreeNodeKey) === functionId
+        ? uiState.activeTreeNodeKey
+        : null;
+    const callSiteSourceKey = activePathForThisFn || treeNodeKey;
+
+    const callerId = getCallerFromTreeNodeKey(callSiteSourceKey);
+    const callSiteReturn =
+      callerId != null
+        ? {
+            callerId,
+            parentTreeNodeKey: getParentTreeNodeKey(callSiteSourceKey),
+            callerName: flowPayload.functionsById[callerId]?.name || callerId
+          }
+        : null;
 
     renderFunctionBody(
       content,
@@ -1130,7 +1193,8 @@ export function renderCodeView(container) {
       calleesByCaller,
       '',
       treeNodeKey,
-      prContext
+      prContext,
+      callSiteReturn
     );
 
     // Attach checkbox-style "done/read" control into the existing header inside this block:

@@ -82,7 +82,44 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
     roots.delete(e.calleeId);
   }
 
-  const flows = Array.from(roots)
+  // Suppress “inner” roots that are already reachable from another (main) root.
+  // This avoids showing duplicated flows for functions that are already part of
+  // another flow’s call-tree in the UI.
+  const adjacency = new Map(); // callerId -> calleeIds[]
+  for (const e of edges) {
+    const list = adjacency.get(e.callerId) || [];
+    list.push(e.calleeId);
+    adjacency.set(e.callerId, list);
+  }
+
+  const rootIds = Array.from(roots);
+  const shownRootIds = rootIds.filter((rootId) => {
+    const root = functionsById[rootId];
+    return root && !isTestFunction(root);
+  });
+  const shownRootIdSet = new Set(shownRootIds);
+
+  const rootsToRemove = new Set();
+  for (const src of shownRootIds) {
+    const visited = new Set([src]);
+    const stack = [src];
+    while (stack.length) {
+      const cur = stack.pop();
+      const outs = adjacency.get(cur) || [];
+      for (const nxt of outs) {
+        if (visited.has(nxt)) continue;
+        visited.add(nxt);
+        stack.push(nxt);
+      }
+    }
+    for (const maybeRoot of visited) {
+      if (maybeRoot !== src && shownRootIdSet.has(maybeRoot)) rootsToRemove.add(maybeRoot);
+    }
+  }
+
+  const filteredRootIds = rootIds.filter((id) => !rootsToRemove.has(id));
+
+  const flows = filteredRootIds
     .map((rootId) => {
       const root = functionsById[rootId];
       return {

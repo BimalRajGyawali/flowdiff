@@ -294,6 +294,73 @@ test('buildFlows produces flows with correct sibling order (func2 before func5, 
   assert(f3Idx < f4Idx, 'func3 before func4 in call order');
 });
 
+test('buildFlows suppresses descendant roots already reachable from another root', () => {
+  const prodPath = 'pkg/mod.py';
+  const testPath = 'tests/test_mod.py';
+
+  const fullProd = [
+    'def B():',
+    '    return 20',
+    '',
+    'def A():',
+    '    T()',
+    '    return 10',
+    ''
+  ].join('\n');
+
+  const fullTest = [
+    'def T():',
+    '    B()',
+    '    return 3',
+    ''
+  ].join('\n');
+
+  const diff = [
+    'diff --git a/pkg/mod.py b/pkg/mod.py',
+    '--- a/pkg/mod.py',
+    '+++ b/pkg/mod.py',
+    '@@ -2,1 +2,1 @@',
+    '-    return 2',
+    '+    return 20',
+    '@@ -6,1 +6,1 @@',
+    '-    return 1',
+    '+    return 10',
+    '',
+    'diff --git a/tests/test_mod.py b/tests/test_mod.py',
+    '--- a/tests/test_mod.py',
+    '+++ b/tests/test_mod.py',
+    '@@ -3,1 +3,1 @@',
+    '-    return None',
+    '+    return 3',
+    ''
+  ].join('\n');
+
+  const parsed = parseDiff(diff);
+  const contents = { [prodPath]: fullProd, [testPath]: fullTest };
+  const { functionsById } = extractChangedFunctions(parsed, contents);
+  const merged = augmentCallersInFunctionsById(functionsById, contents);
+  const { flows, edges } = buildFlows(merged, parsed, contents);
+
+  const flowNames = flows
+    .map((f) => merged[f.rootId]?.name)
+    .filter(Boolean);
+
+  assert(flowNames.includes('A'), 'A is a flow root');
+  assert(!flowNames.includes('B'), 'B is suppressed since it is reachable from A');
+
+  const aId = Object.entries(merged).find(([, f]) => f.name === 'A')?.[0];
+  const tId = Object.entries(merged).find(([, f]) => f.name === 'T')?.[0];
+  const bId = Object.entries(merged).find(([, f]) => f.name === 'B')?.[0];
+  assert(
+    edges.some((e) => e.callerId === aId && e.calleeId === tId),
+    'edge A -> T'
+  );
+  assert(
+    edges.some((e) => e.callerId === tId && e.calleeId === bId),
+    'edge T -> B'
+  );
+});
+
 test('buildFlows omits test roots from the flow list', () => {
   const diff = [
     'diff --git a/tests/test_example.py b/tests/test_example.py',
