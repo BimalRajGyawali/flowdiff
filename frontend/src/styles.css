@@ -983,6 +983,22 @@ body {
   border-radius: 2px;
 }
 
+/* Border + inline-block: outline on bare inline spans is often invisible after re-render / in code pre */
+.code-pane .call-site.call-site-return-highlight {
+  display: inline-block;
+  border: 2px solid #7c3aed !important;
+  border-radius: 3px;
+  background: rgba(124, 58, 237, 0.18) !important;
+  box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.35);
+  padding: 0 4px 1px;
+  margin: 0 1px;
+  vertical-align: baseline;
+  outline: none !important;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  color: #0969da;
+}
+
 /* De-emphasize non-focused code when a function is expanded */
 .code-pane.code-focus-mode .code-dimmed {
   opacity: 0.82;

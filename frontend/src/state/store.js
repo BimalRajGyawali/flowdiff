@@ -12,7 +12,7 @@ let flowPayload = { ...emptyFlowPayload };
 /** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
 let prContext = null;
 
-/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, callSiteCallerTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, completedFlowIds: Set<string>, callSiteReturnConsumedKeys: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
+/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, callSiteCallerTreeNodeKey: string | null, callSiteReturnScrollTarget: { callerTreeNodeKey: string, scrollLine: number, lineKind: 'new' | 'anchor' | 'old', calleeId: string, calleeOrdinalOnLine: number } | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, completedFlowIds: Set<string>, callSiteReturnConsumedKeys: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
 let uiState = {
   selectedFlowId: null,
   selectedFileInFlow: null,
@@ -22,6 +22,7 @@ let uiState = {
   activeFunctionId: null,
   activeTreeNodeKey: null,
   callSiteCallerTreeNodeKey: null,
+  callSiteReturnScrollTarget: null,
   hoveredTreeNodeKey: null,
   inViewTreeNodeKey: null,
   readFunctionIds: new Set(),
@@ -110,6 +111,7 @@ export function setFlowPayload(payload) {
     activeFunctionId: null,
     activeTreeNodeKey: null,
     callSiteCallerTreeNodeKey: null,
+    callSiteReturnScrollTarget: null,
     hoveredTreeNodeKey: null,
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
@@ -151,6 +153,7 @@ export function setSelectedFlow(flowId, rootId) {
   uiState.activeFunctionId = null;
   uiState.activeTreeNodeKey = null;
   uiState.callSiteCallerTreeNodeKey = null;
+  uiState.callSiteReturnScrollTarget = null;
   uiState.hoveredTreeNodeKey = null;
   uiState.inViewTreeNodeKey = null;
   uiState.callSiteReturnConsumedKeys.clear();
@@ -360,6 +363,7 @@ export function setActiveFunction(functionId, treeNodeKey = null) {
   uiState.activeFunctionId = functionId;
   uiState.activeTreeNodeKey = treeNodeKey;
   uiState.callSiteCallerTreeNodeKey = null;
+  uiState.callSiteReturnScrollTarget = null;
   notify();
 }
 
@@ -370,12 +374,40 @@ export function setActiveFunction(functionId, treeNodeKey = null) {
  * @param {string} calleeId
  * @param {string | null} calleeTreeNodeKey
  * @param {string} inlineCallerTreeNodeKey - path key of the function body that contained the click
+ * @param {{ scrollLine: number, lineKind: 'new' | 'anchor' | 'old', calleeId: string, calleeOrdinalOnLine: number } | null} [returnScrollTarget] - for "Return to call site" scroll + highlight
  */
-export function setActiveFunctionFromInlineCallSite(calleeId, calleeTreeNodeKey, inlineCallerTreeNodeKey) {
+export function setActiveFunctionFromInlineCallSite(
+  calleeId,
+  calleeTreeNodeKey,
+  inlineCallerTreeNodeKey,
+  returnScrollTarget = null
+) {
   uiState.activeFunctionId = calleeId;
   uiState.activeTreeNodeKey = calleeTreeNodeKey;
   uiState.callSiteCallerTreeNodeKey = inlineCallerTreeNodeKey || null;
+  if (
+    returnScrollTarget &&
+    inlineCallerTreeNodeKey &&
+    returnScrollTarget.scrollLine != null &&
+    returnScrollTarget.lineKind &&
+    returnScrollTarget.calleeId
+  ) {
+    uiState.callSiteReturnScrollTarget = {
+      callerTreeNodeKey: inlineCallerTreeNodeKey,
+      scrollLine: returnScrollTarget.scrollLine,
+      lineKind: returnScrollTarget.lineKind,
+      calleeId: returnScrollTarget.calleeId,
+      calleeOrdinalOnLine: returnScrollTarget.calleeOrdinalOnLine ?? 0
+    };
+  } else {
+    uiState.callSiteReturnScrollTarget = null;
+  }
   notify();
+}
+
+/** Clears pending return scroll (after apply); does not notify. */
+export function clearCallSiteReturnScrollTarget() {
+  uiState.callSiteReturnScrollTarget = null;
 }
 
 /**
@@ -541,6 +573,7 @@ export function initStore() {
     activeFunctionId: null,
     activeTreeNodeKey: null,
     callSiteCallerTreeNodeKey: null,
+    callSiteReturnScrollTarget: null,
     hoveredTreeNodeKey: null,
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),

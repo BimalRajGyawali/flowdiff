@@ -8,6 +8,7 @@ import {
   setActiveFunctionFromInlineCallSite,
   returnFromCallSiteToCaller,
   restoreCallSiteReturnTreeNode,
+  clearCallSiteReturnScrollTarget,
   setInViewTreeNodeKey,
   setFunctionReadState,
   setFunctionCollapsedState,
@@ -21,6 +22,92 @@ let moduleContextExpandedKeys = new Set();
 /** Expanded "unchanged lines" collapse toggles; survives scroll-driven re-renders. */
 let ctxCollapseExpandedKeys = new Set();
 let moduleContextFlowId = null;
+
+/**
+ * Return-to-call-site highlight must survive `innerHTML` rebuilds (scroll / in-view updates re-render).
+ * @type {null | { callerTreeNodeKey: string, scrollLine: number, lineKind: string, calleeId: string, calleeOrdinalOnLine: number, expireAt: number }}
+ */
+let callSiteReturnHighlightSpec = null;
+let callSiteReturnHighlightTimer = 0;
+
+function clearCallSiteReturnHighlightTimer() {
+  if (callSiteReturnHighlightTimer) {
+    window.clearTimeout(callSiteReturnHighlightTimer);
+    callSiteReturnHighlightTimer = 0;
+  }
+}
+
+function clearPersistentCallSiteReturnHighlight() {
+  clearCallSiteReturnHighlightTimer();
+  callSiteReturnHighlightSpec = null;
+  if (typeof document !== 'undefined') {
+    document.getElementById('code-pane')?.querySelectorAll?.('.call-site-return-highlight')?.forEach((n) => {
+      n.classList.remove('call-site-return-highlight');
+    });
+  }
+}
+
+function scheduleCallSiteReturnHighlightExpiry(scrollContainer) {
+  clearCallSiteReturnHighlightTimer();
+  callSiteReturnHighlightTimer = window.setTimeout(() => {
+    callSiteReturnHighlightTimer = 0;
+    callSiteReturnHighlightSpec = null;
+    const pane =
+      scrollContainer ||
+      (typeof document !== 'undefined' ? document.getElementById('code-pane') : null);
+    pane?.querySelectorAll?.('.call-site-return-highlight')?.forEach((n) => {
+      n.classList.remove('call-site-return-highlight');
+    });
+  }, 4500);
+}
+
+function findDiffRowForReturnScroll(block, t) {
+  if (t.lineKind === 'new') {
+    const r = block.querySelector(`.diff-line[data-flowdiff-new-line="${t.scrollLine}"]`);
+    if (r) return r;
+  } else if (t.lineKind === 'anchor') {
+    const r = block.querySelector(`.diff-line[data-flowdiff-anchor-new="${t.scrollLine}"]`);
+    if (r) return r;
+  } else {
+    const r = block.querySelector(`.diff-line[data-flowdiff-old-line="${t.scrollLine}"]`);
+    if (r) return r;
+  }
+  return (
+    block.querySelector(`.diff-line[data-flowdiff-new-line="${t.scrollLine}"]`) ||
+    block.querySelector(`.diff-line[data-flowdiff-anchor-new="${t.scrollLine}"]`) ||
+    block.querySelector(`.diff-line[data-flowdiff-old-line="${t.scrollLine}"]`)
+  );
+}
+
+function findCallSiteReturnElementInBlock(block, t) {
+  const row = findDiffRowForReturnScroll(block, t);
+  if (!row) return null;
+  let el = row.querySelector(
+    `.call-site[data-callee-id="${CSS.escape(t.calleeId)}"][data-fd-callee-ord="${t.calleeOrdinalOnLine}"]`
+  );
+  if (!el) {
+    const matches = row.querySelectorAll(`.call-site[data-callee-id="${CSS.escape(t.calleeId)}"]`);
+    el = matches[t.calleeOrdinalOnLine] || matches[0];
+  }
+  return el || null;
+}
+
+function reapplyCallSiteReturnHighlight(container) {
+  const spec = callSiteReturnHighlightSpec;
+  if (!spec) return;
+  if (Date.now() > spec.expireAt) {
+    clearPersistentCallSiteReturnHighlight();
+    return;
+  }
+  const { uiState } = getState();
+  if (uiState.activeTreeNodeKey !== spec.callerTreeNodeKey) return;
+  const block = container.querySelector(
+    `.function-block[data-tree-node-key="${CSS.escape(spec.callerTreeNodeKey)}"]`
+  );
+  if (!block) return;
+  const el = findCallSiteReturnElementInBlock(block, spec);
+  if (el) el.classList.add('call-site-return-highlight');
+}
 
 function updateInViewFromScroll(container) {
   const blocks = container.querySelectorAll('.function-block[data-tree-node-key]');
@@ -57,6 +144,56 @@ function isElementInView(container, el) {
   const eRect = el.getBoundingClientRect();
   const padding = 40;
   return eRect.top >= cRect.top - padding && eRect.bottom <= cRect.bottom + padding;
+}
+
+/**
+ * @param {{ newLineNumber?: number | null, anchorNewLineNumber?: number | null, oldLineNumber?: number | string | null }} rowData
+ * @returns {{ lineKind: 'new' | 'anchor' | 'old', scrollLine: number } | null}
+ */
+function diffLineScrollMeta(rowData) {
+  if (rowData.newLineNumber != null) return { lineKind: 'new', scrollLine: rowData.newLineNumber };
+  if (rowData.anchorNewLineNumber != null) return { lineKind: 'anchor', scrollLine: rowData.anchorNewLineNumber };
+  if (rowData.oldLineNumber != null && rowData.oldLineNumber !== '')
+    return { lineKind: 'old', scrollLine: Number(rowData.oldLineNumber) };
+  return null;
+}
+
+function navigateFromInlineCallSite(calleeId, calleeNavKey, callerPathPrefix, rowData, calleeOrdinalOnLine) {
+  clearPersistentCallSiteReturnHighlight();
+  if (calleeNavKey) restoreCallSiteReturnTreeNode(calleeNavKey);
+  const meta = diffLineScrollMeta(rowData);
+  const returnScroll =
+    meta && callerPathPrefix ? { ...meta, calleeId, calleeOrdinalOnLine } : null;
+  setActiveFunctionFromInlineCallSite(calleeId, calleeNavKey || null, callerPathPrefix, returnScroll);
+}
+
+/**
+ * @param {HTMLElement} container - code pane scroll container
+ * @param {{ callerTreeNodeKey: string, scrollLine: number, lineKind: 'new' | 'anchor' | 'old', calleeId: string, calleeOrdinalOnLine: number }} t
+ */
+function applyCallSiteReturnScroll(container, t) {
+  const block = container.querySelector(
+    `.function-block[data-tree-node-key="${CSS.escape(t.callerTreeNodeKey)}"]`
+  );
+  if (!block) return false;
+  const el = findCallSiteReturnElementInBlock(block, t);
+  if (!el) return false;
+  callSiteReturnHighlightSpec = {
+    callerTreeNodeKey: t.callerTreeNodeKey,
+    scrollLine: t.scrollLine,
+    lineKind: t.lineKind,
+    calleeId: t.calleeId,
+    calleeOrdinalOnLine: t.calleeOrdinalOnLine,
+    expireAt: Date.now() + 4500
+  };
+  el.classList.add('call-site-return-highlight');
+  scheduleCallSiteReturnHighlightExpiry(container);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth', inline: 'nearest' });
+    });
+  });
+  return true;
 }
 
 function scrollToVerticalCenter(container, el) {
@@ -761,17 +898,22 @@ function appendFunctionBodyDiffLine(
 
     for (let pi = 0; pi < placeholders.length; pi++) {
       const { placeholder, calleeId, start, end } = placeholders[pi];
+      let calleeOrdinalOnLine = 0;
+      for (let j = 0; j < pi; j++) {
+        if (placeholders[j].calleeId === calleeId) calleeOrdinalOnLine++;
+      }
       const callText = line.slice(start, end);
       const isRecursive = pathFunctionIds.has(calleeId);
       const navKey = canonicalKeyByFunctionId.get(calleeId) ?? '';
       const dataKey = navKey ? ` data-tree-node-key="${escapeHtml(navKey)}"` : '';
+      const ordAttr = ` data-fd-callee-ord="${calleeOrdinalOnLine}"`;
       const recClass = isRecursive ? ' call-site-recursive' : '';
       const title = isRecursive ? 'Jump to definition (already shown above in this flow)' : 'Go to function';
       const fnName = payload.functionsById[calleeId]?.name || calleeId;
       const recContent = isRecursive
         ? `<span class="call-site-recursive-icon" aria-hidden="true">↻</span> ${escapeHtml(fnName)} <span class="call-site-recursive-hint">(already above)</span>`
         : escapeHtml(callText);
-      const callSpanHtml = `<span class="call-site${recClass}" data-callee-id="${escapeHtml(calleeId)}" data-recursive="${isRecursive}"${dataKey} title="${escapeHtml(title)}">${recContent}</span>`;
+      const callSpanHtml = `<span class="call-site${recClass}" data-callee-id="${escapeHtml(calleeId)}" data-recursive="${isRecursive}"${ordAttr}${dataKey} title="${escapeHtml(title)}">${recContent}</span>`;
       lineHtml = lineHtml.replace(new RegExp(escapeRegex(placeholder), 'g'), callSpanHtml);
     }
   } else if (rowData.type === 'add') {
@@ -790,6 +932,10 @@ function appendFunctionBodyDiffLine(
   const newNumHtml = rowData.newLineNumber != null ? String(rowData.newLineNumber) : '';
   const row = document.createElement('div');
   row.className = `diff-line diff-line-${rowData.type}`;
+  if (rowData.newLineNumber != null) row.dataset.flowdiffNewLine = String(rowData.newLineNumber);
+  if (rowData.anchorNewLineNumber != null) row.dataset.flowdiffAnchorNew = String(rowData.anchorNewLineNumber);
+  if (rowData.oldLineNumber != null && rowData.oldLineNumber !== '')
+    row.dataset.flowdiffOldLine = String(rowData.oldLineNumber);
   row.innerHTML = `
     <span class="diff-num diff-num-${rowData.type}">${oldNumHtml}</span>
     <span class="diff-num diff-num-${rowData.type}">${newNumHtml}</span>
@@ -810,8 +956,8 @@ function appendFunctionBodyDiffLine(
       el.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (treeNodeKey) restoreCallSiteReturnTreeNode(treeNodeKey);
-        setActiveFunctionFromInlineCallSite(calleeId, treeNodeKey || null, pathPrefix);
+        const ord = el.dataset.fdCalleeOrd != null ? Number(el.dataset.fdCalleeOrd) : 0;
+        navigateFromInlineCallSite(calleeId, treeNodeKey || null, pathPrefix, rowData, ord);
       });
       el.addEventListener('mouseenter', () => {
         if (treeNodeKey) setHoveredTreeNodeKey(treeNodeKey);
@@ -826,8 +972,8 @@ function appendFunctionBodyDiffLine(
     el.title = `Go to ${callee?.name || calleeId}`;
     el.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (treeNodeKey) restoreCallSiteReturnTreeNode(treeNodeKey);
-      setActiveFunctionFromInlineCallSite(calleeId, treeNodeKey || null, pathPrefix);
+      const ord = el.dataset.fdCalleeOrd != null ? Number(el.dataset.fdCalleeOrd) : 0;
+      navigateFromInlineCallSite(calleeId, treeNodeKey || null, pathPrefix, rowData, ord);
     });
     el.addEventListener('mouseenter', () => {
       if (treeNodeKey) setHoveredTreeNodeKey(treeNodeKey);
@@ -1198,6 +1344,12 @@ function renderFunctionBody(
 
 export function renderCodeView(container) {
   const { flowPayload, uiState, prContext } = getState();
+  if (
+    callSiteReturnHighlightSpec &&
+    uiState.activeTreeNodeKey !== callSiteReturnHighlightSpec.callerTreeNodeKey
+  ) {
+    clearPersistentCallSiteReturnHighlight();
+  }
   container.innerHTML = '';
 
   if (!flowPayload.files?.length) {
@@ -1383,9 +1535,29 @@ export function renderCodeView(container) {
   // Build a stable key that distinguishes different occurrences of the same function.
   const activeScrollKey = activeTreeNodeKey || (activeFunctionId ? `fn:${activeFunctionId}` : null);
 
+  const pendingReturnScroll = uiState.callSiteReturnScrollTarget;
+  const applyReturnScroll =
+    pendingReturnScroll &&
+    activeTreeNodeKey &&
+    pendingReturnScroll.callerTreeNodeKey === activeTreeNodeKey;
+
   // Only auto-center when the active target changes, so manual scrolling isn't
   // constantly overridden on every store update (e.g., when updating "you are here").
-  if (activeScrollKey && activeScrollKey !== lastScrolledToActiveKey) {
+  if (applyReturnScroll) {
+    const lineOk = applyCallSiteReturnScroll(container, pendingReturnScroll);
+    clearCallSiteReturnScrollTarget();
+    lastScrolledToActiveKey = activeScrollKey;
+    if (!lineOk && activeTreeNodeKey) {
+      const block = container.querySelector(
+        `.function-block[data-tree-node-key="${CSS.escape(activeTreeNodeKey)}"]`
+      );
+      if (block) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => scrollToVerticalCenter(container, block));
+        });
+      }
+    }
+  } else if (activeScrollKey && activeScrollKey !== lastScrolledToActiveKey) {
     let el = null;
     if (activeTreeNodeKey) {
       el = container.querySelector(
@@ -1428,4 +1600,5 @@ export function renderCodeView(container) {
     });
   }
   updateInViewFromScroll(container);
+  reapplyCallSiteReturnHighlight(container);
 }
