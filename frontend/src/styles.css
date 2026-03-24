@@ -351,11 +351,39 @@ body {
 }
 
 .flow-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   padding: 8px 12px;
   cursor: pointer;
   border-radius: 4px;
   margin-bottom: 4px;
   transition: background 120ms ease, box-shadow 120ms ease, transform 80ms ease;
+}
+
+.flow-list-item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.flow-list-flow-complete-label {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding-top: 2px;
+  cursor: pointer;
+}
+
+.flow-list-flow-complete-check {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: #16a34a;
+}
+
+.flow-list-item-flow-complete:not(.selected) {
+  border-left: 3px solid #22c55e;
+  padding-left: 9px;
 }
 
 .flow-list-item:hover {

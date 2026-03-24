@@ -12,7 +12,7 @@ let flowPayload = { ...emptyFlowPayload };
 /** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
 let prContext = null;
 
-/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
+/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, completedFlowIds: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
 let uiState = {
   selectedFlowId: null,
   selectedFileInFlow: null,
@@ -24,6 +24,7 @@ let uiState = {
   hoveredTreeNodeKey: null,
   inViewTreeNodeKey: null,
   readFunctionIds: new Set(),
+  completedFlowIds: new Set(),
   collapsedFunctionIds: new Set(),
   multiFlowFunctionIds: new Set(),
 };
@@ -109,6 +110,7 @@ export function setFlowPayload(payload) {
     hoveredTreeNodeKey: null,
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
+    completedFlowIds: new Set(),
     // Do not auto-collapse shared functions; users reported this hides bodies unexpectedly.
     collapsedFunctionIds: new Set(),
     multiFlowFunctionIds: new Set(multiFlowIds),
@@ -396,6 +398,77 @@ export function setFunctionReadState(functionId, isRead) {
   notify();
 }
 
+/**
+ * All function ids reachable from a flow's root (same closure as the flow list graph).
+ * @param {string} flowId
+ * @param {import('../flowSchema.js').FlowPayload} payload
+ * @returns {Set<string>}
+ */
+function collectFunctionIdsInFlow(flowId, payload) {
+  const flow = payload.flows?.find((f) => f.id === flowId);
+  if (!flow?.rootId) return new Set();
+  const ids = new Set([flow.rootId]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const e of payload.edges || []) {
+      if (ids.has(e.callerId) && !ids.has(e.calleeId)) {
+        ids.add(e.calleeId);
+        added = true;
+      }
+    }
+  }
+  return ids;
+}
+
+/**
+ * Toggle or set "entire flow marked complete" for the flow list checkbox.
+ * When marked complete, every function in the flow is marked read. Unchecking clears read
+ * only for functions not still covered by another completed flow.
+ * @param {string} flowId
+ * @param {boolean} [isComplete] - if omitted, toggles
+ */
+export function setFlowCompletedState(flowId, isComplete) {
+  const currently = uiState.completedFlowIds.has(flowId);
+  const next = typeof isComplete === 'boolean' ? isComplete : !currently;
+  const ids = collectFunctionIdsInFlow(flowId, flowPayload);
+
+  if (next === currently) {
+    if (next) {
+      let changed = false;
+      for (const id of ids) {
+        if (!uiState.readFunctionIds.has(id)) {
+          uiState.readFunctionIds.add(id);
+          changed = true;
+        }
+      }
+      if (changed) notify();
+    }
+    return;
+  }
+
+  if (next) {
+    uiState.completedFlowIds.add(flowId);
+    for (const id of ids) {
+      uiState.readFunctionIds.add(id);
+    }
+  } else {
+    uiState.completedFlowIds.delete(flowId);
+    const stillNeeded = new Set();
+    for (const otherFlowId of uiState.completedFlowIds) {
+      for (const id of collectFunctionIdsInFlow(otherFlowId, flowPayload)) {
+        stillNeeded.add(id);
+      }
+    }
+    for (const id of ids) {
+      if (!stillNeeded.has(id)) {
+        uiState.readFunctionIds.delete(id);
+      }
+    }
+  }
+  notify();
+}
+
 export function subscribe(cb) {
   subscribers.push(cb);
   return () => {
@@ -424,6 +497,7 @@ export function initStore() {
     hoveredTreeNodeKey: null,
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
+    completedFlowIds: new Set(),
     collapsedFunctionIds: new Set(),
     multiFlowFunctionIds: new Set(),
   };
