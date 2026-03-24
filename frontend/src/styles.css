@@ -223,7 +223,13 @@ body {
   cursor: pointer;
   border-radius: 4px;
   position: relative;
-  transition: background 120ms ease, box-shadow 120ms ease;
+  transition: background 120ms ease, box-shadow 120ms ease, outline-color 120ms ease;
+}
+
+/* After you click a callee, dashed outline on its immediate caller (who-called-what) */
+.flow-tree-node.flow-tree-node-caller-of-active {
+  outline: 1px dashed #2563eb;
+  outline-offset: 2px;
 }
 
 .flow-tree-node:hover {

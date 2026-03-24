@@ -5,7 +5,9 @@
 
 import {
   getState,
-  setActiveFunction,
+  setActiveFunctionFromInlineCallSite,
+  returnFromCallSiteToCaller,
+  restoreCallSiteReturnTreeNode,
   setInViewTreeNodeKey,
   setFunctionReadState,
   setFunctionCollapsedState,
@@ -119,7 +121,7 @@ function getParentTreeNodeKey(treeNodeKey) {
 }
 
 /**
- * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string }} info
+ * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string, calleeTreeNodeKey: string }} info
  */
 function createCallSiteBackButton(info) {
   const link = document.createElement('button');
@@ -129,7 +131,7 @@ function createCallSiteBackButton(info) {
   link.title = `Go to ${info.callerName}()`;
   link.addEventListener('click', (e) => {
     e.stopPropagation();
-    setActiveFunction(info.callerId, info.parentTreeNodeKey);
+    returnFromCallSiteToCaller(info.calleeTreeNodeKey, info.callerId, info.parentTreeNodeKey);
   });
   return link;
 }
@@ -138,10 +140,13 @@ function createCallSiteBackButton(info) {
  * When this function was opened via a call-site click, show a back control in a header if possible;
  * otherwise a slim bar at the top of the block body.
  * @param {HTMLElement} container - function-block-content
- * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string } | null} callSiteReturn
+ * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string, calleeTreeNodeKey: string } | null} callSiteReturn
  */
 function mountCallSiteReturnBarIfNeeded(container, callSiteReturn) {
-  if (!callSiteReturn || container.querySelector('.function-block-callsite-back')) return;
+  if (!callSiteReturn) return;
+  // File header prepends the back control on `.function-block`, not inside content; search the whole card.
+  const block = container.closest('.function-block');
+  if (block?.querySelector('.function-block-callsite-back')) return;
   const bar = document.createElement('div');
   bar.className = 'function-block-callsite-bar';
   bar.appendChild(createCallSiteBackButton(callSiteReturn));
@@ -805,7 +810,8 @@ function appendFunctionBodyDiffLine(
       el.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        setActiveFunction(calleeId, treeNodeKey || null);
+        if (treeNodeKey) restoreCallSiteReturnTreeNode(treeNodeKey);
+        setActiveFunctionFromInlineCallSite(calleeId, treeNodeKey || null, pathPrefix);
       });
       el.addEventListener('mouseenter', () => {
         if (treeNodeKey) setHoveredTreeNodeKey(treeNodeKey);
@@ -820,7 +826,8 @@ function appendFunctionBodyDiffLine(
     el.title = `Go to ${callee?.name || calleeId}`;
     el.addEventListener('click', (e) => {
       e.stopPropagation();
-      setActiveFunction(calleeId, treeNodeKey || null);
+      if (treeNodeKey) restoreCallSiteReturnTreeNode(treeNodeKey);
+      setActiveFunctionFromInlineCallSite(calleeId, treeNodeKey || null, pathPrefix);
     });
     el.addEventListener('mouseenter', () => {
       if (treeNodeKey) setHoveredTreeNodeKey(treeNodeKey);
@@ -875,7 +882,7 @@ function moduleSymbolsInRanges(symbols, sourceLines, ranges) {
 
 /**
  * @param {'start' | 'end'} where - insert at start of container or append at end
- * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string } | null} [callSiteReturn]
+ * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string, calleeTreeNodeKey: string } | null} [callSiteReturn]
  */
 function mountModuleContextSection(
   container,
@@ -963,7 +970,7 @@ function mountModuleContextSection(
  * @param {Record<string, { type: string, oldLineNumber: number | null, newLineNumber: number | null, content: string }[]>} diffLinesByFile
  * @param {Set<string>} filesWithModuleContext - file paths that have module-scope changes
  * @param {Map<string, { moduleChangedRanges?: { start: number, end: number }[], moduleChangedSymbols?: string[] }>} moduleMetaByFile
- * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string } | null} [callSiteReturn]
+ * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string, calleeTreeNodeKey: string } | null} [callSiteReturn]
  * @param {Map<string, string>} canonicalKeyByFunctionId - first DFS tree key per function (matches code cards)
  */
 function renderFunctionBody(
@@ -1305,24 +1312,22 @@ export function renderCodeView(container) {
       setFunctionReadState(functionId);
     });
 
-    // Prefer the currently active path-key when it points at this function
-    // (e.g. arrived via call-site click from a specific caller occurrence).
-    // Fall back to this block's canonical flow-order key.
-    const activePathForThisFn =
-      uiState.activeTreeNodeKey &&
-      getFunctionIdFromTreeNodeKey(uiState.activeTreeNodeKey) === functionId
-        ? uiState.activeTreeNodeKey
-        : null;
-    const callSiteSourceKey = activePathForThisFn || treeNodeKey;
-
-    const callerId = getCallerFromTreeNodeKey(callSiteSourceKey);
-    const callSiteReturn =
+    // Always derive the caller from this card's flow path. There is one code card per function
+    // (first DFS occurrence); mixing in activeTreeNodeKey caused null/mismatch when selection
+    // state and the card key diverged, so "Return to call site" was missing for some navigations.
+    const callerId = getCallerFromTreeNodeKey(treeNodeKey);
+    const baseCallSiteReturn =
       callerId != null
         ? {
             callerId,
-            parentTreeNodeKey: getParentTreeNodeKey(callSiteSourceKey),
-            callerName: flowPayload.functionsById[callerId]?.name || callerId
+            parentTreeNodeKey: getParentTreeNodeKey(treeNodeKey),
+            callerName: flowPayload.functionsById[callerId]?.name || callerId,
+            calleeTreeNodeKey: treeNodeKey
           }
+        : null;
+    const callSiteReturn =
+      baseCallSiteReturn && !uiState.callSiteReturnConsumedKeys?.has?.(treeNodeKey)
+        ? baseCallSiteReturn
         : null;
 
     renderFunctionBody(

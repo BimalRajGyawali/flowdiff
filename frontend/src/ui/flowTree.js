@@ -3,11 +3,26 @@
  * Preserves call order (func2, func5 under func1; func3, func4 under func2).
  */
 
-import { getState, toggleExpandedTreeNode, setActiveFunction, expandFlowTreeToDepth, collapseFlowTree, getFlowTreeKeysAtDepth } from '../state/store.js';
+import {
+  getState,
+  toggleExpandedTreeNode,
+  setActiveFunction,
+  restoreCallSiteReturnTreeNode,
+  expandFlowTreeToDepth,
+  collapseFlowTree,
+  getFlowTreeKeysAtDepth
+} from '../state/store.js';
 
 // Tracks the first tree-node key where each function ID appears in the current flow tree.
 /** @type {Map<string, string>} */
 const firstTreeNodeKeyByFunctionId = new Map();
+
+/** @param {string | null | undefined} treeNodeKey */
+function parentTreeNodeKey(treeNodeKey) {
+  if (!treeNodeKey) return null;
+  const idx = treeNodeKey.lastIndexOf('/');
+  return idx > 0 ? treeNodeKey.slice(0, idx) : null;
+}
 
 /**
  * @param {HTMLElement} container
@@ -113,14 +128,18 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   const isCallHover = uiState.hoveredTreeNodeKey === treeNodeKey;
   const isRead = uiState.readFunctionIds?.has?.(fn.id);
   const isMultiFlow = uiState.multiFlowFunctionIds?.has?.(fn.id);
+  const hasChildren = children.length > 0;
+  const parentOfActive = parentTreeNodeKey(uiState.activeTreeNodeKey);
+  const callerHighlightKey = uiState.callSiteCallerTreeNodeKey ?? parentOfActive;
+  const isCallerOfActive = Boolean(callerHighlightKey && callerHighlightKey === treeNodeKey);
   const row = document.createElement('div');
   row.className =
     'flow-tree-node' +
+    (isCallerOfActive ? ' flow-tree-node-caller-of-active' : '') +
     (isActive ? ' active' : '') +
     (isInView ? ' in-view' : '') +
     (isCallHover ? ' call-hover-target' : '') +
     (isRead ? ' read' : '');
-  const hasChildren = children.length > 0;
   const expandIcon = hasChildren ? (expanded ? '▾' : '▸') : '◦';
   const changeBadge = fn.changeType ? `<span class="flow-tree-badge flow-tree-badge-${fn.changeType}" title="${fn.changeType}"></span>` : '';
   const sharedHint = isMultiFlow
@@ -137,6 +156,7 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   // Clicking the row selects the function (syncs code view) without toggling expansion.
   row.addEventListener('click', (e) => {
     e.stopPropagation();
+    restoreCallSiteReturnTreeNode(treeNodeKey);
     setActiveFunction(fn.id, treeNodeKey);
   });
 
@@ -187,6 +207,7 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
         recRow.dataset.treeNodeKey = originalKey;
         recRow.addEventListener('click', (ev) => {
           ev.stopPropagation();
+          restoreCallSiteReturnTreeNode(originalKey);
           setActiveFunction(child.id, originalKey);
         });
         recItem.appendChild(recRow);

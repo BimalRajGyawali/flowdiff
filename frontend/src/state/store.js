@@ -12,7 +12,7 @@ let flowPayload = { ...emptyFlowPayload };
 /** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
 let prContext = null;
 
-/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, completedFlowIds: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
+/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, callSiteCallerTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, completedFlowIds: Set<string>, callSiteReturnConsumedKeys: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
 let uiState = {
   selectedFlowId: null,
   selectedFileInFlow: null,
@@ -21,10 +21,12 @@ let uiState = {
   flowTreeExpandedIds: new Set(),
   activeFunctionId: null,
   activeTreeNodeKey: null,
+  callSiteCallerTreeNodeKey: null,
   hoveredTreeNodeKey: null,
   inViewTreeNodeKey: null,
   readFunctionIds: new Set(),
   completedFlowIds: new Set(),
+  callSiteReturnConsumedKeys: new Set(),
   collapsedFunctionIds: new Set(),
   multiFlowFunctionIds: new Set(),
 };
@@ -107,10 +109,12 @@ export function setFlowPayload(payload) {
     flowTreeExpandedIds: new Set(initialTree),
     activeFunctionId: null,
     activeTreeNodeKey: null,
+    callSiteCallerTreeNodeKey: null,
     hoveredTreeNodeKey: null,
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
     completedFlowIds: new Set(),
+    callSiteReturnConsumedKeys: new Set(),
     // Do not auto-collapse shared functions; users reported this hides bodies unexpectedly.
     collapsedFunctionIds: new Set(),
     multiFlowFunctionIds: new Set(multiFlowIds),
@@ -146,8 +150,10 @@ export function setSelectedFlow(flowId, rootId) {
 
   uiState.activeFunctionId = null;
   uiState.activeTreeNodeKey = null;
+  uiState.callSiteCallerTreeNodeKey = null;
   uiState.hoveredTreeNodeKey = null;
   uiState.inViewTreeNodeKey = null;
+  uiState.callSiteReturnConsumedKeys.clear();
   notify();
 }
 
@@ -353,6 +359,46 @@ export function collapseFlowTree() {
 export function setActiveFunction(functionId, treeNodeKey = null) {
   uiState.activeFunctionId = functionId;
   uiState.activeTreeNodeKey = treeNodeKey;
+  uiState.callSiteCallerTreeNodeKey = null;
+  notify();
+}
+
+/**
+ * Navigate to a callee from an inline call site in the code pane. Remembers the caller's
+ * tree path so the flow tree can dashed-outline that caller (canonical callee key may not
+ * have the same parent path when the callee appears earlier in DFS).
+ * @param {string} calleeId
+ * @param {string | null} calleeTreeNodeKey
+ * @param {string} inlineCallerTreeNodeKey - path key of the function body that contained the click
+ */
+export function setActiveFunctionFromInlineCallSite(calleeId, calleeTreeNodeKey, inlineCallerTreeNodeKey) {
+  uiState.activeFunctionId = calleeId;
+  uiState.activeTreeNodeKey = calleeTreeNodeKey;
+  uiState.callSiteCallerTreeNodeKey = inlineCallerTreeNodeKey || null;
+  notify();
+}
+
+/**
+ * After "Return to call site", hide that link on the callee card until they drill in again.
+ * @param {string | null | undefined} calleeTreeNodeKey - code card path key for the function being left
+ * @param {string} callerId
+ * @param {string | null} parentTreeNodeKey
+ */
+export function returnFromCallSiteToCaller(calleeTreeNodeKey, callerId, parentTreeNodeKey) {
+  if (calleeTreeNodeKey) uiState.callSiteReturnConsumedKeys.add(calleeTreeNodeKey);
+  uiState.activeFunctionId = callerId;
+  uiState.activeTreeNodeKey = parentTreeNodeKey;
+  uiState.callSiteCallerTreeNodeKey = null;
+  notify();
+}
+
+/**
+ * Show "Return to call site" again for this card (flow tree or inline call navigation).
+ * @param {string | null | undefined} treeNodeKey
+ */
+export function restoreCallSiteReturnTreeNode(treeNodeKey) {
+  if (!treeNodeKey) return;
+  if (!uiState.callSiteReturnConsumedKeys.delete(treeNodeKey)) return;
   notify();
 }
 
@@ -494,10 +540,12 @@ export function initStore() {
     flowTreeExpandedIds: new Set(),
     activeFunctionId: null,
     activeTreeNodeKey: null,
+    callSiteCallerTreeNodeKey: null,
     hoveredTreeNodeKey: null,
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
     completedFlowIds: new Set(),
+    callSiteReturnConsumedKeys: new Set(),
     collapsedFunctionIds: new Set(),
     multiFlowFunctionIds: new Set(),
   };
