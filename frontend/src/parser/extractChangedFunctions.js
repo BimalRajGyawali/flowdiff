@@ -1,15 +1,39 @@
 /**
  * Extracts changed/added functions from parsed diff.
- * Python only: detects `def name(...):` and `async def name(...):`.
+ * Python only: detects top-level `def` / `async def` and class methods (defs inside `class` bodies).
+ * Function ids: `path:name` at module scope, `path:Outer.Inner.methodName` for class methods.
  * Includes all .py files (tests appear in the file list; test roots are not listed as flows).
+ * Requires full-file source from the PR head when available: compressed hunks often omit `def`
+ * lines; overlap with `visibleLines` uses real new-file line numbers, so spans must come from
+ * {@link listAllPythonFunctionMetas} on the complete file, not hunk-stitched text alone.
  */
 
 /** @typedef {import('./parseDiff.js').ParsedFile} ParsedFile */
 import { buildVisibleLines } from './buildVisibleLines.js';
+import { computePythonFunctionEndLine, listAllPythonFunctionMetas } from './pythonDefScan.js';
+import { getQualifiedClassPrefix, getEnclosingClassHeaderLines } from './pythonClassContext.js';
 
 const PY_DEF_LINE_REGEX = /^(\s*)(?:async\s+)?def\s+(\w+)\b/;
-// Next top-level block: `def`/`class` line (paren or generics may continue on following lines).
-const PY_BLOCK_START_REGEX = /^(\s*)(?:async\s+)?def\s+\w+\b|^(\s*)class\s+\w+\b/;
+
+/**
+ * `computePythonFunctionEndLine` can run past the next method in a class when boundaries are
+ * ambiguous; cap so spans never include a following `def` at the same or lower indent.
+ * @param {{ lineNum: number, indent: number }[]} defsInFileOrder
+ * @param {number} index
+ * @param {number} endLine
+ * @param {number} fileEndLine
+ */
+function clampEndToNextSiblingDef(defsInFileOrder, index, endLine, fileEndLine) {
+  const cur = defsInFileOrder[index];
+  for (let j = index + 1; j < defsInFileOrder.length; j++) {
+    const n = defsInFileOrder[j];
+    if (n.lineNum <= cur.lineNum) continue;
+    if (n.indent <= cur.indent) {
+      return Math.min(endLine, n.lineNum - 1);
+    }
+  }
+  return Math.min(endLine, fileEndLine);
+}
 
 /**
  * @param {{ files: ParsedFile[] }} parsed
@@ -30,24 +54,46 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
     });
 
     const visibleLines = buildVisibleLines(pf.hunks);
+    const hasFullFile = typeof fileContentsByPath[pf.path] === 'string';
+
+    // GitHub hunks are often compressed: changed lines inside a function may appear without the
+    // `def` line. `visibleLines` still carry real new-file line numbers for those edits. Matching
+    // them to function bodies requires the full PR head file so we can find every `def` and its
+    // span (`listAllPythonFunctionMetas`). Stitched hunk-only text has wrong length/coordinates.
     const sourceText = fileContentsByPath[pf.path] ?? visibleLines.map((line) => line.content).join('\n');
     const sourceLines = sourceText.split('\n');
     const fileEndLine = sourceLines.length;
 
-    const defs = [];
-    for (let index = 0; index < sourceLines.length; index++) {
-      const line = sourceLines[index];
-      const match = line.match(PY_DEF_LINE_REGEX);
-      if (!match) continue;
-      const lineNum = index + 1;
-      const visibleLine = visibleLines.find((item) => item.lineNumber === lineNum);
-      defs.push({
-        name: match[2],
-        lineNum,
-        indent: match[1].length,
-        defAdded: visibleLine?.added ?? false,
-        snippet: line
+    /** @type {{ name: string, lineNum: number, indent: number, snippet: string, defAdded: boolean, endLine?: number }[]} */
+    let defs;
+    if (hasFullFile) {
+      defs = listAllPythonFunctionMetas(sourceLines).map((m) => {
+        const visibleLine = visibleLines.find((item) => item.lineNumber === m.startLine);
+        return {
+          name: m.name,
+          lineNum: m.startLine,
+          indent: m.indent,
+          snippet: m.snippet,
+          defAdded: visibleLine?.added ?? false,
+          endLine: m.endLine
+        };
       });
+    } else {
+      defs = [];
+      for (let index = 0; index < sourceLines.length; index++) {
+        const line = sourceLines[index];
+        const match = line.match(PY_DEF_LINE_REGEX);
+        if (!match) continue;
+        const lineNum = index + 1;
+        const visibleLine = visibleLines.find((item) => item.lineNumber === lineNum);
+        defs.push({
+          name: match[2],
+          lineNum,
+          indent: match[1].length,
+          defAdded: visibleLine?.added ?? false,
+          snippet: line
+        });
+      }
     }
 
     /** @type {import('../flowSchema.js').FunctionMeta[]} */
@@ -109,17 +155,16 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
     for (let i = 0; i < defs.length; i++) {
       const { name, lineNum, snippet, indent, defAdded } = defs[i];
       const startLine = decoratorStartByDefLine.get(lineNum) ?? lineNum;
-      let endLine = fileEndLine;
-      // Original heuristic for function boundaries: next def/class at same or lower indent.
-      for (let j = lineNum; j < sourceLines.length; j++) {
-        const blockMatch = sourceLines[j].match(PY_BLOCK_START_REGEX);
-        if (!blockMatch) continue;
-        const nextIndent = (blockMatch[1] ?? blockMatch[2] ?? '').length;
-        if (nextIndent <= indent) {
-          endLine = j;
-          break;
-        }
-      }
+      let endLine =
+        defs[i].endLine ??
+        computePythonFunctionEndLine(sourceLines, lineNum, indent, fileEndLine);
+      endLine = clampEndToNextSiblingDef(defs, i, endLine, fileEndLine);
+
+      const className = getQualifiedClassPrefix(sourceLines, lineNum, indent);
+      const isMethod = Boolean(className);
+      const classHeaderLines = isMethod
+        ? getEnclosingClassHeaderLines(sourceLines, lineNum, indent)
+        : [];
 
       // For module-context exclusion, treat the entire function span [startLine, endLine]
       // (including the def line) as "owned" by the function.
@@ -142,7 +187,7 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
       const isNewFunction = defAdded && !hasDeletedChange;
       const changeType = isNewFunction ? 'added' : 'modified';
 
-      const id = `${pf.path}:${name}`;
+      const id = isMethod ? `${pf.path}:${className}.${name}` : `${pf.path}:${name}`;
       const fnMeta = {
         id,
         name,
@@ -151,10 +196,16 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
         endLine,
         snippet: snippet ?? `def ${name}(`,
         changed: true,
-        changeType
+        changeType,
+        kind: isMethod ? 'method' : 'function',
+        ...(isMethod ? { className } : {})
       };
       functionsById[id] = fnMeta;
       changedFnsInFile.push(fnMeta);
+
+      for (const cln of classHeaderLines) {
+        decoratorLineNumbers.add(cln);
+      }
     }
 
     // Compute module-scope changed ranges.

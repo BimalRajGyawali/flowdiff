@@ -12,6 +12,7 @@ import {
   collapseFlowTree,
   getFlowTreeKeysAtDepth
 } from '../state/store.js';
+import { getFunctionDisplayName } from '../parser/functionDisplayName.js';
 
 // Tracks the first tree-node key where each function ID appears in the current flow tree.
 /** @type {Map<string, string>} */
@@ -145,7 +146,8 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   const sharedHint = isMultiFlow
     ? `<span class="flow-tree-shared-hint" title="Also appears in other flows (collapsed in code view)">↗</span>`
     : '';
-  row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${changeBadge}${escapeHtml(fn.name)}${sharedHint}</span>`;
+  const labelHtml = flowTreeLabelHtml(fn);
+  row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${changeBadge}${labelHtml}${sharedHint}</span>`;
   row.dataset.functionId = fn.id;
   row.dataset.treeNodeKey = treeNodeKey;
 
@@ -201,7 +203,7 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
           (recInView ? ' in-view' : '') +
           (recCallHover ? ' call-hover-target' : '') +
           (recIsRead ? ' read' : '');
-        recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${escapeHtml(child.name)}</span>`;
+        recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${flowTreeLabelHtml(child)}</span>`;
         recRow.title = 'Click to jump to where this function is shown above';
         recRow.dataset.functionId = child.id;
         recRow.dataset.treeNodeKey = originalKey;
@@ -224,6 +226,19 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   }
 
   parent.appendChild(item);
+}
+
+/**
+ * Rich label: methods show class name + dot + method (class segment muted).
+ * @param {import('../flowSchema.js').FunctionMeta} fn
+ */
+function flowTreeLabelHtml(fn) {
+  if (fn.kind === 'method' && fn.className) {
+    const cls = escapeHtml(fn.className);
+    const nm = escapeHtml(fn.name);
+    return `<span class="flow-tree-method" title="Method of class ${cls}"><span class="flow-tree-class-name">${cls}</span><span class="flow-tree-method-dot">.</span><span class="flow-tree-method-name">${nm}</span></span>`;
+  }
+  return escapeHtml(getFunctionDisplayName(fn));
 }
 
 function escapeHtml(text) {

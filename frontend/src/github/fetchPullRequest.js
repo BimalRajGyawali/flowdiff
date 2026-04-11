@@ -10,7 +10,7 @@ import { parseDiff } from '../parser/parseDiff.js';
 import { extractChangedFunctions } from '../parser/extractChangedFunctions.js';
 import { buildFlows } from '../parser/buildFlows.js';
 
-const CACHE_VERSION = 'v4';
+const CACHE_VERSION = 'v10';
 
 function getCacheKey(owner, repo, number) {
   return `flowdiff:${CACHE_VERSION}:${owner}/${repo}#${number}`;

@@ -1,0 +1,443 @@
+Flow tree dump
+PR: https://github.com/langchain-ai/langchain/pull/31685
+Generated: 2026-04-11T23:01:54.885Z
+
+Fetching PR metadata and diff...
+Head SHA: 330e10853a29e6f5bc043294f528a91875924c6c
+Title: feat(core): deprecate problematic `dict()` method
+Changed files (from diff): 4
+
+Fetching 4 Python file(s) from head...
+Loaded full contents for 4 file(s).
+
+--- Summary ---
+Functions/methods in graph: 29
+Edges: 53
+Flows: 20
+Parsed files: 4
+
+--- All nodes (id → display) ---
+  libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._combine_llm_outputs
+    → BaseChatModel._combine_llm_outputs (class: BaseChatModel)
+  libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations
+    → BaseChatModel._convert_cached_generations (class: BaseChatModel)
+  libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params
+    → BaseChatModel._get_invocation_params (class: BaseChatModel)
+  libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._serialized
+    → BaseChatModel._serialized (class: BaseChatModel)
+  libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.agenerate
+    → BaseChatModel.agenerate (class: BaseChatModel)
+  libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict
+    → BaseChatModel.asdict (class: BaseChatModel)
+  libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict
+    → BaseChatModel.dict (class: BaseChatModel)
+  libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.generate
+    → BaseChatModel.generate (class: BaseChatModel)
+  libs/core/langchain_core/language_models/llms.py:BaseLLM._call_async
+    → BaseLLM._call_async (class: BaseLLM)
+  libs/core/langchain_core/language_models/llms.py:BaseLLM._serialized
+    → BaseLLM._serialized (class: BaseLLM)
+  libs/core/langchain_core/language_models/llms.py:BaseLLM.agenerate
+    → BaseLLM.agenerate (class: BaseLLM)
+  libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict
+    → BaseLLM.asdict (class: BaseLLM)
+  libs/core/langchain_core/language_models/llms.py:BaseLLM.astream
+    → BaseLLM.astream (class: BaseLLM)
+  libs/core/langchain_core/language_models/llms.py:BaseLLM.dict
+    → BaseLLM.dict (class: BaseLLM)
+  libs/core/langchain_core/language_models/llms.py:BaseLLM.generate
+    → BaseLLM.generate (class: BaseLLM)
+  libs/core/langchain_core/language_models/llms.py:BaseLLM.save
+    → BaseLLM.save (class: BaseLLM)
+  libs/core/langchain_core/language_models/llms.py:BaseLLM.stream
+    → BaseLLM.stream (class: BaseLLM)
+  libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict
+    → BaseOutputParser.asdict (class: BaseOutputParser)
+  libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict
+    → BaseOutputParser.dict (class: BaseOutputParser)
+  libs/core/langchain_core/prompts/base.py:BasePromptTemplate._aformat_prompt_with_error_handling
+    → BasePromptTemplate._aformat_prompt_with_error_handling (class: BasePromptTemplate)
+  libs/core/langchain_core/prompts/base.py:BasePromptTemplate._format_prompt_with_error_handling
+    → BasePromptTemplate._format_prompt_with_error_handling (class: BasePromptTemplate)
+  libs/core/langchain_core/prompts/base.py:BasePromptTemplate._merge_partial_and_user_variables
+    → BasePromptTemplate._merge_partial_and_user_variables (class: BasePromptTemplate)
+  libs/core/langchain_core/prompts/base.py:BasePromptTemplate._serialized
+    → BasePromptTemplate._serialized (class: BasePromptTemplate)
+  libs/core/langchain_core/prompts/base.py:BasePromptTemplate._validate_input
+    → BasePromptTemplate._validate_input (class: BasePromptTemplate)
+  libs/core/langchain_core/prompts/base.py:BasePromptTemplate.ainvoke
+    → BasePromptTemplate.ainvoke (class: BasePromptTemplate)
+  libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict
+    → BasePromptTemplate.asdict (class: BasePromptTemplate)
+  libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict
+    → BasePromptTemplate.dict (class: BasePromptTemplate)
+  libs/core/langchain_core/prompts/base.py:BasePromptTemplate.invoke
+    → BasePromptTemplate.invoke (class: BasePromptTemplate)
+  libs/core/langchain_core/prompts/base.py:BasePromptTemplate.save
+    → BasePromptTemplate.save (class: BasePromptTemplate)
+
+--- Edges (caller → callee, callIndex) ---
+  BaseChatModel._convert_cached_generations [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations]  --0→  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]
+  BaseChatModel._convert_cached_generations [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations]  --1→  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]
+  BaseChatModel._convert_cached_generations [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations]  --2→  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]
+  BaseChatModel._convert_cached_generations [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations]  --3→  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]
+  BaseChatModel._convert_cached_generations [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations]  --4→  BaseChatModel.dict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict]
+  BaseChatModel._convert_cached_generations [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations]  --5→  BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict]
+  BaseChatModel._convert_cached_generations [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations]  --6→  BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict]
+  BaseChatModel._convert_cached_generations [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations]  --7→  BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict]
+  BaseChatModel._get_invocation_params [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params]  --0→  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]
+  BaseChatModel._get_invocation_params [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params]  --1→  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]
+  BaseChatModel._get_invocation_params [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params]  --2→  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]
+  BaseChatModel._get_invocation_params [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params]  --3→  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]
+  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]  --0→  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]
+  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]  --1→  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]
+  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]  --2→  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]
+  BaseChatModel.dict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict]  --0→  BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict]
+  BaseChatModel.dict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict]  --1→  BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict]
+  BaseChatModel.dict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict]  --2→  BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict]
+  BaseChatModel.dict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict]  --3→  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]
+  BaseChatModel.dict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict]  --4→  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]
+  BaseChatModel.dict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict]  --5→  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]
+  BaseChatModel.dict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict]  --6→  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]
+  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]  --0→  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]
+  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]  --1→  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]
+  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]  --2→  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]
+  BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict]  --0→  BaseChatModel.dict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict]
+  BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict]  --1→  BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict]
+  BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict]  --2→  BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict]
+  BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict]  --3→  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]
+  BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict]  --4→  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]
+  BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict]  --5→  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]
+  BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict]  --6→  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]
+  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]  --0→  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]
+  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]  --1→  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]
+  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]  --2→  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]
+  BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict]  --0→  BaseChatModel.dict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict]
+  BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict]  --1→  BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict]
+  BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict]  --2→  BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict]
+  BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict]  --3→  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]
+  BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict]  --4→  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]
+  BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict]  --5→  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]
+  BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict]  --6→  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]
+  BasePromptTemplate._format_prompt_with_error_handling [libs/core/langchain_core/prompts/base.py:BasePromptTemplate._format_prompt_with_error_handling]  --0→  BasePromptTemplate._validate_input [libs/core/langchain_core/prompts/base.py:BasePromptTemplate._validate_input]
+  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]  --0→  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]
+  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]  --1→  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]
+  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]  --2→  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]
+  BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict]  --0→  BaseChatModel.dict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict]
+  BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict]  --1→  BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict]
+  BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict]  --2→  BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict]
+  BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict]  --3→  BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict]
+  BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict]  --4→  BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict]
+  BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict]  --5→  BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict]
+  BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict]  --6→  BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict]
+
+========== Flow 1/20 ==========
+flow.id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._serialized
+flow.name: BaseChatModel._serialized
+rootId: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._serialized
+root display: BaseChatModel._serialized
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseChatModel._serialized [method]
+  id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._serialized
+  treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._serialized
+
+========== Flow 2/20 ==========
+flow.id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._combine_llm_outputs
+flow.name: BaseChatModel._combine_llm_outputs
+rootId: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._combine_llm_outputs
+root display: BaseChatModel._combine_llm_outputs
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseChatModel._combine_llm_outputs [method]
+  id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._combine_llm_outputs
+  treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._combine_llm_outputs
+
+========== Flow 3/20 ==========
+flow.id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations
+flow.name: BaseChatModel._convert_cached_generations
+rootId: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations
+root display: BaseChatModel._convert_cached_generations
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseChatModel._convert_cached_generations [method]
+  id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations
+  treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations
+  BaseChatModel.asdict [method]
+    id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict
+    treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations:0:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict
+    BaseLLM.asdict [method]
+      id: libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict
+      treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations:0:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict:0:libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict
+      (cycle edge skipped → BaseChatModel.asdict)
+      BaseOutputParser.asdict [method]
+        id: libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict
+        treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations:0:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict:0:libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict/e:libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict:1:libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict
+        (cycle edge skipped → BaseChatModel.asdict)
+        (cycle edge skipped → BaseLLM.asdict)
+        BasePromptTemplate.asdict [method]
+          id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict
+          treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations:0:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict:0:libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict/e:libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict:1:libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict/e:libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict:2:libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict
+          (cycle edge skipped → BaseChatModel.asdict)
+          (cycle edge skipped → BaseLLM.asdict)
+          (cycle edge skipped → BaseOutputParser.asdict)
+      → BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict] (omitted — already listed above in this flow)
+    → BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict] (omitted — already listed above in this flow)
+    → BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict] (omitted — already listed above in this flow)
+  → BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict] (omitted — already listed above in this flow)
+  → BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict] (omitted — already listed above in this flow)
+  → BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict] (omitted — already listed above in this flow)
+  BaseChatModel.dict [method]
+    id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict
+    treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations:4:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict
+    BaseLLM.dict [method]
+      id: libs/core/langchain_core/language_models/llms.py:BaseLLM.dict
+      treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations:4:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict:0:libs/core/langchain_core/language_models/llms.py:BaseLLM.dict
+      (cycle edge skipped → BaseChatModel.dict)
+      BaseOutputParser.dict [method]
+        id: libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict
+        treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations:4:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict:0:libs/core/langchain_core/language_models/llms.py:BaseLLM.dict/e:libs/core/langchain_core/language_models/llms.py:BaseLLM.dict:1:libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict
+        (cycle edge skipped → BaseChatModel.dict)
+        (cycle edge skipped → BaseLLM.dict)
+        BasePromptTemplate.dict [method]
+          id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict
+          treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._convert_cached_generations:4:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.dict:0:libs/core/langchain_core/language_models/llms.py:BaseLLM.dict/e:libs/core/langchain_core/language_models/llms.py:BaseLLM.dict:1:libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict/e:libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict:2:libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict
+          (cycle edge skipped → BaseChatModel.dict)
+          (cycle edge skipped → BaseLLM.dict)
+          (cycle edge skipped → BaseOutputParser.dict)
+          → BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict] (omitted — already listed above in this flow)
+          → BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict] (omitted — already listed above in this flow)
+          → BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict] (omitted — already listed above in this flow)
+          → BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict] (omitted — already listed above in this flow)
+        → BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict] (omitted — already listed above in this flow)
+        → BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict] (omitted — already listed above in this flow)
+        → BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict] (omitted — already listed above in this flow)
+        → BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict] (omitted — already listed above in this flow)
+      → BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict] (omitted — already listed above in this flow)
+      → BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict] (omitted — already listed above in this flow)
+      → BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict] (omitted — already listed above in this flow)
+      → BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict] (omitted — already listed above in this flow)
+      → BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict] (omitted — already listed above in this flow)
+    → BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict] (omitted — already listed above in this flow)
+    → BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict] (omitted — already listed above in this flow)
+    → BaseChatModel.asdict [libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict] (omitted — already listed above in this flow)
+    → BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict] (omitted — already listed above in this flow)
+    → BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict] (omitted — already listed above in this flow)
+    → BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict] (omitted — already listed above in this flow)
+  → BaseLLM.dict [libs/core/langchain_core/language_models/llms.py:BaseLLM.dict] (omitted — already listed above in this flow)
+  → BaseOutputParser.dict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.dict] (omitted — already listed above in this flow)
+  → BasePromptTemplate.dict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.dict] (omitted — already listed above in this flow)
+
+========== Flow 4/20 ==========
+flow.id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params
+flow.name: BaseChatModel._get_invocation_params
+rootId: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params
+root display: BaseChatModel._get_invocation_params
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseChatModel._get_invocation_params [method]
+  id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params
+  treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params
+  BaseChatModel.asdict [method]
+    id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict
+    treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params:0:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict
+    BaseLLM.asdict [method]
+      id: libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict
+      treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params:0:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict:0:libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict
+      (cycle edge skipped → BaseChatModel.asdict)
+      BaseOutputParser.asdict [method]
+        id: libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict
+        treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params:0:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict:0:libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict/e:libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict:1:libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict
+        (cycle edge skipped → BaseChatModel.asdict)
+        (cycle edge skipped → BaseLLM.asdict)
+        BasePromptTemplate.asdict [method]
+          id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict
+          treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel._get_invocation_params:0:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict/e:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.asdict:0:libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict/e:libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict:1:libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict/e:libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict:2:libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict
+          (cycle edge skipped → BaseChatModel.asdict)
+          (cycle edge skipped → BaseLLM.asdict)
+          (cycle edge skipped → BaseOutputParser.asdict)
+      → BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict] (omitted — already listed above in this flow)
+    → BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict] (omitted — already listed above in this flow)
+    → BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict] (omitted — already listed above in this flow)
+  → BaseLLM.asdict [libs/core/langchain_core/language_models/llms.py:BaseLLM.asdict] (omitted — already listed above in this flow)
+  → BaseOutputParser.asdict [libs/core/langchain_core/output_parsers/base.py:BaseOutputParser.asdict] (omitted — already listed above in this flow)
+  → BasePromptTemplate.asdict [libs/core/langchain_core/prompts/base.py:BasePromptTemplate.asdict] (omitted — already listed above in this flow)
+
+========== Flow 5/20 ==========
+flow.id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.generate
+flow.name: BaseChatModel.generate
+rootId: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.generate
+root display: BaseChatModel.generate
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseChatModel.generate [method]
+  id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.generate
+  treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.generate
+
+========== Flow 6/20 ==========
+flow.id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.agenerate
+flow.name: BaseChatModel.agenerate
+rootId: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.agenerate
+root display: BaseChatModel.agenerate
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseChatModel.agenerate [method]
+  id: libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.agenerate
+  treeNodeKey: root:libs/core/langchain_core/language_models/chat_models.py:BaseChatModel.agenerate
+
+========== Flow 7/20 ==========
+flow.id: libs/core/langchain_core/language_models/llms.py:BaseLLM._serialized
+flow.name: BaseLLM._serialized
+rootId: libs/core/langchain_core/language_models/llms.py:BaseLLM._serialized
+root display: BaseLLM._serialized
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseLLM._serialized [method]
+  id: libs/core/langchain_core/language_models/llms.py:BaseLLM._serialized
+  treeNodeKey: root:libs/core/langchain_core/language_models/llms.py:BaseLLM._serialized
+
+========== Flow 8/20 ==========
+flow.id: libs/core/langchain_core/language_models/llms.py:BaseLLM.stream
+flow.name: BaseLLM.stream
+rootId: libs/core/langchain_core/language_models/llms.py:BaseLLM.stream
+root display: BaseLLM.stream
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseLLM.stream [method]
+  id: libs/core/langchain_core/language_models/llms.py:BaseLLM.stream
+  treeNodeKey: root:libs/core/langchain_core/language_models/llms.py:BaseLLM.stream
+
+========== Flow 9/20 ==========
+flow.id: libs/core/langchain_core/language_models/llms.py:BaseLLM.astream
+flow.name: BaseLLM.astream
+rootId: libs/core/langchain_core/language_models/llms.py:BaseLLM.astream
+root display: BaseLLM.astream
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseLLM.astream [method]
+  id: libs/core/langchain_core/language_models/llms.py:BaseLLM.astream
+  treeNodeKey: root:libs/core/langchain_core/language_models/llms.py:BaseLLM.astream
+
+========== Flow 10/20 ==========
+flow.id: libs/core/langchain_core/language_models/llms.py:BaseLLM.generate
+flow.name: BaseLLM.generate
+rootId: libs/core/langchain_core/language_models/llms.py:BaseLLM.generate
+root display: BaseLLM.generate
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseLLM.generate [method]
+  id: libs/core/langchain_core/language_models/llms.py:BaseLLM.generate
+  treeNodeKey: root:libs/core/langchain_core/language_models/llms.py:BaseLLM.generate
+
+========== Flow 11/20 ==========
+flow.id: libs/core/langchain_core/language_models/llms.py:BaseLLM.agenerate
+flow.name: BaseLLM.agenerate
+rootId: libs/core/langchain_core/language_models/llms.py:BaseLLM.agenerate
+root display: BaseLLM.agenerate
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseLLM.agenerate [method]
+  id: libs/core/langchain_core/language_models/llms.py:BaseLLM.agenerate
+  treeNodeKey: root:libs/core/langchain_core/language_models/llms.py:BaseLLM.agenerate
+
+========== Flow 12/20 ==========
+flow.id: libs/core/langchain_core/language_models/llms.py:BaseLLM._call_async
+flow.name: BaseLLM._call_async
+rootId: libs/core/langchain_core/language_models/llms.py:BaseLLM._call_async
+root display: BaseLLM._call_async
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseLLM._call_async [method]
+  id: libs/core/langchain_core/language_models/llms.py:BaseLLM._call_async
+  treeNodeKey: root:libs/core/langchain_core/language_models/llms.py:BaseLLM._call_async
+
+========== Flow 13/20 ==========
+flow.id: libs/core/langchain_core/language_models/llms.py:BaseLLM.save
+flow.name: BaseLLM.save
+rootId: libs/core/langchain_core/language_models/llms.py:BaseLLM.save
+root display: BaseLLM.save
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BaseLLM.save [method]
+  id: libs/core/langchain_core/language_models/llms.py:BaseLLM.save
+  treeNodeKey: root:libs/core/langchain_core/language_models/llms.py:BaseLLM.save
+
+========== Flow 14/20 ==========
+flow.id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._serialized
+flow.name: BasePromptTemplate._serialized
+rootId: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._serialized
+root display: BasePromptTemplate._serialized
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BasePromptTemplate._serialized [method]
+  id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._serialized
+  treeNodeKey: root:libs/core/langchain_core/prompts/base.py:BasePromptTemplate._serialized
+
+========== Flow 15/20 ==========
+flow.id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._format_prompt_with_error_handling
+flow.name: BasePromptTemplate._format_prompt_with_error_handling
+rootId: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._format_prompt_with_error_handling
+root display: BasePromptTemplate._format_prompt_with_error_handling
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BasePromptTemplate._format_prompt_with_error_handling [method]
+  id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._format_prompt_with_error_handling
+  treeNodeKey: root:libs/core/langchain_core/prompts/base.py:BasePromptTemplate._format_prompt_with_error_handling
+  BasePromptTemplate._validate_input [method]
+    id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._validate_input
+    treeNodeKey: root:libs/core/langchain_core/prompts/base.py:BasePromptTemplate._format_prompt_with_error_handling/e:libs/core/langchain_core/prompts/base.py:BasePromptTemplate._format_prompt_with_error_handling:0:libs/core/langchain_core/prompts/base.py:BasePromptTemplate._validate_input
+
+========== Flow 16/20 ==========
+flow.id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._aformat_prompt_with_error_handling
+flow.name: BasePromptTemplate._aformat_prompt_with_error_handling
+rootId: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._aformat_prompt_with_error_handling
+root display: BasePromptTemplate._aformat_prompt_with_error_handling
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BasePromptTemplate._aformat_prompt_with_error_handling [method]
+  id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._aformat_prompt_with_error_handling
+  treeNodeKey: root:libs/core/langchain_core/prompts/base.py:BasePromptTemplate._aformat_prompt_with_error_handling
+
+========== Flow 17/20 ==========
+flow.id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.invoke
+flow.name: BasePromptTemplate.invoke
+rootId: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.invoke
+root display: BasePromptTemplate.invoke
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BasePromptTemplate.invoke [method]
+  id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.invoke
+  treeNodeKey: root:libs/core/langchain_core/prompts/base.py:BasePromptTemplate.invoke
+
+========== Flow 18/20 ==========
+flow.id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.ainvoke
+flow.name: BasePromptTemplate.ainvoke
+rootId: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.ainvoke
+root display: BasePromptTemplate.ainvoke
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BasePromptTemplate.ainvoke [method]
+  id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.ainvoke
+  treeNodeKey: root:libs/core/langchain_core/prompts/base.py:BasePromptTemplate.ainvoke
+
+========== Flow 19/20 ==========
+flow.id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._merge_partial_and_user_variables
+flow.name: BasePromptTemplate._merge_partial_and_user_variables
+rootId: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._merge_partial_and_user_variables
+root display: BasePromptTemplate._merge_partial_and_user_variables
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BasePromptTemplate._merge_partial_and_user_variables [method]
+  id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate._merge_partial_and_user_variables
+  treeNodeKey: root:libs/core/langchain_core/prompts/base.py:BasePromptTemplate._merge_partial_and_user_variables
+
+========== Flow 20/20 ==========
+flow.id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.save
+flow.name: BasePromptTemplate.save
+rootId: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.save
+root display: BasePromptTemplate.save
+
+Tree (DFS, callIndex order; same rules as UI flow tree):
+BasePromptTemplate.save [method]
+  id: libs/core/langchain_core/prompts/base.py:BasePromptTemplate.save
+  treeNodeKey: root:libs/core/langchain_core/prompts/base.py:BasePromptTemplate.save

@@ -298,6 +298,34 @@ body {
   gap: 4px;
 }
 
+/* Class methods: show "ClassName.method" with the class segment de-emphasized */
+.flow-tree-method {
+  display: inline;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-tree-class-name {
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.flow-tree-method-dot {
+  color: #9ca3af;
+  margin: 0 1px;
+}
+
+.flow-tree-method-name {
+  font-weight: 600;
+  color: #111827;
+}
+
+.flow-tree-node.active .flow-tree-method-name {
+  color: #1d4ed8;
+}
+
 .flow-tree-badge {
   display: inline-block;
   width: 9px;

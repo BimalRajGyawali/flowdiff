@@ -15,6 +15,7 @@ import {
   setHoveredTreeNodeKey
 } from '../state/store.js';
 import { normalizeMergedPatchDiffLines } from '../parser/mergeDiffArtifacts.js';
+import { getFunctionDisplayName } from '../parser/functionDisplayName.js';
 
 let lastScrolledToActiveKey = null;
 let scrollRAF = null;
@@ -626,10 +627,9 @@ function buildFunctionDisplayRows(fn, sourceLines, diffLines) {
       .filter((value) => value != null);
     const anchor = anchors.length > 0 ? Math.min(...anchors) : fn.endLine + 1;
     const blocks = changeBlocksByAnchor.get(anchor) || [];
-    blocks.push({
-      deleted: currentBlock.filter((row) => row.type === 'del'),
-      added: currentBlock.filter((row) => row.type === 'add')
-    });
+    // Keep patch row order (-,+, -,+, …). Splitting into deleted[] then added[] and rejoining
+    // produced -,-,+,+, which breaks intraline pairing and reads as corrupted/garbled hunks.
+    blocks.push({ lines: [...currentBlock] });
     changeBlocksByAnchor.set(anchor, blocks);
     currentBlock = [];
   }
@@ -646,7 +646,8 @@ function buildFunctionDisplayRows(fn, sourceLines, diffLines) {
   const addedLineNumbers = new Set(
     [...changeBlocksByAnchor.values()]
       .flat()
-      .flatMap((block) => block.added)
+      .flatMap((block) => block.lines)
+      .filter((row) => row.type === 'add')
       .map((row) => row.newLineNumber)
       .filter((value) => value != null)
   );
@@ -655,8 +656,7 @@ function buildFunctionDisplayRows(fn, sourceLines, diffLines) {
   for (let lineNumber = fn.startLine; lineNumber <= fn.endLine; lineNumber++) {
     const blocks = changeBlocksByAnchor.get(lineNumber) || [];
     for (const block of blocks) {
-      rows.push(...block.deleted);
-      rows.push(...block.added);
+      rows.push(...block.lines);
     }
 
     if (addedLineNumbers.has(lineNumber)) {
@@ -673,8 +673,7 @@ function buildFunctionDisplayRows(fn, sourceLines, diffLines) {
 
   const trailingBlocks = changeBlocksByAnchor.get(fn.endLine + 1) || [];
   for (const block of trailingBlocks) {
-    rows.push(...block.deleted);
-    rows.push(...block.added);
+    rows.push(...block.lines);
   }
 
   return rows;
@@ -865,6 +864,8 @@ function getPathFunctionIds(pathPrefix) {
  */
 function findCallSitesInLine(line, callees) {
   const sites = [];
+  /** Same source range must not be claimed by multiple callees that share a short `name`. */
+  const claimed = new Set();
   for (const { calleeId, name } of callees) {
     const re = new RegExp(`\\b${name}\\s*\\(`, 'g');
     let m;
@@ -872,6 +873,9 @@ function findCallSitesInLine(line, callees) {
       const start = m.index;
       const openParen = line.indexOf('(', start);
       const end = findCallEnd(line, openParen);
+      const key = `${start}:${end}`;
+      if (claimed.has(key)) continue;
+      claimed.add(key);
       sites.push({ start, end, calleeId });
     }
   }
@@ -931,7 +935,7 @@ function appendFunctionBodyDiffLine(
       const ordAttr = ` data-fd-callee-ord="${calleeOrdinalOnLine}"`;
       const recClass = isRecursive ? ' call-site-recursive' : '';
       const title = isRecursive ? 'Jump to definition (already shown above in this flow)' : 'Go to function';
-      const fnName = payload.functionsById[calleeId]?.name || calleeId;
+      const fnName = getFunctionDisplayName(payload.functionsById[calleeId]) || calleeId;
       const recContent = isRecursive
         ? `<span class="call-site-recursive-icon" aria-hidden="true">↻</span> ${escapeHtml(fnName)} <span class="call-site-recursive-hint">(already above)</span>`
         : escapeHtml(callText);
@@ -974,7 +978,7 @@ function appendFunctionBodyDiffLine(
       uiState.activeFunctionId === calleeId &&
       (!treeNodeKey || !uiState.activeTreeNodeKey || uiState.activeTreeNodeKey === treeNodeKey);
     if (isRecursive) {
-      el.title = `Go to ${callee?.name || calleeId} (already shown above)`;
+      el.title = `Go to ${getFunctionDisplayName(callee) || calleeId} (already shown above)`;
       el.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -991,7 +995,7 @@ function appendFunctionBodyDiffLine(
       return;
     }
     if (isActive) el.classList.add('active');
-    el.title = `Go to ${callee?.name || calleeId}`;
+    el.title = `Go to ${getFunctionDisplayName(callee) || calleeId}`;
     el.addEventListener('click', (e) => {
       e.stopPropagation();
       const ord = el.dataset.fdCalleeOrd != null ? Number(el.dataset.fdCalleeOrd) : 0;
@@ -1497,7 +1501,8 @@ export function renderCodeView(container) {
         ? {
             callerId,
             parentTreeNodeKey: getParentTreeNodeKey(treeNodeKey),
-            callerName: flowPayload.functionsById[callerId]?.name || callerId,
+            callerName:
+              getFunctionDisplayName(flowPayload.functionsById[callerId]) || callerId,
             calleeTreeNodeKey: treeNodeKey
           }
         : null;
