@@ -117,8 +117,11 @@ export function setFlowPayload(payload) {
     readFunctionIds: new Set(),
     completedFlowIds: new Set(),
     callSiteReturnConsumedKeys: new Set(),
-    // Do not auto-collapse shared functions; users reported this hides bodies unexpectedly.
-    collapsedFunctionIds: new Set(),
+    // Code view: collapse bodies for functions that participate in more than one flow, except
+    // the initially selected flow’s root (still visible as the entrypoint).
+    collapsedFunctionIds: new Set(
+      [...multiFlowIds].filter((id) => id !== firstFlow?.rootId)
+    ),
     multiFlowFunctionIds: new Set(multiFlowIds),
   };
   flowTreeExpansionByFlowId.clear();
@@ -148,7 +151,15 @@ export function setSelectedFlow(flowId, rootId) {
     const fullTree = getFlowTreeKeysAtDepth(Infinity);
     uiState.flowTreeExpandedIds = new Set(fullTree);
     uiState.expandedTreeNodeIds = new Set(fullTree);
+    // First visit to this flow: collapse shared (multi-flow) functions in code view except root.
+    const flowFnIds = collectFunctionIdsInFlow(flowId, flowPayload);
+    const mf = uiState.multiFlowFunctionIds ?? new Set();
+    for (const id of mf) {
+      if (flowFnIds.has(id) && id !== rootId) uiState.collapsedFunctionIds.add(id);
+    }
   }
+
+  if (rootId) uiState.collapsedFunctionIds.delete(rootId);
 
   uiState.activeFunctionId = null;
   uiState.activeTreeNodeKey = null;

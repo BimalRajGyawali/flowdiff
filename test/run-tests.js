@@ -9,7 +9,6 @@ import { dirname, join } from 'path';
 import { parseDiff } from '../frontend/src/parser/parseDiff.js';
 import { extractChangedFunctions } from '../frontend/src/parser/extractChangedFunctions.js';
 import { buildFlows } from '../frontend/src/parser/buildFlows.js';
-import { augmentCallersInFunctionsById } from '../frontend/src/parser/augmentCallersInFunctionsById.js';
 import { isTestFile } from '../frontend/src/parser/isTestFile.js';
 import { parsePrUrl } from '../frontend/src/github/parsePrUrl.js';
 import { normalizeMergedPatchDiffLines } from '../frontend/src/parser/mergeDiffArtifacts.js';
@@ -239,7 +238,7 @@ test('extractChangedFunctions includes decorators in function span', () => {
   assert(fn.endLine >= 6, 'function span still includes body');
 });
 
-test('augmentCallersInFunctionsById roots flow at unchanged caller of changed callee', () => {
+test('unchanged functions stay out of payload; no synthetic caller nodes', () => {
   const modPath = 'pkg/mod.py';
   const fullFile = ['def run():', '    helper()', '', 'def helper():', '    x = 2', ''].join('\n');
   const diff = [
@@ -255,16 +254,53 @@ test('augmentCallersInFunctionsById roots flow at unchanged caller of changed ca
   const parsed = parseDiff(diff);
   const contents = { [modPath]: fullFile };
   const { functionsById } = extractChangedFunctions(parsed, contents);
-  const merged = augmentCallersInFunctionsById(functionsById, contents);
-  const { flows, edges } = buildFlows(merged, parsed, contents);
-  const runFlow = flows.find((f) => merged[f.rootId]?.name === 'run');
-  assert(runFlow, 'unchanged run becomes flow root');
-  assert(!flows.some((f) => merged[f.rootId]?.name === 'helper'), 'changed helper is not a separate root');
-  assert(merged[`${modPath}:run`]?.changed === false);
+  const { flows, edges } = buildFlows(functionsById, parsed, contents);
+  assert(!functionsById[`${modPath}:run`], 'unchanged run is not in payload');
+  const helperFlow = flows.find((f) => functionsById[f.rootId]?.name === 'helper');
+  assert(helperFlow, 'changed helper is the flow root');
+  assert(
+    !edges.some((e) => e.callerId === `${modPath}:run`),
+    'no edges from run — unchanged callers are not graph nodes'
+  );
+});
+
+test('buildFlows links changed callee even when call site line is diff context only', () => {
+  const modPath = 'pkg/mod.py';
+  const fullFile = [
+    'def run():',
+    '    helper()',
+    '    return 0',
+    '',
+    'def helper():',
+    '    x = 2',
+    ''
+  ].join('\n');
+  const diff = [
+    'diff --git a/pkg/mod.py b/pkg/mod.py',
+    '--- a/pkg/mod.py',
+    '+++ b/pkg/mod.py',
+    '@@ -2,3 +2,3 @@',
+    ' def run():',
+    '     helper()',
+    '-    return 1',
+    '+    return 0',
+    '@@ -6,3 +6,3 @@',
+    ' def helper():',
+    '-    x = 1',
+    '+    x = 2',
+    ''
+  ].join('\n');
+  const parsed = parseDiff(diff);
+  const contents = { [modPath]: fullFile };
+  const { functionsById } = extractChangedFunctions(parsed, contents);
+  const { edges, flows } = buildFlows(functionsById, parsed, contents);
+  assert(functionsById[`${modPath}:run`] && functionsById[`${modPath}:helper`], 'both fns changed');
   assert(
     edges.some((e) => e.callerId === `${modPath}:run` && e.calleeId === `${modPath}:helper`),
-    'edge from run to helper'
+    'run -> helper via helper() on a context line inside run'
   );
+  const runFlow = flows.find((f) => functionsById[f.rootId]?.name === 'run');
+  assert(runFlow, 'run is root when it calls helper and has no incoming prod edges');
 });
 
 test('buildFlows keeps production roots when only tests call them', () => {
@@ -296,8 +332,11 @@ test('buildFlows keeps production roots when only tests call them', () => {
 test('buildFlows produces flows with correct sibling order (func2 before func5, func3 before func4)', () => {
   const diff = readFileSync(join(__dirname, 'fixtures/sample.diff'), 'utf8');
   const parsed = parseDiff(diff);
-  const { functionsById, files } = extractChangedFunctions(parsed);
-  const { flows, edges } = buildFlows(functionsById, parsed);
+  const sampleContents = {
+    'src/example.py': readFileSync(join(__dirname, 'fixtures/sample_full_file.py'), 'utf8')
+  };
+  const { functionsById, files } = extractChangedFunctions(parsed, sampleContents);
+  const { flows, edges } = buildFlows(functionsById, parsed, sampleContents);
 
   assert(flows.length >= 1, 'at least one flow');
   const rootFlow = flows.find((f) => {
@@ -326,22 +365,12 @@ test('buildFlows suppresses descendant roots already reachable from another root
   const prodPath = 'pkg/mod.py';
   const testPath = 'tests/test_mod.py';
 
-  const fullProd = [
-    'def B():',
-    '    return 20',
-    '',
-    'def A():',
-    '    T()',
-    '    return 10',
-    ''
-  ].join('\n');
+  // Line numbers must match the @@ hunks (def A at new line 5; def T at new line 2).
+  const fullProd = ['def B():', '    return 20', '', '', 'def A():', '    T()  #', '    return 10', ''].join(
+    '\n'
+  );
 
-  const fullTest = [
-    'def T():',
-    '    B()',
-    '    return 3',
-    ''
-  ].join('\n');
+  const fullTest = ['', 'def T():', '    B()  #', '    return 3', ''].join('\n');
 
   const diff = [
     'diff --git a/pkg/mod.py b/pkg/mod.py',
@@ -350,14 +379,20 @@ test('buildFlows suppresses descendant roots already reachable from another root
     '@@ -2,1 +2,1 @@',
     '-    return 2',
     '+    return 20',
-    '@@ -6,1 +6,1 @@',
+    '@@ -5,3 +5,3 @@',
+    ' def A():',
+    '-    T()',
+    '+    T()  #',
     '-    return 1',
     '+    return 10',
     '',
     'diff --git a/tests/test_mod.py b/tests/test_mod.py',
     '--- a/tests/test_mod.py',
     '+++ b/tests/test_mod.py',
-    '@@ -3,1 +3,1 @@',
+    '@@ -2,3 +2,3 @@',
+    ' def T():',
+    '-    B()',
+    '+    B()  #',
     '-    return None',
     '+    return 3',
     ''
@@ -366,19 +401,18 @@ test('buildFlows suppresses descendant roots already reachable from another root
   const parsed = parseDiff(diff);
   const contents = { [prodPath]: fullProd, [testPath]: fullTest };
   const { functionsById } = extractChangedFunctions(parsed, contents);
-  const merged = augmentCallersInFunctionsById(functionsById, contents);
-  const { flows, edges } = buildFlows(merged, parsed, contents);
+  const { flows, edges } = buildFlows(functionsById, parsed, contents);
 
   const flowNames = flows
-    .map((f) => merged[f.rootId]?.name)
+    .map((f) => functionsById[f.rootId]?.name)
     .filter(Boolean);
 
   assert(flowNames.includes('A'), 'A is a flow root');
   assert(!flowNames.includes('B'), 'B is suppressed since it is reachable from A');
 
-  const aId = Object.entries(merged).find(([, f]) => f.name === 'A')?.[0];
-  const tId = Object.entries(merged).find(([, f]) => f.name === 'T')?.[0];
-  const bId = Object.entries(merged).find(([, f]) => f.name === 'B')?.[0];
+  const aId = Object.entries(functionsById).find(([, f]) => f.name === 'A')?.[0];
+  const tId = Object.entries(functionsById).find(([, f]) => f.name === 'T')?.[0];
+  const bId = Object.entries(functionsById).find(([, f]) => f.name === 'B')?.[0];
   assert(
     edges.some((e) => e.callerId === aId && e.calleeId === tId),
     'edge A -> T'
@@ -430,8 +464,11 @@ test('isTestFile classifies paths; extractChangedFunctions still parses test fil
 test('flow name is root function name', () => {
   const diff = readFileSync(join(__dirname, 'fixtures/sample.diff'), 'utf8');
   const parsed = parseDiff(diff);
-  const { functionsById } = extractChangedFunctions(parsed);
-  const { flows } = buildFlows(functionsById, parsed);
+  const sampleContents = {
+    'src/example.py': readFileSync(join(__dirname, 'fixtures/sample_full_file.py'), 'utf8')
+  };
+  const { functionsById } = extractChangedFunctions(parsed, sampleContents);
+  const { flows } = buildFlows(functionsById, parsed, sampleContents);
   const func1Flow = flows.find((f) => functionsById[f.rootId]?.name === 'func1');
   assert(func1Flow, 'flow for func1 exists');
   assert(func1Flow.name === 'func1', 'flow name is root function name');
@@ -440,8 +477,11 @@ test('flow name is root function name', () => {
 test('flow payload has required shape', () => {
   const diff = readFileSync(join(__dirname, 'fixtures/sample.diff'), 'utf8');
   const parsed = parseDiff(diff);
-  const { functionsById, files } = extractChangedFunctions(parsed);
-  const { flows, edges } = buildFlows(functionsById, parsed);
+  const sampleContents = {
+    'src/example.py': readFileSync(join(__dirname, 'fixtures/sample_full_file.py'), 'utf8')
+  };
+  const { functionsById, files } = extractChangedFunctions(parsed, sampleContents);
+  const { flows, edges } = buildFlows(functionsById, parsed, sampleContents);
 
   const payload = { files, functionsById, flows, edges };
   assert(Array.isArray(payload.files));

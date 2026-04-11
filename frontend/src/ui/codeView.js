@@ -468,6 +468,28 @@ function setupCtxCollapseToggle(btn, body, rowData, persistenceKey) {
 }
 
 /**
+ * Names to scan for in each line: edge callees first (for callIndex alignment), then any other
+ * in-flow function so links appear even when the global edge list missed a call (regex / name ambiguity).
+ * @param {{ calleeId: string, callIndex: number }[]} calleesWithIndex
+ * @param {string} callerFnId
+ * @param {Set<string>} flowFnIds
+ * @param {Record<string, import('../flowSchema.js').FunctionMeta>} functionsById
+ */
+function buildCalleesForFind(calleesWithIndex, callerFnId, flowFnIds, functionsById) {
+  const map = new Map();
+  for (const { calleeId } of calleesWithIndex) {
+    const meta = functionsById[calleeId];
+    if (meta?.name) map.set(calleeId, { calleeId, name: meta.name });
+  }
+  for (const id of flowFnIds) {
+    if (id === callerFnId || map.has(id)) continue;
+    const meta = functionsById[id];
+    if (meta?.name) map.set(id, { calleeId: id, name: meta.name });
+  }
+  return [...map.values()];
+}
+
+/**
  * Assigns call-site indices in source order so collapsed context does not steal indices from later lines.
  * Mutates rows with `_sites` (empty for `del`).
  * @param {any[]} rows
@@ -1118,6 +1140,7 @@ function mountModuleContextSection(
  * @param {Map<string, { moduleChangedRanges?: { start: number, end: number }[], moduleChangedSymbols?: string[] }>} moduleMetaByFile
  * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string, calleeTreeNodeKey: string } | null} [callSiteReturn]
  * @param {Map<string, string>} canonicalKeyByFunctionId - first DFS tree key per function (matches code cards)
+ * @param {Set<string>} flowFnIds - all function ids in the selected flow (for call-site name scan)
  */
 function renderFunctionBody(
   container,
@@ -1129,6 +1152,7 @@ function renderFunctionBody(
   filesWithModuleContext,
   moduleMetaByFile,
   calleesByCaller,
+  flowFnIds,
   indent,
   pathPrefix,
   prContext,
@@ -1273,7 +1297,7 @@ function renderFunctionBody(
     return;
   }
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
-  const calleesForFind = [...new Map(calleesWithIndex.map((e) => [e.calleeId, { calleeId: e.calleeId, name: payload.functionsById[e.calleeId]?.name }])).values()].filter((x) => x.name);
+  const calleesForFind = buildCalleesForFind(calleesWithIndex, fn.id, flowFnIds, payload.functionsById);
   attachCallSitesToRows(fnDiffLines, calleesWithIndex, calleesForFind);
   const rowsToRender = expandContextCollapseRows(fnDiffLines);
 
@@ -1492,6 +1516,7 @@ export function renderCodeView(container) {
       filesWithModuleContext,
       moduleMetaByFile,
       calleesByCaller,
+      flowFnIds,
       '',
       treeNodeKey,
       prContext,

@@ -1,6 +1,9 @@
 /**
  * Builds flows from changed Python functions by detecting call relationships.
  * Call graph: caller -> callee. Supports cross-file calls (e.g. imported functions).
+ * Edges connect changed functions when the caller’s body names another **changed** function
+ * at a call site (any line in the body, including context-only lines in the diff).
+ * Callees not in {@link extractChangedFunctions}’s map are ignored.
  * Flows are rooted at entry functions (no incoming edges).
  * Flow name = root function name. Test roots (test_* names or test paths) are omitted from flows.
  */
@@ -37,32 +40,39 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
       .sort((a, b) => a.startLine - b.startLine);
     if (fnsInFile.length === 0) continue;
 
-    const sourceText = fileContentsByPath[pf.path];
-    const sourceLines = sourceText
-      ? sourceText.split('\n')
-      : buildVisibleLines(pf.hunks).map((line) => line.content);
+    const visibleLines = buildVisibleLines(pf.hunks);
+    const lineContentByNumber = new Map();
+    for (const vl of visibleLines) {
+      if (vl.lineNumber == null) continue;
+      lineContentByNumber.set(vl.lineNumber, vl.content);
+    }
+
+    const fullLines = fileContentsByPath[pf.path]?.split('\n');
+    const lineText = (ln) =>
+      fullLines ? (fullLines[ln - 1] ?? '') : (lineContentByNumber.get(ln) ?? '');
 
     for (let i = 0; i < fnsInFile.length; i++) {
       const caller = fnsInFile[i];
-      const body = sourceLines
-        .slice(caller.startLine - 1, caller.endLine)
-        .filter(Boolean)
-        .join('\n');
-
       const callOrder = [];
-      let m;
-      PY_CALL_REGEX.lastIndex = 0;
-      while ((m = PY_CALL_REGEX.exec(body)) !== null) {
-        const calleeName = m[1];
-        if (PY_KEYWORDS.has(calleeName)) continue;
 
-        const calleeIds = getFunctionsByName(functionsById, calleeName).filter((id) => id !== caller.id);
-        for (const calleeId of calleeIds) {
-          const key = `${caller.id}->${calleeId}`;
-          const existing = callOrder.find((e) => e.key === key);
-          if (!existing) {
-            const idx = callOrder.length;
-            callOrder.push({ key, calleeId, callIndex: idx });
+      for (let ln = caller.startLine; ln <= caller.endLine; ln++) {
+        const line = lineText(ln);
+        let m;
+        PY_CALL_REGEX.lastIndex = 0;
+        while ((m = PY_CALL_REGEX.exec(line)) !== null) {
+          const calleeName = m[1];
+          if (PY_KEYWORDS.has(calleeName)) continue;
+
+          const calleeIds = getFunctionsByName(functionsById, calleeName).filter(
+            (id) => id !== caller.id && functionsById[id]?.changed !== false
+          );
+          for (const calleeId of calleeIds) {
+            const key = `${caller.id}->${calleeId}`;
+            const existing = callOrder.find((e) => e.key === key);
+            if (!existing) {
+              const idx = callOrder.length;
+              callOrder.push({ key, calleeId, callIndex: idx });
+            }
           }
         }
       }

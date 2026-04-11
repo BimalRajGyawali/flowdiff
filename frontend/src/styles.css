@@ -801,16 +801,6 @@ body {
   border-color: #afb8c1;
 }
 
-.function-block.root {
-  background: #ffffff;
-  border-color: #d0d7de;
-}
-
-.function-block.root.active {
-  background: #f0f6ff;
-  border-color: #a5d0f7;
-}
-
 .function-block-caller {
   font-size: 11px;
   color: #57606a;
