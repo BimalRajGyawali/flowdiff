@@ -562,6 +562,8 @@ function buildDiffLines(hunks) {
     }
   }
 
+  // Rows keep absolute file line numbers from the walk above. Do not renumber after this:
+  // normalize may drop duplicate ctx rows; survivors still have correct gutters.
   diffLines = normalizeMergedPatchDiffLines(diffLines);
 
   // GitHub-style intraline highlighting for "replace" blocks (runs of - then +).
@@ -596,8 +598,14 @@ function buildDiffLines(hunks) {
 function buildFunctionDisplayRows(fn, sourceLines, diffLines) {
   const relevantDiffLines = diffLines.filter((row) => {
     if (row.type === 'del') {
+      // Consecutive `-` lines share one anchor (new-file insert position). That anchor can sit
+      // *before* this function while oldLineNumber still walks through lines inside the body.
       const anchor = row.anchorNewLineNumber ?? (fn.endLine + 1);
-      return anchor >= fn.startLine && anchor <= fn.endLine + 1;
+      const inByAnchor = anchor >= fn.startLine && anchor <= fn.endLine + 1;
+      const oldLn = row.oldLineNumber;
+      const inByOld =
+        oldLn != null && oldLn !== '' && oldLn >= fn.startLine && oldLn <= fn.endLine;
+      return inByAnchor || inByOld;
     }
     return row.newLineNumber != null && row.newLineNumber >= fn.startLine && row.newLineNumber <= fn.endLine;
   });
@@ -617,66 +625,82 @@ function buildFunctionDisplayRows(fn, sourceLines, diffLines) {
     return relevantDiffLines;
   }
 
-  const changeBlocksByAnchor = new Map();
-  let currentBlock = [];
+  /** @param {number | null | undefined} n */
+  const n1 = (n) => (n == null || Number.isNaN(Number(n)) ? null : Number(n));
 
-  function flushBlock() {
-    if (currentBlock.length === 0) return;
-    const anchors = currentBlock
-      .map((row) => (row.type === 'del' ? row.anchorNewLineNumber : row.newLineNumber))
-      .filter((value) => value != null);
-    const anchor = anchors.length > 0 ? Math.min(...anchors) : fn.endLine + 1;
-    const blocks = changeBlocksByAnchor.get(anchor) || [];
-    // Keep patch row order (-,+, -,+, …). Splitting into deleted[] then added[] and rejoining
-    // produced -,-,+,+, which breaks intraline pairing and reads as corrupted/garbled hunks.
-    blocks.push({ lines: [...currentBlock] });
-    changeBlocksByAnchor.set(anchor, blocks);
-    currentBlock = [];
-  }
-
+  // Bucket patch rows by new-file line number. Anchor-keyed runs used min(anchor) for a whole
+  // -/+ group, so lines 2..N of a multi-line replace were still emitted as synthetic HEAD + patch.
+  /** @type {Map<number, typeof relevantDiffLines>} */
+  const patchRowsByNewLine = new Map();
   for (const row of relevantDiffLines) {
-    if (row.type === 'ctx') {
-      flushBlock();
-      continue;
+    if (row.type === 'ctx') continue;
+    let key = row.type === 'del' ? n1(row.anchorNewLineNumber) : n1(row.newLineNumber);
+    if (key == null) continue;
+    if (row.type === 'del') {
+      const a = n1(row.anchorNewLineNumber);
+      const o = n1(row.oldLineNumber);
+      if (a != null && o != null) {
+        const anchorOutside = a < fn.startLine || a > fn.endLine + 1;
+        const oldInside = o >= fn.startLine && o <= fn.endLine;
+        if (anchorOutside && oldInside) {
+          // Shared anchor can sit just outside the function span while oldLine walks the body.
+          key = a < fn.startLine ? fn.startLine : fn.endLine + 1;
+        }
+      }
     }
-    currentBlock.push(row);
+    const list = patchRowsByNewLine.get(key) ?? [];
+    list.push(row);
+    patchRowsByNewLine.set(key, list);
   }
-  flushBlock();
-
-  const addedLineNumbers = new Set(
-    [...changeBlocksByAnchor.values()]
-      .flat()
-      .flatMap((block) => block.lines)
-      .filter((row) => row.type === 'add')
-      .map((row) => row.newLineNumber)
-      .filter((value) => value != null)
-  );
 
   const rows = [];
-  for (let lineNumber = fn.startLine; lineNumber <= fn.endLine; lineNumber++) {
-    const blocks = changeBlocksByAnchor.get(lineNumber) || [];
-    for (const block of blocks) {
-      rows.push(...block.lines);
-    }
-
-    if (addedLineNumbers.has(lineNumber)) {
+  for (let lineNumber = fn.startLine; lineNumber <= fn.endLine + 1; lineNumber++) {
+    const patchRows = patchRowsByNewLine.get(lineNumber);
+    if (patchRows?.length) {
+      rows.push(...patchRows);
       continue;
     }
-
-    rows.push({
-      type: 'ctx',
-      oldLineNumber: '',
-      newLineNumber: lineNumber,
-      content: sourceLines[lineNumber - 1] ?? ''
-    });
+    if (lineNumber <= fn.endLine) {
+      rows.push({
+        type: 'ctx',
+        oldLineNumber: '',
+        newLineNumber: lineNumber,
+        content: sourceLines[lineNumber - 1] ?? ''
+      });
+    }
   }
 
-  const trailingBlocks = changeBlocksByAnchor.get(fn.endLine + 1) || [];
-  for (const block of trailingBlocks) {
-    rows.push(...block.lines);
-  }
+  return stripSyntheticCtxDuplicateOfFollowingPatch(rows);
+}
 
-  return rows;
+/** Trailing whitespace ignored — patch `+` often matches HEAD after a replace. */
+function normalizeDiffLineText(s) {
+  return (s ?? '').replace(/\s+$/, '');
+}
+
+/**
+ * Drops a synthesized context row when it duplicates the next patch `+` (same text as HEAD).
+ * Skips any `-` rows in between so we handle both `ctx,-,+` and insert-only `ctx,+` (e.g. new
+ * `@deprecated` line added above `def` with no `-` on that same line).
+ * @param {any[]} rows
+ */
+function stripSyntheticCtxDuplicateOfFollowingPatch(rows) {
+  const out = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (row?.type === 'ctx' && row.oldLineNumber === '') {
+      let k = i + 1;
+      while (k < rows.length && rows[k]?.type === 'del') k++;
+      if (
+        rows[k]?.type === 'add' &&
+        normalizeDiffLineText(row.content) === normalizeDiffLineText(rows[k].content)
+      ) {
+        continue;
+      }
+    }
+    out.push(row);
+  }
+  return out;
 }
 
 function buildRangeDisplayRows(ranges, sourceLines, diffLines, excludedLineNumbers = new Set()) {
@@ -686,7 +710,14 @@ function buildRangeDisplayRows(ranges, sourceLines, diffLines, excludedLineNumbe
   const relevantDiffLines = diffLines.filter((row) => {
     if (row.type === 'del') {
       const anchor = row.anchorNewLineNumber ?? 0;
-      return inRange(anchor) && !excludedLineNumbers.has(anchor);
+      const oldLn = row.oldLineNumber;
+      const byAnchor = inRange(anchor) && !excludedLineNumbers.has(anchor);
+      const byOld =
+        oldLn != null &&
+        oldLn !== '' &&
+        inRange(oldLn) &&
+        !excludedLineNumbers.has(oldLn);
+      return byAnchor || byOld;
     }
     return row.newLineNumber != null && inRange(row.newLineNumber) && !excludedLineNumbers.has(row.newLineNumber);
   });
@@ -697,8 +728,22 @@ function buildRangeDisplayRows(ranges, sourceLines, diffLines, excludedLineNumbe
     // rows here duplicated every unchanged line (ctx row + synthetic ctx for the same number).
     for (const row of relevantDiffLines) {
       if (row.type === 'ctx') continue;
-      const anchor = row.type === 'del' ? (row.anchorNewLineNumber ?? 0) : (row.newLineNumber ?? 0);
-      if (anchor >= r.start && anchor <= r.end) rows.push(row);
+      if (row.type === 'del') {
+        const anchor = row.anchorNewLineNumber ?? 0;
+        const oldLn = row.oldLineNumber;
+        const inByAnchor =
+          anchor >= r.start && anchor <= r.end && !excludedLineNumbers.has(anchor);
+        const inByOld =
+          oldLn != null &&
+          oldLn !== '' &&
+          oldLn >= r.start &&
+          oldLn <= r.end &&
+          !excludedLineNumbers.has(oldLn);
+        if (inByAnchor || inByOld) rows.push(row);
+      } else {
+        const n = row.newLineNumber ?? 0;
+        if (n >= r.start && n <= r.end && !excludedLineNumbers.has(n)) rows.push(row);
+      }
     }
     // Add context lines for the current source in the range (skip ones already added as '+' lines).
     const addedNums = new Set(rows.filter((x) => x.type === 'add').map((x) => x.newLineNumber).filter((n) => n != null));
