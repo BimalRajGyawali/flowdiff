@@ -22,6 +22,7 @@ const PY_CALL_REGEX = /(?:^|\s)(?:self\.|[\w]+\.)?(\w+)\s*\(/g;
 
 /** `self.method(` — group 1 is method name */
 const PY_SELF_CALL_REGEX = /\bself\.(\w+)\s*\(/g;
+const PY_DEF_OR_CLASS_LINE_REGEX = /^\s*(?:async\s+def|def|class)\b/;
 
 const PY_KEYWORDS = new Set(['def', 'if', 'elif', 'else', 'for', 'while', 'with', 'try', 'except', 'finally', 'class', 'return', 'raise', 'yield', 'assert', 'lambda', 'and', 'or', 'not', 'in', 'is']);
 
@@ -91,6 +92,8 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
       for (let ln = caller.startLine; ln <= caller.endLine; ln++) {
         if (!diffLineNumbers.has(ln)) continue;
         const line = lineText(ln);
+        // Prevent false edges like `def main(` being treated as a call to another `main`.
+        if (PY_DEF_OR_CLASS_LINE_REGEX.test(line)) continue;
 
         function pushCalleeEdges(calleeIds) {
           for (const calleeId of calleeIds) {

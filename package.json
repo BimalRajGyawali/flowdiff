@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dump-flow-tree": "node scripts/dump-flow-tree.mjs",
     "test": "node test/run-tests.js",
     "serve": "npx live-server . --port=3333",
     "start": "npm run serve"
