@@ -233,12 +233,17 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
  * @param {import('../flowSchema.js').FunctionMeta} fn
  */
 function flowTreeLabelHtml(fn) {
+  const deletedPrefix = fn.changeType === 'deleted'
+    ? '<span class="flow-tree-deleted-tag" title="Deleted function">Deleted</span>'
+    : '';
   if (fn.kind === 'method' && fn.className) {
     const cls = escapeHtml(fn.className);
     const nm = escapeHtml(fn.name);
-    return `<span class="flow-tree-method" title="Method of class ${cls}"><span class="flow-tree-class-name">${cls}</span><span class="flow-tree-method-dot">.</span><span class="flow-tree-method-name">${nm}</span></span>`;
+    const title = fn.changeType === 'deleted' ? `Deleted method of class ${cls}` : `Method of class ${cls}`;
+    return `${deletedPrefix}<span class="flow-tree-method${fn.changeType === 'deleted' ? ' flow-tree-method-deleted' : ''}" title="${title}"><span class="flow-tree-class-name">${cls}</span><span class="flow-tree-method-dot">.</span><span class="flow-tree-method-name">${nm}</span></span>`;
   }
-  return escapeHtml(getFunctionDisplayName(fn));
+  const label = escapeHtml(getFunctionDisplayName(fn));
+  return `${deletedPrefix}<span class="${fn.changeType === 'deleted' ? 'flow-tree-name-deleted' : ''}">${label}</span>`;
 }
 
 function escapeHtml(text) {

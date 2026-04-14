@@ -97,7 +97,12 @@ export function renderFlowList(container) {
 
     const nameEl = document.createElement('div');
     nameEl.className = 'flow-list-item-name';
-    nameEl.innerHTML = `${badge}${escapeHtml(flow.name ?? root?.name ?? flow.rootId)}`;
+    const name = escapeHtml(flow.name ?? root?.name ?? flow.rootId);
+    const nameClass = root?.changeType === 'deleted' ? 'flow-list-name-deleted' : '';
+    const deletedTag = root?.changeType === 'deleted'
+      ? '<span class="flow-list-deleted-tag" title="Deleted function">Deleted</span>'
+      : '';
+    nameEl.innerHTML = `${badge}${deletedTag}<span class="${nameClass}">${name}</span>`;
 
     const metaEl = document.createElement('div');
     metaEl.className = 'flow-list-item-meta';

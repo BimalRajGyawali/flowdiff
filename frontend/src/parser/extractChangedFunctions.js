@@ -15,6 +15,46 @@ import { getQualifiedClassPrefix, getEnclosingClassHeaderLines } from './pythonC
 
 const PY_DEF_LINE_REGEX = /^(\s*)(?:async\s+)?def\s+(\w+)\b/;
 
+function collectDeletedFunctionMetas(pf, survivingFunctionNames = new Set()) {
+  const deletedFns = [];
+  for (const hunk of pf.hunks || []) {
+    let oldLine = hunk.oldStart;
+    for (const rawLine of hunk.lines || []) {
+      if (rawLine.startsWith('-')) {
+        const content = rawLine.slice(1);
+        const match = content.match(PY_DEF_LINE_REGEX);
+        if (match) {
+          const name = match[2];
+          // If this function name still exists in the new file, treat this as a modification
+          // (e.g. signature change) rather than a true deletion.
+          if (survivingFunctionNames.has(name)) {
+            oldLine += 1;
+            continue;
+          }
+          deletedFns.push({
+            id: `${pf.path}:deleted:${name}:${oldLine}`,
+            name,
+            file: pf.path,
+            startLine: oldLine,
+            endLine: oldLine,
+            snippet: content,
+            changed: true,
+            changeType: 'deleted',
+            kind: 'function'
+          });
+        }
+        oldLine += 1;
+        continue;
+      }
+      if (rawLine.startsWith('+')) {
+        continue;
+      }
+      oldLine += 1;
+    }
+  }
+  return deletedFns;
+}
+
 /**
  * `computePythonFunctionEndLine` can run past the next method in a class when boundaries are
  * ambiguous; cap so spans never include a following `def` at the same or lower indent.
@@ -98,6 +138,7 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
 
     /** @type {import('../flowSchema.js').FunctionMeta[]} */
     const changedFnsInFile = [];
+    const survivingFunctionNames = new Set(defs.map((d) => d.name));
 
     // Decorators immediately above a `def` belong to the function, not module context.
     // This includes multi-line decorators where continuation lines are indented further.
@@ -173,9 +214,14 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
       const hasAddedChange = visibleLines.some(
         (line) => line.lineNumber >= startLine && line.lineNumber <= endLine && line.added
       );
-      const hasDeletedChange = visibleLines.some(
-        (line) => line.lineNumber >= startLine && line.lineNumber <= endLine && line.touchedByDeletion
-      );
+      const hasDeletedChange = visibleLines.some((line) => {
+        if (line.lineNumber < startLine || line.lineNumber > endLine) return false;
+        if (!line.touchedByDeletion) return false;
+        // A deletion immediately before `def ...` can mark the def line as touched even when this
+        // function body did not change (e.g. previous function removed with no blank-line gap).
+        // Treat deletion touch on the function start line as non-body noise.
+        return line.lineNumber !== startLine;
+      });
       const hasAnyChange = hasAddedChange || hasDeletedChange;
 
       // Only keep functions whose body changed (added or deleted lines).
@@ -205,6 +251,14 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
 
       for (const cln of classHeaderLines) {
         decoratorLineNumbers.add(cln);
+      }
+    }
+
+    const deletedFns = collectDeletedFunctionMetas(pf, survivingFunctionNames);
+    for (const deletedFn of deletedFns) {
+      if (!functionsById[deletedFn.id]) {
+        functionsById[deletedFn.id] = deletedFn;
+        changedFnsInFile.push(deletedFn);
       }
     }
 

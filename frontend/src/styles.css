@@ -343,6 +343,31 @@ body {
   background: #bf8700;
 }
 
+.flow-tree-badge-deleted {
+  background: #cf222e;
+}
+
+.flow-tree-name-deleted,
+.flow-tree-method-deleted {
+  color: #8c2f39;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.flow-tree-deleted-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  height: 16px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #cf222e;
+  background: #ffebe9;
+  border: 1px solid #ffd1d5;
+  margin-right: 2px;
+}
+
 .flow-tree-node.read {
   opacity: 0.55;
 }
@@ -488,6 +513,29 @@ body {
 
 .flow-list-badge-modified {
   background: #bf8700;
+}
+
+.flow-list-badge-deleted {
+  background: #cf222e;
+}
+
+.flow-list-name-deleted {
+  color: #8c2f39;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.flow-list-deleted-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  height: 16px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #cf222e;
+  background: #ffebe9;
+  border: 1px solid #ffd1d5;
 }
 
 .flow-list-folder {
@@ -1109,6 +1157,11 @@ body {
 .function-badge-modified {
   background: #fff8c5;
   color: #9a6700;
+}
+
+.function-badge-deleted {
+  background: #ffebe9;
+  color: #cf222e;
 }
 
 .inline-callee {

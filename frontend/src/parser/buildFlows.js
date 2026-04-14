@@ -29,7 +29,7 @@ const PY_KEYWORDS = new Set(['def', 'if', 'elif', 'else', 'for', 'while', 'with'
 /** All functions with a given name (across files). */
 function getFunctionsByName(functionsById, name) {
   return Object.entries(functionsById)
-    .filter(([, fn]) => fn.name === name)
+    .filter(([, fn]) => fn.name === name && fn.changeType !== 'deleted')
     .map(([id]) => id);
 }
 
