@@ -1,10 +1,9 @@
 /**
  * Flow list pane: lists discovered flows with root labels and metadata.
- * Test flows (file under tests/ or name starting with test_) are grouped under a "Tests" folder.
+ * Test-only roots are omitted (see buildFlows); this list is production flows only.
  */
 
-import { getState, setSelectedFlow, setFlowListTestsExpanded } from '../state/store.js';
-import { isTestFunction } from '../parser/isTestFile.js';
+import { getState, setSelectedFlow, setFlowCompletedState } from '../state/store.js';
 
 /**
  * Compute flow metadata: depth, node count, files.
@@ -51,22 +50,20 @@ export function renderFlowList(container) {
     return;
   }
 
-  const flowsWithMeta = flowPayload.flows.map((f) => ({
-    flow: f,
-    root: flowPayload.functionsById[f.rootId],
-    meta: getFlowMetadata(f, flowPayload)
-  }));
-
-  const mainFlows = flowsWithMeta.filter(({ root }) => !isTestFunction(root));
-  const testFlows = flowsWithMeta.filter(({ root }) => isTestFunction(root));
-  mainFlows.sort((a, b) => b.meta.nodeCount - a.meta.nodeCount);
-  testFlows.sort((a, b) => b.meta.nodeCount - a.meta.nodeCount);
+  const flowsWithMeta = flowPayload.flows
+    .map((f) => ({
+      flow: f,
+      root: flowPayload.functionsById[f.rootId],
+      meta: getFlowMetadata(f, flowPayload)
+    }))
+    .filter(({ root }) => root);
+  flowsWithMeta.sort((a, b) => b.meta.nodeCount - a.meta.nodeCount);
 
   const list = document.createElement('div');
   list.className = 'flow-list';
 
-  if (mainFlows.length === 0 && testFlows.length === 0) {
-    list.textContent = 'No matching flows.';
+  if (flowsWithMeta.length === 0) {
+    list.textContent = 'No flows.';
     container.appendChild(list);
     return;
   }
@@ -75,15 +72,37 @@ export function renderFlowList(container) {
     const item = document.createElement('div');
     item.className = 'flow-list-item';
     if (flow.id === uiState.selectedFlowId) item.classList.add('selected');
+    if (uiState.completedFlowIds?.has(flow.id)) item.classList.add('flow-list-item-flow-complete');
     item.dataset.flowId = flow.id;
+
+    const completeLabel = document.createElement('label');
+    completeLabel.className = 'flow-list-flow-complete-label';
+    completeLabel.title = 'Mark entire flow as complete';
+    const completeCheck = document.createElement('input');
+    completeCheck.type = 'checkbox';
+    completeCheck.className = 'flow-list-flow-complete-check';
+    completeCheck.checked = uiState.completedFlowIds?.has(flow.id) ?? false;
+    completeCheck.setAttribute('aria-label', 'Mark entire flow as complete');
+    completeCheck.addEventListener('click', (e) => e.stopPropagation());
+    completeCheck.addEventListener('mousedown', (e) => e.stopPropagation());
+    completeCheck.addEventListener('change', (e) => {
+      e.stopPropagation();
+      setFlowCompletedState(flow.id, completeCheck.checked);
+    });
+    completeLabel.addEventListener('click', (e) => e.stopPropagation());
+    completeLabel.appendChild(completeCheck);
 
     const changeType = root?.changeType;
     const badge = changeType ? `<span class="flow-list-badge flow-list-badge-${changeType}" title="${changeType}"></span>` : '';
 
     const nameEl = document.createElement('div');
     nameEl.className = 'flow-list-item-name';
-    nameEl.innerHTML = `${badge}${escapeHtml(flow.name ?? root?.name ?? flow.rootId)}`;
-    item.appendChild(nameEl);
+    const name = escapeHtml(flow.name ?? root?.name ?? flow.rootId);
+    const nameClass = root?.changeType === 'deleted' ? 'flow-list-name-deleted' : '';
+    const deletedTag = root?.changeType === 'deleted'
+      ? '<span class="flow-list-deleted-tag" title="Deleted function">Deleted</span>'
+      : '';
+    nameEl.innerHTML = `${badge}${deletedTag}<span class="${nameClass}">${name}</span>`;
 
     const metaEl = document.createElement('div');
     metaEl.className = 'flow-list-item-meta';
@@ -119,41 +138,20 @@ export function renderFlowList(container) {
       item.classList.add('flow-list-item-complete');
     }
 
-    item.appendChild(metaEl);
+    const body = document.createElement('div');
+    body.className = 'flow-list-item-body';
+    body.appendChild(nameEl);
+    body.appendChild(metaEl);
+
+    item.appendChild(completeLabel);
+    item.appendChild(body);
 
     item.addEventListener('click', () => setSelectedFlow(flow.id, flow.rootId));
     parent.appendChild(item);
   }
 
-  for (const entry of mainFlows) {
+  for (const entry of flowsWithMeta) {
     appendFlowItem(list, entry);
-  }
-
-  if (testFlows.length > 0) {
-    const folder = document.createElement('div');
-    folder.className = 'flow-list-folder';
-    const header = document.createElement('button');
-    header.type = 'button';
-    header.className = 'flow-list-folder-header';
-    const testsExpanded = !!uiState.flowListTestsExpanded;
-    header.setAttribute('aria-expanded', testsExpanded ? 'true' : 'false');
-    header.innerHTML = `<span class="flow-list-folder-icon">${testsExpanded ? '▾' : '▸'}</span> Tests (${testFlows.length})`;
-    header.title = 'Test flows (files under tests/ or names starting with test_)';
-    const body = document.createElement('div');
-    body.className = 'flow-list-folder-body';
-    body.hidden = !testsExpanded;
-    testFlows.forEach((entry) => appendFlowItem(body, entry));
-    folder.appendChild(header);
-    folder.appendChild(body);
-    header.addEventListener('click', () => {
-      const expanded = header.getAttribute('aria-expanded') === 'true';
-      const next = !expanded;
-      header.setAttribute('aria-expanded', next ? 'true' : 'false');
-      body.hidden = !next;
-      folder.querySelector('.flow-list-folder-icon').textContent = next ? '▾' : '▸';
-      setFlowListTestsExpanded(next);
-    });
-    list.appendChild(folder);
   }
 
   container.appendChild(list);

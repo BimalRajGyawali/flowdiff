@@ -1,15 +1,79 @@
 /**
  * Extracts changed/added functions from parsed diff.
- * Python only: detects `def name(...):` and `async def name(...):`.
- * Includes all .py files (test files are included; test flows are grouped in the UI).
+ * Python only: detects top-level `def` / `async def` and class methods (defs inside `class` bodies).
+ * Function ids: `path:name` at module scope, `path:Outer.Inner.methodName` for class methods.
+ * Includes all .py files (tests appear in the file list; test roots are not listed as flows).
+ * Requires full-file source from the PR head when available: compressed hunks often omit `def`
+ * lines; overlap with `visibleLines` uses real new-file line numbers, so spans must come from
+ * {@link listAllPythonFunctionMetas} on the complete file, not hunk-stitched text alone.
  */
 
 /** @typedef {import('./parseDiff.js').ParsedFile} ParsedFile */
 import { buildVisibleLines } from './buildVisibleLines.js';
+import { computePythonFunctionEndLine, listAllPythonFunctionMetas } from './pythonDefScan.js';
+import { getQualifiedClassPrefix, getEnclosingClassHeaderLines } from './pythonClassContext.js';
 
-const PY_FN_REGEX = /(?:async\s+)?def\s+(\w+)\s*\(/g;
-const PY_DEF_LINE_REGEX = /^(\s*)(?:async\s+)?def\s+(\w+)\s*\(/;
-const PY_BLOCK_START_REGEX = /^(\s*)(?:async\s+)?def\s+\w+\s*\(|^(\s*)class\s+\w+/;
+const PY_DEF_LINE_REGEX = /^(\s*)(?:async\s+)?def\s+(\w+)\b/;
+
+function collectDeletedFunctionMetas(pf, survivingFunctionNames = new Set()) {
+  const deletedFns = [];
+  for (const hunk of pf.hunks || []) {
+    let oldLine = hunk.oldStart;
+    for (const rawLine of hunk.lines || []) {
+      if (rawLine.startsWith('-')) {
+        const content = rawLine.slice(1);
+        const match = content.match(PY_DEF_LINE_REGEX);
+        if (match) {
+          const name = match[2];
+          // If this function name still exists in the new file, treat this as a modification
+          // (e.g. signature change) rather than a true deletion.
+          if (survivingFunctionNames.has(name)) {
+            oldLine += 1;
+            continue;
+          }
+          deletedFns.push({
+            id: `${pf.path}:deleted:${name}:${oldLine}`,
+            name,
+            file: pf.path,
+            startLine: oldLine,
+            endLine: oldLine,
+            snippet: content,
+            changed: true,
+            changeType: 'deleted',
+            kind: 'function'
+          });
+        }
+        oldLine += 1;
+        continue;
+      }
+      if (rawLine.startsWith('+')) {
+        continue;
+      }
+      oldLine += 1;
+    }
+  }
+  return deletedFns;
+}
+
+/**
+ * `computePythonFunctionEndLine` can run past the next method in a class when boundaries are
+ * ambiguous; cap so spans never include a following `def` at the same or lower indent.
+ * @param {{ lineNum: number, indent: number }[]} defsInFileOrder
+ * @param {number} index
+ * @param {number} endLine
+ * @param {number} fileEndLine
+ */
+function clampEndToNextSiblingDef(defsInFileOrder, index, endLine, fileEndLine) {
+  const cur = defsInFileOrder[index];
+  for (let j = index + 1; j < defsInFileOrder.length; j++) {
+    const n = defsInFileOrder[j];
+    if (n.lineNum <= cur.lineNum) continue;
+    if (n.indent <= cur.indent) {
+      return Math.min(endLine, n.lineNum - 1);
+    }
+  }
+  return Math.min(endLine, fileEndLine);
+}
 
 /**
  * @param {{ files: ParsedFile[] }} parsed
@@ -30,36 +94,62 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
     });
 
     const visibleLines = buildVisibleLines(pf.hunks);
+    const hasFullFile = typeof fileContentsByPath[pf.path] === 'string';
+
+    // GitHub hunks are often compressed: changed lines inside a function may appear without the
+    // `def` line. `visibleLines` still carry real new-file line numbers for those edits. Matching
+    // them to function bodies requires the full PR head file so we can find every `def` and its
+    // span (`listAllPythonFunctionMetas`). Stitched hunk-only text has wrong length/coordinates.
     const sourceText = fileContentsByPath[pf.path] ?? visibleLines.map((line) => line.content).join('\n');
     const sourceLines = sourceText.split('\n');
     const fileEndLine = sourceLines.length;
 
-    const defs = [];
-    for (let index = 0; index < sourceLines.length; index++) {
-      const line = sourceLines[index];
-      const match = line.match(PY_DEF_LINE_REGEX);
-      if (!match) continue;
-      const lineNum = index + 1;
-      const visibleLine = visibleLines.find((item) => item.lineNumber === lineNum);
-      defs.push({
-        name: match[2],
-        lineNum,
-        indent: match[1].length,
-        defAdded: visibleLine?.added ?? false,
-        snippet: line
+    /** @type {{ name: string, lineNum: number, indent: number, snippet: string, defAdded: boolean, endLine?: number }[]} */
+    let defs;
+    if (hasFullFile) {
+      defs = listAllPythonFunctionMetas(sourceLines).map((m) => {
+        const visibleLine = visibleLines.find((item) => item.lineNumber === m.startLine);
+        return {
+          name: m.name,
+          lineNum: m.startLine,
+          indent: m.indent,
+          snippet: m.snippet,
+          defAdded: visibleLine?.added ?? false,
+          endLine: m.endLine
+        };
       });
+    } else {
+      defs = [];
+      for (let index = 0; index < sourceLines.length; index++) {
+        const line = sourceLines[index];
+        const match = line.match(PY_DEF_LINE_REGEX);
+        if (!match) continue;
+        const lineNum = index + 1;
+        const visibleLine = visibleLines.find((item) => item.lineNumber === lineNum);
+        defs.push({
+          name: match[2],
+          lineNum,
+          indent: match[1].length,
+          defAdded: visibleLine?.added ?? false,
+          snippet: line
+        });
+      }
     }
 
     /** @type {import('../flowSchema.js').FunctionMeta[]} */
     const changedFnsInFile = [];
+    const survivingFunctionNames = new Set(defs.map((d) => d.name));
 
     // Decorators immediately above a `def` belong to the function, not module context.
     // This includes multi-line decorators where continuation lines are indented further.
     const decoratorLineNumbers = new Set();
+    const decoratorStartByDefLine = new Map();
     for (const d of defs) {
+      let decoratorStart = d.lineNum;
+      let seenDecoratorStart = false;
       // Walk upward from the line above `def`, collecting the contiguous decorator block:
       // - lines starting with '@' at the same indent as the def
-      // - any continuation lines more-indented than the def (e.g. decorator args split across lines)
+      // - continuation lines inside decorator arguments (indented lines and bare closing brackets)
       for (let idx = d.lineNum - 2; idx >= 0; idx--) {
         const text = sourceLines[idx] ?? '';
         if (text.trim().length === 0) break;
@@ -68,10 +158,36 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
 
         const isDecoratorStart = indentLen === d.indent && text.trimStart().startsWith('@');
         const isDecoratorContinuation = indentLen > d.indent;
+        const isDecoratorClosingLine = indentLen === d.indent && /^[)\]}]+,?\s*$/.test(text.trim());
 
-        if (!isDecoratorStart && !isDecoratorContinuation) break;
-        decoratorLineNumbers.add(idx + 1);
+        // Regular decorator line anchors the decorator block.
+        if (isDecoratorStart) {
+          seenDecoratorStart = true;
+          decoratorLineNumbers.add(idx + 1);
+          decoratorStart = idx + 1;
+          continue;
+        }
+
+        // Before seeing any '@', only allow a closing-bracket line (for multiline decorator args).
+        if (!seenDecoratorStart) {
+          if (isDecoratorClosingLine) {
+            decoratorLineNumbers.add(idx + 1);
+            decoratorStart = idx + 1;
+            continue;
+          }
+          break;
+        }
+
+        // After decorator block is anchored, allow continuation/closing lines.
+        if (isDecoratorContinuation || isDecoratorClosingLine) {
+          decoratorLineNumbers.add(idx + 1);
+          decoratorStart = idx + 1;
+          continue;
+        }
+
+        break;
       }
+      decoratorStartByDefLine.set(d.lineNum, decoratorStart);
     }
 
     /** @type {{ start: number, end: number }[]} */
@@ -79,28 +195,33 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
 
     for (let i = 0; i < defs.length; i++) {
       const { name, lineNum, snippet, indent, defAdded } = defs[i];
-      let endLine = fileEndLine;
-      // Original heuristic for function boundaries: next def/class at same or lower indent.
-      for (let j = lineNum; j < sourceLines.length; j++) {
-        const blockMatch = sourceLines[j].match(PY_BLOCK_START_REGEX);
-        if (!blockMatch) continue;
-        const nextIndent = (blockMatch[1] ?? blockMatch[2] ?? '').length;
-        if (nextIndent <= indent) {
-          endLine = j;
-          break;
-        }
-      }
+      const startLine = decoratorStartByDefLine.get(lineNum) ?? lineNum;
+      let endLine =
+        defs[i].endLine ??
+        computePythonFunctionEndLine(sourceLines, lineNum, indent, fileEndLine);
+      endLine = clampEndToNextSiblingDef(defs, i, endLine, fileEndLine);
+
+      const className = getQualifiedClassPrefix(sourceLines, lineNum, indent);
+      const isMethod = Boolean(className);
+      const classHeaderLines = isMethod
+        ? getEnclosingClassHeaderLines(sourceLines, lineNum, indent)
+        : [];
 
       // For module-context exclusion, treat the entire function span [startLine, endLine]
       // (including the def line) as "owned" by the function.
-      functionOwnedRanges.push({ start: lineNum, end: endLine });
+      functionOwnedRanges.push({ start: startLine, end: endLine });
 
       const hasAddedChange = visibleLines.some(
-        (line) => line.lineNumber >= lineNum && line.lineNumber <= endLine && line.added
+        (line) => line.lineNumber >= startLine && line.lineNumber <= endLine && line.added
       );
-      const hasDeletedChange = visibleLines.some(
-        (line) => line.lineNumber >= lineNum && line.lineNumber <= endLine && line.touchedByDeletion
-      );
+      const hasDeletedChange = visibleLines.some((line) => {
+        if (line.lineNumber < startLine || line.lineNumber > endLine) return false;
+        if (!line.touchedByDeletion) return false;
+        // A deletion immediately before `def ...` can mark the def line as touched even when this
+        // function body did not change (e.g. previous function removed with no blank-line gap).
+        // Treat deletion touch on the function start line as non-body noise.
+        return line.lineNumber !== startLine;
+      });
       const hasAnyChange = hasAddedChange || hasDeletedChange;
 
       // Only keep functions whose body changed (added or deleted lines).
@@ -112,19 +233,33 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
       const isNewFunction = defAdded && !hasDeletedChange;
       const changeType = isNewFunction ? 'added' : 'modified';
 
-      const id = `${pf.path}:${name}`;
+      const id = isMethod ? `${pf.path}:${className}.${name}` : `${pf.path}:${name}`;
       const fnMeta = {
         id,
         name,
         file: pf.path,
-        startLine: lineNum,
+        startLine,
         endLine,
         snippet: snippet ?? `def ${name}(`,
         changed: true,
-        changeType
+        changeType,
+        kind: isMethod ? 'method' : 'function',
+        ...(isMethod ? { className } : {})
       };
       functionsById[id] = fnMeta;
       changedFnsInFile.push(fnMeta);
+
+      for (const cln of classHeaderLines) {
+        decoratorLineNumbers.add(cln);
+      }
+    }
+
+    const deletedFns = collectDeletedFunctionMetas(pf, survivingFunctionNames);
+    for (const deletedFn of deletedFns) {
+      if (!functionsById[deletedFn.id]) {
+        functionsById[deletedFn.id] = deletedFn;
+        changedFnsInFile.push(deletedFn);
+      }
     }
 
     // Compute module-scope changed ranges.

@@ -3,11 +3,27 @@
  * Preserves call order (func2, func5 under func1; func3, func4 under func2).
  */
 
-import { getState, toggleExpandedTreeNode, setActiveFunction, expandFlowTreeToDepth, collapseFlowTree, getFlowTreeKeysAtDepth } from '../state/store.js';
+import {
+  getState,
+  toggleExpandedTreeNode,
+  setActiveFunction,
+  restoreCallSiteReturnTreeNode,
+  expandFlowTreeToDepth,
+  collapseFlowTree,
+  getFlowTreeKeysAtDepth
+} from '../state/store.js';
+import { getFunctionDisplayName } from '../parser/functionDisplayName.js';
 
 // Tracks the first tree-node key where each function ID appears in the current flow tree.
 /** @type {Map<string, string>} */
 const firstTreeNodeKeyByFunctionId = new Map();
+
+/** @param {string | null | undefined} treeNodeKey */
+function parentTreeNodeKey(treeNodeKey) {
+  if (!treeNodeKey) return null;
+  const idx = treeNodeKey.lastIndexOf('/');
+  return idx > 0 ? treeNodeKey.slice(0, idx) : null;
+}
 
 /**
  * @param {HTMLElement} container
@@ -110,21 +126,28 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   item.className = 'flow-tree-item' + (isLast ? ' flow-tree-item-last' : '');
 
   const isInView = uiState.inViewTreeNodeKey === treeNodeKey;
+  const isCallHover = uiState.hoveredTreeNodeKey === treeNodeKey;
   const isRead = uiState.readFunctionIds?.has?.(fn.id);
   const isMultiFlow = uiState.multiFlowFunctionIds?.has?.(fn.id);
+  const hasChildren = children.length > 0;
+  const parentOfActive = parentTreeNodeKey(uiState.activeTreeNodeKey);
+  const callerHighlightKey = uiState.callSiteCallerTreeNodeKey ?? parentOfActive;
+  const isCallerOfActive = Boolean(callerHighlightKey && callerHighlightKey === treeNodeKey);
   const row = document.createElement('div');
   row.className =
     'flow-tree-node' +
+    (isCallerOfActive ? ' flow-tree-node-caller-of-active' : '') +
     (isActive ? ' active' : '') +
     (isInView ? ' in-view' : '') +
+    (isCallHover ? ' call-hover-target' : '') +
     (isRead ? ' read' : '');
-  const hasChildren = children.length > 0;
   const expandIcon = hasChildren ? (expanded ? '▾' : '▸') : '◦';
   const changeBadge = fn.changeType ? `<span class="flow-tree-badge flow-tree-badge-${fn.changeType}" title="${fn.changeType}"></span>` : '';
   const sharedHint = isMultiFlow
     ? `<span class="flow-tree-shared-hint" title="Also appears in other flows (collapsed in code view)">↗</span>`
     : '';
-  row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${changeBadge}${escapeHtml(fn.name)}${sharedHint}</span>`;
+  const labelHtml = flowTreeLabelHtml(fn);
+  row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${changeBadge}${labelHtml}${sharedHint}</span>`;
   row.dataset.functionId = fn.id;
   row.dataset.treeNodeKey = treeNodeKey;
 
@@ -135,6 +158,7 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   // Clicking the row selects the function (syncs code view) without toggling expansion.
   row.addEventListener('click', (e) => {
     e.stopPropagation();
+    restoreCallSiteReturnTreeNode(treeNodeKey);
     setActiveFunction(fn.id, treeNodeKey);
   });
 
@@ -171,18 +195,21 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
         recItem.className = 'flow-tree-item flow-tree-item-recursive';
         const recRow = document.createElement('div');
         const recInView = uiState.inViewTreeNodeKey === originalKey;
+        const recCallHover = uiState.hoveredTreeNodeKey === originalKey;
         const recIsRead = uiState.readFunctionIds?.has?.(child.id);
         recRow.className =
           'flow-tree-node flow-tree-node-recursive' +
           (uiState.activeTreeNodeKey === originalKey ? ' active' : '') +
           (recInView ? ' in-view' : '') +
+          (recCallHover ? ' call-hover-target' : '') +
           (recIsRead ? ' read' : '');
-        recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${escapeHtml(child.name)}</span>`;
+        recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${flowTreeLabelHtml(child)}</span>`;
         recRow.title = 'Click to jump to where this function is shown above';
         recRow.dataset.functionId = child.id;
         recRow.dataset.treeNodeKey = originalKey;
         recRow.addEventListener('click', (ev) => {
           ev.stopPropagation();
+          restoreCallSiteReturnTreeNode(originalKey);
           setActiveFunction(child.id, originalKey);
         });
         recItem.appendChild(recRow);
@@ -199,6 +226,24 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   }
 
   parent.appendChild(item);
+}
+
+/**
+ * Rich label: methods show class name + dot + method (class segment muted).
+ * @param {import('../flowSchema.js').FunctionMeta} fn
+ */
+function flowTreeLabelHtml(fn) {
+  const deletedPrefix = fn.changeType === 'deleted'
+    ? '<span class="flow-tree-deleted-tag" title="Deleted function">Deleted</span>'
+    : '';
+  if (fn.kind === 'method' && fn.className) {
+    const cls = escapeHtml(fn.className);
+    const nm = escapeHtml(fn.name);
+    const title = fn.changeType === 'deleted' ? `Deleted method of class ${cls}` : `Method of class ${cls}`;
+    return `${deletedPrefix}<span class="flow-tree-method${fn.changeType === 'deleted' ? ' flow-tree-method-deleted' : ''}" title="${title}"><span class="flow-tree-class-name">${cls}</span><span class="flow-tree-method-dot">.</span><span class="flow-tree-method-name">${nm}</span></span>`;
+  }
+  const label = escapeHtml(getFunctionDisplayName(fn));
+  return `${deletedPrefix}<span class="${fn.changeType === 'deleted' ? 'flow-tree-name-deleted' : ''}">${label}</span>`;
 }
 
 function escapeHtml(text) {

@@ -12,7 +12,7 @@ let flowPayload = { ...emptyFlowPayload };
 /** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
 let prContext = null;
 
-/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string>, flowListTestsExpanded?: boolean }} */
+/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, callSiteCallerTreeNodeKey: string | null, callSiteReturnScrollTarget: { callerTreeNodeKey: string, scrollLine: number, lineKind: 'new' | 'anchor' | 'old', calleeId: string, calleeOrdinalOnLine: number } | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, completedFlowIds: Set<string>, callSiteReturnConsumedKeys: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
 let uiState = {
   selectedFlowId: null,
   selectedFileInFlow: null,
@@ -21,12 +21,15 @@ let uiState = {
   flowTreeExpandedIds: new Set(),
   activeFunctionId: null,
   activeTreeNodeKey: null,
+  callSiteCallerTreeNodeKey: null,
+  callSiteReturnScrollTarget: null,
   hoveredTreeNodeKey: null,
   inViewTreeNodeKey: null,
   readFunctionIds: new Set(),
+  completedFlowIds: new Set(),
+  callSiteReturnConsumedKeys: new Set(),
   collapsedFunctionIds: new Set(),
   multiFlowFunctionIds: new Set(),
-  flowListTestsExpanded: false,
 };
 
 // Per-flow cache of tree expansion state so navigating back to a flow restores
@@ -73,7 +76,8 @@ export function setFlowPayload(payload) {
     initialTree = keysToExpand;
   }
 
-   // Functions that participate in more than one flow are collapsed by default in the code view.
+  // Track functions that participate in more than one flow (used for shared-function hinting).
+  // Payload flows exclude test roots (see buildFlows).
   const functionFlowCounts = new Map();
   for (const flow of payload.flows || []) {
     if (!flow.rootId) continue;
@@ -92,7 +96,7 @@ export function setFlowPayload(payload) {
       functionFlowCounts.set(id, (functionFlowCounts.get(id) || 0) + 1);
     }
   }
-  const multiFlowCollapsedIds = new Set(
+  const multiFlowIds = new Set(
     [...functionFlowCounts.entries()]
       .filter(([, count]) => count > 1)
       .map(([id]) => id)
@@ -106,12 +110,19 @@ export function setFlowPayload(payload) {
     flowTreeExpandedIds: new Set(initialTree),
     activeFunctionId: null,
     activeTreeNodeKey: null,
+    callSiteCallerTreeNodeKey: null,
+    callSiteReturnScrollTarget: null,
     hoveredTreeNodeKey: null,
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
-    collapsedFunctionIds: multiFlowCollapsedIds,
-    multiFlowFunctionIds: new Set(multiFlowCollapsedIds),
-    flowListTestsExpanded: uiState.flowListTestsExpanded ?? false
+    completedFlowIds: new Set(),
+    callSiteReturnConsumedKeys: new Set(),
+    // Code view: collapse bodies for functions that participate in more than one flow, except
+    // the initially selected flow’s root (still visible as the entrypoint).
+    collapsedFunctionIds: new Set(
+      [...multiFlowIds].filter((id) => id !== firstFlow?.rootId)
+    ),
+    multiFlowFunctionIds: new Set(multiFlowIds),
   };
   flowTreeExpansionByFlowId.clear();
   notify();
@@ -140,12 +151,23 @@ export function setSelectedFlow(flowId, rootId) {
     const fullTree = getFlowTreeKeysAtDepth(Infinity);
     uiState.flowTreeExpandedIds = new Set(fullTree);
     uiState.expandedTreeNodeIds = new Set(fullTree);
+    // First visit to this flow: collapse shared (multi-flow) functions in code view except root.
+    const flowFnIds = collectFunctionIdsInFlow(flowId, flowPayload);
+    const mf = uiState.multiFlowFunctionIds ?? new Set();
+    for (const id of mf) {
+      if (flowFnIds.has(id) && id !== rootId) uiState.collapsedFunctionIds.add(id);
+    }
   }
+
+  if (rootId) uiState.collapsedFunctionIds.delete(rootId);
 
   uiState.activeFunctionId = null;
   uiState.activeTreeNodeKey = null;
+  uiState.callSiteCallerTreeNodeKey = null;
+  uiState.callSiteReturnScrollTarget = null;
   uiState.hoveredTreeNodeKey = null;
   uiState.inViewTreeNodeKey = null;
+  uiState.callSiteReturnConsumedKeys.clear();
   notify();
 }
 
@@ -351,6 +373,75 @@ export function collapseFlowTree() {
 export function setActiveFunction(functionId, treeNodeKey = null) {
   uiState.activeFunctionId = functionId;
   uiState.activeTreeNodeKey = treeNodeKey;
+  uiState.callSiteCallerTreeNodeKey = null;
+  uiState.callSiteReturnScrollTarget = null;
+  notify();
+}
+
+/**
+ * Navigate to a callee from an inline call site in the code pane. Remembers the caller's
+ * tree path so the flow tree can dashed-outline that caller (canonical callee key may not
+ * have the same parent path when the callee appears earlier in DFS).
+ * @param {string} calleeId
+ * @param {string | null} calleeTreeNodeKey
+ * @param {string} inlineCallerTreeNodeKey - path key of the function body that contained the click
+ * @param {{ scrollLine: number, lineKind: 'new' | 'anchor' | 'old', calleeId: string, calleeOrdinalOnLine: number } | null} [returnScrollTarget] - for "Return to call site" scroll + highlight
+ */
+export function setActiveFunctionFromInlineCallSite(
+  calleeId,
+  calleeTreeNodeKey,
+  inlineCallerTreeNodeKey,
+  returnScrollTarget = null
+) {
+  uiState.activeFunctionId = calleeId;
+  uiState.activeTreeNodeKey = calleeTreeNodeKey;
+  uiState.callSiteCallerTreeNodeKey = inlineCallerTreeNodeKey || null;
+  if (
+    returnScrollTarget &&
+    inlineCallerTreeNodeKey &&
+    returnScrollTarget.scrollLine != null &&
+    returnScrollTarget.lineKind &&
+    returnScrollTarget.calleeId
+  ) {
+    uiState.callSiteReturnScrollTarget = {
+      callerTreeNodeKey: inlineCallerTreeNodeKey,
+      scrollLine: returnScrollTarget.scrollLine,
+      lineKind: returnScrollTarget.lineKind,
+      calleeId: returnScrollTarget.calleeId,
+      calleeOrdinalOnLine: returnScrollTarget.calleeOrdinalOnLine ?? 0
+    };
+  } else {
+    uiState.callSiteReturnScrollTarget = null;
+  }
+  notify();
+}
+
+/** Clears pending return scroll (after apply); does not notify. */
+export function clearCallSiteReturnScrollTarget() {
+  uiState.callSiteReturnScrollTarget = null;
+}
+
+/**
+ * After "Return to call site", hide that link on the callee card until they drill in again.
+ * @param {string | null | undefined} calleeTreeNodeKey - code card path key for the function being left
+ * @param {string} callerId
+ * @param {string | null} parentTreeNodeKey
+ */
+export function returnFromCallSiteToCaller(calleeTreeNodeKey, callerId, parentTreeNodeKey) {
+  if (calleeTreeNodeKey) uiState.callSiteReturnConsumedKeys.add(calleeTreeNodeKey);
+  uiState.activeFunctionId = callerId;
+  uiState.activeTreeNodeKey = parentTreeNodeKey;
+  uiState.callSiteCallerTreeNodeKey = null;
+  notify();
+}
+
+/**
+ * Show "Return to call site" again for this card (flow tree or inline call navigation).
+ * @param {string | null | undefined} treeNodeKey
+ */
+export function restoreCallSiteReturnTreeNode(treeNodeKey) {
+  if (!treeNodeKey) return;
+  if (!uiState.callSiteReturnConsumedKeys.delete(treeNodeKey)) return;
   notify();
 }
 
@@ -396,6 +487,77 @@ export function setFunctionReadState(functionId, isRead) {
   notify();
 }
 
+/**
+ * All function ids reachable from a flow's root (same closure as the flow list graph).
+ * @param {string} flowId
+ * @param {import('../flowSchema.js').FlowPayload} payload
+ * @returns {Set<string>}
+ */
+function collectFunctionIdsInFlow(flowId, payload) {
+  const flow = payload.flows?.find((f) => f.id === flowId);
+  if (!flow?.rootId) return new Set();
+  const ids = new Set([flow.rootId]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const e of payload.edges || []) {
+      if (ids.has(e.callerId) && !ids.has(e.calleeId)) {
+        ids.add(e.calleeId);
+        added = true;
+      }
+    }
+  }
+  return ids;
+}
+
+/**
+ * Toggle or set "entire flow marked complete" for the flow list checkbox.
+ * When marked complete, every function in the flow is marked read. Unchecking clears read
+ * only for functions not still covered by another completed flow.
+ * @param {string} flowId
+ * @param {boolean} [isComplete] - if omitted, toggles
+ */
+export function setFlowCompletedState(flowId, isComplete) {
+  const currently = uiState.completedFlowIds.has(flowId);
+  const next = typeof isComplete === 'boolean' ? isComplete : !currently;
+  const ids = collectFunctionIdsInFlow(flowId, flowPayload);
+
+  if (next === currently) {
+    if (next) {
+      let changed = false;
+      for (const id of ids) {
+        if (!uiState.readFunctionIds.has(id)) {
+          uiState.readFunctionIds.add(id);
+          changed = true;
+        }
+      }
+      if (changed) notify();
+    }
+    return;
+  }
+
+  if (next) {
+    uiState.completedFlowIds.add(flowId);
+    for (const id of ids) {
+      uiState.readFunctionIds.add(id);
+    }
+  } else {
+    uiState.completedFlowIds.delete(flowId);
+    const stillNeeded = new Set();
+    for (const otherFlowId of uiState.completedFlowIds) {
+      for (const id of collectFunctionIdsInFlow(otherFlowId, flowPayload)) {
+        stillNeeded.add(id);
+      }
+    }
+    for (const id of ids) {
+      if (!stillNeeded.has(id)) {
+        uiState.readFunctionIds.delete(id);
+      }
+    }
+  }
+  notify();
+}
+
 export function subscribe(cb) {
   subscribers.push(cb);
   return () => {
@@ -421,16 +583,14 @@ export function initStore() {
     flowTreeExpandedIds: new Set(),
     activeFunctionId: null,
     activeTreeNodeKey: null,
+    callSiteCallerTreeNodeKey: null,
+    callSiteReturnScrollTarget: null,
     hoveredTreeNodeKey: null,
     inViewTreeNodeKey: null,
     readFunctionIds: new Set(),
+    completedFlowIds: new Set(),
+    callSiteReturnConsumedKeys: new Set(),
     collapsedFunctionIds: new Set(),
     multiFlowFunctionIds: new Set(),
-    flowListTestsExpanded: false
   };
-}
-
-export function setFlowListTestsExpanded(expanded) {
-  uiState.flowListTestsExpanded = !!expanded;
-  notify();
 }

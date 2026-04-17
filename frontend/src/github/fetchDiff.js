@@ -5,10 +5,19 @@
  * @param {number} number
  * @returns {Promise<string>}
  */
+function githubAuthHeaders() {
+  const token = import.meta.env?.VITE_GITHUB_TOKEN;
+  if (!token) return {};
+  return { Authorization: `Bearer ${token}` };
+}
+
 export async function fetchDiff(owner, repo, number) {
   const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${number}`;
   const res = await fetch(url, {
-    headers: { Accept: 'application/vnd.github.v3.diff' }
+    headers: {
+      Accept: 'application/vnd.github.v3.diff',
+      ...githubAuthHeaders()
+    }
   });
   if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
   return res.text();
