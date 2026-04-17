@@ -6,18 +6,13 @@
 import { setFlowPayload, setPrContext } from '../state/store.js';
 import { parsePrUrl } from './parsePrUrl.js';
 import { fetchDiff } from './fetchDiff.js';
+import { githubAuthHeaders } from './auth.js';
 import { parseDiff } from '../parser/parseDiff.js';
 import { extractChangedFunctions } from '../parser/extractChangedFunctions.js';
 import { buildFlows } from '../parser/buildFlows.js';
 import { getFunctionDisplayName } from '../parser/functionDisplayName.js';
 
 const CACHE_VERSION = 'v15';
-
-function githubAuthHeaders() {
-  const token = import.meta.env?.VITE_GITHUB_TOKEN;
-  if (!token) return {};
-  return { Authorization: `Bearer ${token}` };
-}
 
 function getCacheKey(owner, repo, number) {
   return `flowdiff:${CACHE_VERSION}:${owner}/${repo}#${number}`;

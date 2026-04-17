@@ -10,8 +10,22 @@
 <body>
   <div id="app">
     <header class="header">
-      <input type="url" id="pr-url" placeholder="Paste GitHub PR URL (e.g. https://github.com/owner/repo/pull/123)" />
-      <button id="analyze-btn">Go</button>
+      <div class="header-main-controls">
+        <input type="url" id="pr-url" placeholder="Paste GitHub PR URL (e.g. https://github.com/owner/repo/pull/123)" />
+        <button id="analyze-btn">Go</button>
+      </div>
+      <details id="github-auth-panel" class="github-auth-panel">
+        <summary id="github-auth-summary">Auth</summary>
+        <div class="github-auth-content">
+          <input type="password" id="github-token" placeholder="GitHub token" autocomplete="off" />
+          <label class="remember-token-label">
+            <input type="checkbox" id="remember-token" />
+            Remember on this browser
+          </label>
+          <button id="clear-token-btn" type="button">Clear token</button>
+          <div id="auth-status" class="auth-status" aria-live="polite"></div>
+        </div>
+      </details>
       <span id="status" class="status"></span>
     </header>
     <div id="loading-overlay" class="loading-overlay" aria-hidden="true">
