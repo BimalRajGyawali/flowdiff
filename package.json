@@ -5,6 +5,11 @@
   "scripts": {
     "test": "node test/run-tests.js",
     "serve": "npx live-server . --port=3333",
-    "start": "npm run serve"
+    "start": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5"
   }
 }
