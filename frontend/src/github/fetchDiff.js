@@ -1,3 +1,5 @@
+import { githubAuthHeaders } from './auth.js';
+
 /**
  * Fetches PR diff from GitHub API.
  * @param {string} owner
@@ -5,11 +7,6 @@
  * @param {number} number
  * @returns {Promise<string>}
  */
-function githubAuthHeaders() {
-  const token = import.meta.env?.VITE_GITHUB_TOKEN;
-  if (!token) return {};
-  return { Authorization: `Bearer ${token}` };
-}
 
 export async function fetchDiff(owner, repo, number) {
   const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${number}`;

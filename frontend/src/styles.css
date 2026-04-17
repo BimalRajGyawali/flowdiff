@@ -20,15 +20,23 @@ body {
 .header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid #d0d7de;
   background: #f6f8fa;
 }
 
-#pr-url {
+.header-main-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
   flex: 1;
-  max-width: 480px;
+}
+
+#pr-url {
+  width: min(560px, 100%);
   padding: 8px 12px;
   border: 1px solid #d0d7de;
   border-radius: 6px;
@@ -59,6 +67,96 @@ body {
 #analyze-btn:disabled {
   color: #8c959f;
   cursor: not-allowed;
+}
+
+.github-auth-panel {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.github-auth-panel > summary {
+  list-style: none;
+  user-select: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 12px;
+  color: #8c959f;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.github-auth-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.github-auth-panel[open] > summary,
+.github-auth-panel > summary:hover {
+  color: #57606a;
+  background: transparent;
+}
+
+.github-auth-content {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 300px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.12);
+  z-index: 20;
+}
+
+#github-token {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+#github-token:focus {
+  outline: none;
+  border-color: #0969da;
+  box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.2);
+}
+
+.remember-token-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #57606a;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+#clear-token-btn {
+  padding: 6px 10px;
+  background: transparent;
+  color: #57606a;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#clear-token-btn:hover {
+  background: #f6f8fa;
+  color: #24292f;
+}
+
+.auth-status {
+  min-height: 16px;
+  font-size: 11px;
+  color: #57606a;
 }
 
 .loading-overlay {
