@@ -104,7 +104,7 @@ export function setFlowPayload(payload) {
 
   uiState = {
     selectedFlowId: firstFlow?.id ?? null,
-    selectedFileInFlow: null,
+    selectedFileInFlow: firstFlow?.rootId ? (payload.functionsById[firstFlow.rootId]?.file ?? null) : null,
     expandedIds: firstFlow?.rootId ? new Set([firstFlow.rootId]) : new Set(),
     expandedTreeNodeIds: initialTree,
     flowTreeExpandedIds: new Set(initialTree),
@@ -138,7 +138,7 @@ export function setSelectedFlow(flowId, rootId) {
   }
 
   uiState.selectedFlowId = flowId;
-  uiState.selectedFileInFlow = null;
+  uiState.selectedFileInFlow = rootId ? (flowPayload.functionsById[rootId]?.file ?? null) : null;
   uiState.expandedIds = rootId ? new Set([rootId]) : new Set();
 
   // Restore previous tree expansion for this flow if available; otherwise start at root only.
@@ -174,6 +174,11 @@ export function setSelectedFlow(flowId, rootId) {
 export function setSelectedFileInFlow(filePath) {
   uiState.selectedFileInFlow = filePath;
   notify();
+}
+
+function syncSelectedFileInFlowFromFunction(functionId) {
+  const fn = functionId ? flowPayload.functionsById?.[functionId] : null;
+  uiState.selectedFileInFlow = fn?.file ?? null;
 }
 
 /**
@@ -373,6 +378,7 @@ export function collapseFlowTree() {
 export function setActiveFunction(functionId, treeNodeKey = null) {
   uiState.activeFunctionId = functionId;
   uiState.activeTreeNodeKey = treeNodeKey;
+  syncSelectedFileInFlowFromFunction(functionId);
   uiState.callSiteCallerTreeNodeKey = null;
   uiState.callSiteReturnScrollTarget = null;
   notify();
@@ -395,6 +401,7 @@ export function setActiveFunctionFromInlineCallSite(
 ) {
   uiState.activeFunctionId = calleeId;
   uiState.activeTreeNodeKey = calleeTreeNodeKey;
+  syncSelectedFileInFlowFromFunction(calleeId);
   uiState.callSiteCallerTreeNodeKey = inlineCallerTreeNodeKey || null;
   if (
     returnScrollTarget &&
@@ -431,6 +438,7 @@ export function returnFromCallSiteToCaller(calleeTreeNodeKey, callerId, parentTr
   if (calleeTreeNodeKey) uiState.callSiteReturnConsumedKeys.add(calleeTreeNodeKey);
   uiState.activeFunctionId = callerId;
   uiState.activeTreeNodeKey = parentTreeNodeKey;
+  syncSelectedFileInFlowFromFunction(callerId);
   uiState.callSiteCallerTreeNodeKey = null;
   notify();
 }

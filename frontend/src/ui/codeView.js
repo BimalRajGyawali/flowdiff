@@ -10,6 +10,7 @@ import {
   restoreCallSiteReturnTreeNode,
   clearCallSiteReturnScrollTarget,
   setInViewTreeNodeKey,
+  setSelectedFileInFlow,
   setFunctionReadState,
   setFunctionCollapsedState,
   setHoveredTreeNodeKey
@@ -23,6 +24,13 @@ let moduleContextExpandedKeys = new Set();
 /** Expanded "unchanged lines" collapse toggles; survives scroll-driven re-renders. */
 let ctxCollapseExpandedKeys = new Set();
 let moduleContextFlowId = null;
+let filesNavWidthPx = 260;
+const FILES_NAV_WIDTH_MIN = 190;
+const FILES_NAV_WIDTH_MAX = 520;
+let filesNavFolderOpenState = new Map();
+let filesNavFolderStateInitialized = false;
+let codePaneScrollTop = 0;
+let codePaneScrollLeft = 0;
 
 /**
  * Return-to-call-site highlight must survive `innerHTML` rebuilds (scroll / in-view updates re-render).
@@ -839,6 +847,22 @@ function getFlowFunctionIds(flow, payload) {
   return ids;
 }
 
+function toBaseName(path) {
+  return String(path || '').replace(/^.*\//, '');
+}
+
+function pathParts(path) {
+  return String(path || '').split('/').filter(Boolean);
+}
+
+function filePathSort(a, b) {
+  return String(a).localeCompare(String(b));
+}
+
+function clampFilesNavWidth(widthPx) {
+  return Math.max(FILES_NAV_WIDTH_MIN, Math.min(FILES_NAV_WIDTH_MAX, widthPx));
+}
+
 /**
  * Returns functions in flow order (DFS from root, first occurrence). One entry per function ID.
  * @param {string} rootId
@@ -1416,6 +1440,11 @@ function renderFunctionBody(
 }
 
 export function renderCodeView(container) {
+  const prevScroller = container.querySelector('.code-pane-content');
+  if (prevScroller) {
+    codePaneScrollTop = prevScroller.scrollTop;
+    codePaneScrollLeft = prevScroller.scrollLeft;
+  }
   const { flowPayload, uiState, prContext } = getState();
   if (
     callSiteReturnHighlightSpec &&
@@ -1474,8 +1503,174 @@ export function renderCodeView(container) {
   const canonicalKeyByFunctionId = new Map(
     flowOrder.map(({ functionId, treeNodeKey }) => [functionId, treeNodeKey])
   );
+  const contentShell = document.createElement('div');
+  contentShell.className = 'code-pane-shell';
+  const filesNav = document.createElement('aside');
+  filesNav.className = 'code-files-nav';
+  filesNav.style.width = `${clampFilesNavWidth(filesNavWidthPx)}px`;
+  const filesNavResizer = document.createElement('div');
+  filesNavResizer.className = 'code-files-nav-resizer';
+  filesNavResizer.title = 'Drag to resize files panel';
+  filesNavResizer.setAttribute('role', 'separator');
+  filesNavResizer.setAttribute('aria-orientation', 'vertical');
+  const contentScroller = document.createElement('div');
+  contentScroller.className = 'code-pane-content';
   const fileSection = document.createElement('div');
   fileSection.className = 'file-section';
+
+  const fileFnCount = new Map();
+  for (const { treeNodeKey, functionId } of flowOrder) {
+    const fn = flowPayload.functionsById[functionId];
+    if (!fn?.file) continue;
+    fileFnCount.set(fn.file, (fileFnCount.get(fn.file) || 0) + 1);
+  }
+
+  const activeFnFromSelection = flowPayload.functionsById[uiState.activeFunctionId];
+  const activeFile = uiState.selectedFileInFlow || activeFnFromSelection?.file || null;
+  const changedFiles = (flowPayload.files || []).map((f) => f.path).filter(Boolean).sort(filePathSort);
+  const navTitle = document.createElement('div');
+  navTitle.className = 'code-files-nav-title';
+  navTitle.textContent = `Files changed (${changedFiles.length})`;
+  filesNav.appendChild(navTitle);
+  const filterWrap = document.createElement('div');
+  filterWrap.className = 'code-files-nav-filter-wrap';
+  filterWrap.innerHTML = `
+    <span class="code-files-nav-filter-icon" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
+        <path d="M10.68 11.74a6 6 0 1 1 1.06-1.06l3.27 3.27a.75.75 0 1 1-1.06 1.06l-3.27-3.27ZM11 7a4.5 4.5 0 1 0-9 0 4.5 4.5 0 0 0 9 0Z"></path>
+      </svg>
+    </span>
+    <input type="search" class="code-files-nav-filter-input" placeholder="Filter files..." aria-label="Filter files" />
+  `;
+  filesNav.appendChild(filterWrap);
+  const navTree = document.createElement('div');
+  navTree.className = 'code-files-nav-tree';
+
+  const rootNode = { folders: new Map(), files: [] };
+  for (const filePath of changedFiles) {
+    const parts = pathParts(filePath);
+    if (parts.length === 0) continue;
+    let node = rootNode;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const part = parts[i];
+      if (!node.folders.has(part)) node.folders.set(part, { folders: new Map(), files: [] });
+      node = node.folders.get(part);
+    }
+    node.files.push(filePath);
+  }
+
+  function scrollToFile(filePath) {
+    setSelectedFileInFlow(filePath);
+    const target = contentScroller.querySelector(
+      `.function-block[data-file="${CSS.escape(filePath)}"]`
+    );
+    if (target) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => scrollToVerticalCenter(contentScroller, target));
+      });
+    }
+  }
+
+  function hasVisibleDescendant(node, filterText) {
+    if (!filterText) return true;
+    if (node.files.some((filePath) => filePath.toLowerCase().includes(filterText))) return true;
+    return [...node.folders.values()].some((child) => hasVisibleDescendant(child, filterText));
+  }
+
+  function renderTree(parentEl, node, depth = 0, filterText = '', parentPath = '') {
+    const folderEntries = [...node.folders.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    for (const [folderName, childNode] of folderEntries) {
+      if (!hasVisibleDescendant(childNode, filterText)) continue;
+      const folderPath = parentPath ? `${parentPath}/${folderName}` : folderName;
+      const details = document.createElement('details');
+      details.className = 'code-files-nav-folder';
+      if (!filesNavFolderStateInitialized && !filesNavFolderOpenState.has(folderPath)) {
+        filesNavFolderOpenState.set(folderPath, true);
+      }
+      details.open = filesNavFolderOpenState.get(folderPath) ?? true;
+      const summary = document.createElement('summary');
+      summary.className = 'code-files-nav-folder-row';
+      summary.style.paddingLeft = `${depth * 14 + 8}px`;
+      summary.innerHTML = `
+        <span class="code-files-nav-folder-caret" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M12.78 5.22a.75.75 0 0 1 0 1.06L8.53 10.53a.75.75 0 0 1-1.06 0L3.22 6.28a.75.75 0 1 1 1.06-1.06L8 8.94l3.72-3.72a.75.75 0 0 1 1.06 0Z"></path></svg>
+        </span>
+        <span class="code-files-nav-folder-icon" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M1.75 2A1.75 1.75 0 0 0 0 3.75v8.5C0 13.216.784 14 1.75 14h12.5A1.75 1.75 0 0 0 16 12.25v-7.5A1.75 1.75 0 0 0 14.25 3H8.06l-.97-1.21A1.75 1.75 0 0 0 5.72 1H1.75ZM1.5 3.75a.25.25 0 0 1 .25-.25h3.97a.25.25 0 0 1 .2.095l1.37 1.71a.75.75 0 0 0 .59.28h6.37a.25.25 0 0 1 .25.25v6.42a.25.25 0 0 1-.25.25H1.75a.25.25 0 0 1-.25-.25v-8.5Z"></path></svg>
+        </span>
+        <span class="code-files-nav-folder-name">${escapeHtml(folderName)}</span>
+      `;
+      details.appendChild(summary);
+      const body = document.createElement('div');
+      body.className = 'code-files-nav-folder-body';
+      renderTree(body, childNode, depth + 1, filterText, folderPath);
+      details.appendChild(body);
+      details.addEventListener('toggle', () => {
+        filesNavFolderOpenState.set(folderPath, details.open);
+      });
+      parentEl.appendChild(details);
+    }
+
+    const files = [...node.files].sort(filePathSort);
+    for (const filePath of files) {
+      if (filterText && !filePath.toLowerCase().includes(filterText)) continue;
+      const navItem = document.createElement('button');
+      navItem.type = 'button';
+      navItem.className = 'code-files-nav-item';
+      if (activeFile && activeFile === filePath) navItem.classList.add('active');
+      navItem.style.paddingLeft = `${depth * 14 + 30}px`;
+      navItem.title = filePath;
+      navItem.innerHTML = `
+        <span class="code-files-nav-file-icon" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M2.75 1h5.5c.464 0 .909.184 1.237.513l3 3c.329.328.513.773.513 1.237v7.5A1.75 1.75 0 0 1 11.25 15h-8.5A1.75 1.75 0 0 1 1 13.25v-10.5C1 1.784 1.784 1 2.75 1Zm5.5 1.5h-5.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25V6H9.75A1.75 1.75 0 0 1 8 4.25V2.5h.25Zm1.25.31V4.25c0 .138.112.25.25.25h1.44L9.5 2.81Z"></path><path d="M8 8.25a.75.75 0 0 1 .75.75v.75h.75a.75.75 0 0 1 0 1.5h-.75V12a.75.75 0 0 1-1.5 0v-.75H6.5a.75.75 0 0 1 0-1.5h.75V9A.75.75 0 0 1 8 8.25Z"></path></svg>
+        </span>
+        <span class="code-files-nav-name">${escapeHtml(toBaseName(filePath))}</span>
+        <span class="code-files-nav-count">${fileFnCount.get(filePath) || 0}</span>
+      `;
+      navItem.addEventListener('click', () => scrollToFile(filePath));
+      parentEl.appendChild(navItem);
+    }
+  }
+
+  const filterInput = filterWrap.querySelector('.code-files-nav-filter-input');
+  function rerenderNavTree() {
+    const filterText = (filterInput?.value || '').trim().toLowerCase();
+    navTree.innerHTML = '';
+    renderTree(navTree, rootNode, 0, filterText, '');
+    if (!navTree.childElementCount) {
+      const empty = document.createElement('div');
+      empty.className = 'code-files-nav-empty';
+      empty.textContent = 'No matching files';
+      navTree.appendChild(empty);
+    }
+  }
+  filterInput?.addEventListener('input', rerenderNavTree);
+  rerenderNavTree();
+  filesNavFolderStateInitialized = true;
+  filesNav.appendChild(navTree);
+
+  filesNavResizer.addEventListener('mousedown', (event) => {
+    event.preventDefault();
+    const shellRect = contentShell.getBoundingClientRect();
+    const shellLeft = shellRect.left;
+    const shellWidth = shellRect.width;
+    const minW = FILES_NAV_WIDTH_MIN;
+    const maxW = Math.min(FILES_NAV_WIDTH_MAX, Math.max(minW, shellWidth - 220));
+    document.body.classList.add('is-resizing-code-files-nav');
+    function onMove(e) {
+      const next = clampFilesNavWidth(e.clientX - shellLeft);
+      const bounded = Math.max(minW, Math.min(maxW, next));
+      filesNavWidthPx = bounded;
+      filesNav.style.width = `${bounded}px`;
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.classList.remove('is-resizing-code-files-nav');
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
 
   for (const { treeNodeKey, functionId } of flowOrder) {
     const fn = flowPayload.functionsById[functionId];
@@ -1599,7 +1794,13 @@ export function renderCodeView(container) {
     }
     fileSection.appendChild(block);
   }
-  container.appendChild(fileSection);
+  contentScroller.appendChild(fileSection);
+  contentShell.appendChild(filesNav);
+  contentShell.appendChild(filesNavResizer);
+  contentShell.appendChild(contentScroller);
+  container.appendChild(contentShell);
+  contentScroller.scrollTop = codePaneScrollTop;
+  contentScroller.scrollLeft = codePaneScrollLeft;
 
   // Determine the current active code block, preferring the specific tree-node path
   // when available so different occurrences of the same function scroll independently.
@@ -1619,35 +1820,35 @@ export function renderCodeView(container) {
   // Only auto-center when the active target changes, so manual scrolling isn't
   // constantly overridden on every store update (e.g., when updating "you are here").
   if (applyReturnScroll) {
-    const lineOk = applyCallSiteReturnScroll(container, pendingReturnScroll);
+    const lineOk = applyCallSiteReturnScroll(contentScroller, pendingReturnScroll);
     clearCallSiteReturnScrollTarget();
     lastScrolledToActiveKey = activeScrollKey;
     if (!lineOk && activeTreeNodeKey) {
-      const block = container.querySelector(
+      const block = contentScroller.querySelector(
         `.function-block[data-tree-node-key="${CSS.escape(activeTreeNodeKey)}"]`
       );
       if (block) {
         requestAnimationFrame(() => {
-          requestAnimationFrame(() => scrollToVerticalCenter(container, block));
+          requestAnimationFrame(() => scrollToVerticalCenter(contentScroller, block));
         });
       }
     }
   } else if (activeScrollKey && activeScrollKey !== lastScrolledToActiveKey) {
     let el = null;
     if (activeTreeNodeKey) {
-      el = container.querySelector(
+      el = contentScroller.querySelector(
         `.function-block[data-tree-node-key="${CSS.escape(activeTreeNodeKey)}"]`
       );
     }
     if (!el && activeFunctionId) {
-      el = container.querySelector(
+      el = contentScroller.querySelector(
         `.function-block[data-function-id="${CSS.escape(activeFunctionId)}"]`
       );
     }
     if (el) {
       lastScrolledToActiveKey = activeScrollKey;
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => scrollToVerticalCenter(container, el));
+        requestAnimationFrame(() => scrollToVerticalCenter(contentScroller, el));
       });
     }
   }
@@ -1658,22 +1859,16 @@ export function renderCodeView(container) {
   const inViewFnId =
     getFunctionIdFromTreeNodeKey(uiState.inViewTreeNodeKey) || null;
   if (inViewFnId) {
-    const inViewBlock = container.querySelector(
+    const inViewBlock = contentScroller.querySelector(
       `.function-block[data-function-id="${CSS.escape(inViewFnId)}"]`
     );
     if (inViewBlock) inViewBlock.classList.add('in-view');
   }
 
-  if (!container.dataset.scrollLinked) {
-    container.dataset.scrollLinked = '1';
-    container.addEventListener('scroll', () => {
-      if (scrollRAF) return;
-      scrollRAF = requestAnimationFrame(() => {
-        scrollRAF = null;
-        updateInViewFromScroll(container);
-      });
-    });
+  // Live in-view sync on every scroll caused frequent full re-renders that interrupted
+  // momentum scrolling. Keep code-pane scrolling uninterrupted.
+  if (!contentScroller.dataset.scrollLinked) {
+    contentScroller.dataset.scrollLinked = '1';
   }
-  updateInViewFromScroll(container);
-  reapplyCallSiteReturnHighlight(container);
+  reapplyCallSiteReturnHighlight(contentScroller);
 }
