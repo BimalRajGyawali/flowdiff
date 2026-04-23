@@ -26,6 +26,26 @@ const PY_DEF_OR_CLASS_LINE_REGEX = /^\s*(?:async\s+def|def|class)\b/;
 
 const PY_KEYWORDS = new Set(['def', 'if', 'elif', 'else', 'for', 'while', 'with', 'try', 'except', 'finally', 'class', 'return', 'raise', 'yield', 'assert', 'lambda', 'and', 'or', 'not', 'in', 'is']);
 
+/**
+ * Count unique nodes reachable from root (including root), cycle-safe.
+ * @param {string} rootId
+ * @param {Map<string, string[]>} adjacency
+ */
+function flowSizeFromRoot(rootId, adjacency) {
+  const visited = new Set([rootId]);
+  const stack = [rootId];
+  while (stack.length) {
+    const cur = stack.pop();
+    const outs = adjacency.get(cur) || [];
+    for (const nxt of outs) {
+      if (visited.has(nxt)) continue;
+      visited.add(nxt);
+      stack.push(nxt);
+    }
+  }
+  return visited.size;
+}
+
 /** All functions with a given name (across files). */
 function getFunctionsByName(functionsById, name) {
   return Object.entries(functionsById)
@@ -202,6 +222,12 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
     .filter((f) => {
       const root = functionsById[f.rootId];
       return root && !isTestFunction(root);
+    })
+    .sort((a, b) => {
+      const sizeA = flowSizeFromRoot(a.rootId, adjacency);
+      const sizeB = flowSizeFromRoot(b.rootId, adjacency);
+      if (sizeA !== sizeB) return sizeB - sizeA;
+      return String(a.name || '').localeCompare(String(b.name || ''));
     });
 
   return { flows, edges };

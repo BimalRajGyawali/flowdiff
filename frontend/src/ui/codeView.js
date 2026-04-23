@@ -29,6 +29,11 @@ const FILES_NAV_WIDTH_MIN = 190;
 const FILES_NAV_WIDTH_MAX = 520;
 let filesNavFolderOpenState = new Map();
 let filesNavFolderStateInitialized = false;
+let collapsedFilePaths = new Set();
+let filesNavCollapsed = false;
+let savedFilesNavWidthPx = filesNavWidthPx;
+let suppressAutoScrollUntil = 0;
+const AUTO_SCROLL_SUPPRESS_MS = 450;
 let codePaneScrollTop = 0;
 let codePaneScrollLeft = 0;
 
@@ -789,6 +794,10 @@ function appendPlainDiffRow(container, rowData) {
 
   const row = document.createElement('div');
   row.className = `diff-line diff-line-${rowData.type}`;
+  if (rowData.newLineNumber != null) row.dataset.flowdiffNewLine = String(rowData.newLineNumber);
+  if (rowData.anchorNewLineNumber != null) row.dataset.flowdiffAnchorNew = String(rowData.anchorNewLineNumber);
+  if (rowData.oldLineNumber != null && rowData.oldLineNumber !== '')
+    row.dataset.flowdiffOldLine = String(rowData.oldLineNumber);
   row.innerHTML = `
     <span class="diff-num diff-num-${rowData.type}">${oldNumHtml}</span>
     <span class="diff-num diff-num-${rowData.type}">${newNumHtml}</span>
@@ -861,6 +870,18 @@ function filePathSort(a, b) {
 
 function clampFilesNavWidth(widthPx) {
   return Math.max(FILES_NAV_WIDTH_MIN, Math.min(FILES_NAV_WIDTH_MAX, widthPx));
+}
+
+function setFileSectionCollapsed(section, isCollapsed) {
+  const body = section.querySelector('.file-content');
+  const toggle = section.querySelector('.file-header-collapse-btn');
+  if (body) body.hidden = isCollapsed;
+  section.classList.toggle('file-section-collapsed', isCollapsed);
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+    toggle.textContent = isCollapsed ? '▸' : '▾';
+    toggle.title = isCollapsed ? 'Expand file' : 'Collapse file';
+  }
 }
 
 /**
@@ -1234,6 +1255,7 @@ function renderFunctionBody(
   canonicalKeyByFunctionId = new Map()
 ) {
   const fileBlock = container.closest('[data-file]') || container;
+  const fileSectionEl = fileBlock.closest('.file-section');
 
   const fileMeta = moduleMetaByFile.get(fn.file);
   const rangesBefore =
@@ -1248,7 +1270,13 @@ function renderFunctionBody(
   // Show file name when this file has no module panels in this block (panels include the file name).
   const hasModulePanelHere = rangesBefore.length > 0 || rangesAfter.length > 0;
   const hasFileHeader = fileBlock.querySelector?.('.file-name-header, [data-module-context-section]');
-  if (!hasFileHeader && !hasModulePanelHere && !filesWithModuleContext.has(fn.file) && fileBlock.dataset?.file === fn.file) {
+  if (
+    !hasFileHeader &&
+    !fileSectionEl?.querySelector('.file-header') &&
+    !hasModulePanelHere &&
+    !filesWithModuleContext.has(fn.file) &&
+    fileBlock.dataset?.file === fn.file
+  ) {
     const fileHeader = document.createElement('div');
     fileHeader.className = 'file-name-header';
     const baseName = fn.file.replace(/^.*\//, '');
@@ -1459,50 +1487,12 @@ export function renderCodeView(container) {
     return;
   }
 
-  const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId);
-  const flowFnIds = selectedFlow ? getFlowFunctionIds(selectedFlow, flowPayload) : new Set();
-  if (selectedFlow?.id !== moduleContextFlowId) {
-    moduleContextFlowId = selectedFlow?.id ?? null;
-    moduleContextExpandedKeys = new Set();
-    ctxCollapseExpandedKeys = new Set();
-  }
-
-  if (flowFnIds.size === 0) {
-    container.textContent = 'Select a flow.';
-    return;
-  }
-
-  const calleesByCaller = new Map();
-  for (const e of flowPayload.edges) {
-    if (!flowFnIds.has(e.callerId) || !flowFnIds.has(e.calleeId)) continue;
-    const list = calleesByCaller.get(e.callerId) || [];
-    list.push({ calleeId: e.calleeId, callIndex: e.callIndex });
-    calleesByCaller.set(e.callerId, list);
-  }
-
   const sourceLinesByFile = {};
   const diffLinesByFile = {};
-  const filesWithModuleContext = new Set();
-  const moduleMetaByFile = new Map();
   for (const file of flowPayload.files) {
     sourceLinesByFile[file.path] = file.sourceLines || [];
     diffLinesByFile[file.path] = buildDiffLines(file.hunks || []);
-    if (file.moduleChangedRanges?.length) filesWithModuleContext.add(file.path);
-    moduleMetaByFile.set(file.path, {
-      moduleChangedRanges: file.moduleChangedRanges,
-      moduleChangedSymbols: file.moduleChangedSymbols,
-      moduleExcludedLineNumbers: file.moduleExcludedLineNumbers
-    });
   }
-
-  const root = flowPayload.functionsById[selectedFlow.rootId];
-  if (!root) return;
-
-  const flowOrder = collectFlowOrder(selectedFlow.rootId, flowPayload);
-  /** First DFS key per function — matches each `.function-block[data-tree-node-key]`. */
-  const canonicalKeyByFunctionId = new Map(
-    flowOrder.map(({ functionId, treeNodeKey }) => [functionId, treeNodeKey])
-  );
   const contentShell = document.createElement('div');
   contentShell.className = 'code-pane-shell';
   const filesNav = document.createElement('aside');
@@ -1515,12 +1505,26 @@ export function renderCodeView(container) {
   filesNavResizer.setAttribute('aria-orientation', 'vertical');
   const contentScroller = document.createElement('div');
   contentScroller.className = 'code-pane-content';
-  const fileSection = document.createElement('div');
-  fileSection.className = 'file-section';
+  const filePanelToolbar = document.createElement('div');
+  filePanelToolbar.className = 'code-file-panel-toolbar';
+  const expandAllBtn = document.createElement('button');
+  expandAllBtn.type = 'button';
+  expandAllBtn.className = 'code-file-panel-toolbar-btn';
+  expandAllBtn.textContent = 'Expand all';
+  const filesPanelToggleBtn = document.createElement('button');
+  filesPanelToggleBtn.type = 'button';
+  filesPanelToggleBtn.className = 'code-files-nav-toggle-btn';
+  const collapseAllBtn = document.createElement('button');
+  collapseAllBtn.type = 'button';
+  collapseAllBtn.className = 'code-file-panel-toolbar-btn';
+  collapseAllBtn.textContent = 'Collapse all';
+  filePanelToolbar.appendChild(expandAllBtn);
+  filePanelToolbar.appendChild(collapseAllBtn);
+  const filesRoot = document.createElement('div');
+  filesRoot.className = 'code-files-root';
 
   const fileFnCount = new Map();
-  for (const { treeNodeKey, functionId } of flowOrder) {
-    const fn = flowPayload.functionsById[functionId];
+  for (const fn of Object.values(flowPayload.functionsById || {})) {
     if (!fn?.file) continue;
     fileFnCount.set(fn.file, (fileFnCount.get(fn.file) || 0) + 1);
   }
@@ -1531,6 +1535,7 @@ export function renderCodeView(container) {
   const navTitle = document.createElement('div');
   navTitle.className = 'code-files-nav-title';
   navTitle.textContent = `Files changed (${changedFiles.length})`;
+  navTitle.appendChild(filesPanelToggleBtn);
   filesNav.appendChild(navTitle);
   const filterWrap = document.createElement('div');
   filterWrap.className = 'code-files-nav-filter-wrap';
@@ -1561,9 +1566,16 @@ export function renderCodeView(container) {
 
   function scrollToFile(filePath) {
     setSelectedFileInFlow(filePath);
-    const target = contentScroller.querySelector(
-      `.function-block[data-file="${CSS.escape(filePath)}"]`
+    const section = contentScroller.querySelector(
+      `.file-section[data-file-anchor="${CSS.escape(filePath)}"]`
     );
+    if (section && collapsedFilePaths.has(filePath)) {
+      collapsedFilePaths.delete(filePath);
+      setFileSectionCollapsed(section, false);
+    }
+    const target =
+      section ||
+      contentScroller.querySelector(`.function-block[data-file="${CSS.escape(filePath)}"]`);
     if (target) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => scrollToVerticalCenter(contentScroller, target));
@@ -1649,6 +1661,37 @@ export function renderCodeView(container) {
   filesNavFolderStateInitialized = true;
   filesNav.appendChild(navTree);
 
+  const fileSectionByPath = new Map();
+  for (const filePath of changedFiles) {
+    const section = document.createElement('div');
+    section.className = 'file-section';
+    section.dataset.fileAnchor = filePath;
+
+    const header = document.createElement('div');
+    header.className = 'file-header';
+    const collapseBtn = document.createElement('button');
+    collapseBtn.type = 'button';
+    collapseBtn.className = 'file-header-collapse-btn';
+    collapseBtn.setAttribute('aria-label', `Toggle ${filePath}`);
+    collapseBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      suppressAutoScrollUntil = Date.now() + AUTO_SCROLL_SUPPRESS_MS;
+      const collapsed = !collapsedFilePaths.has(filePath);
+      if (collapsed) collapsedFilePaths.add(filePath);
+      else collapsedFilePaths.delete(filePath);
+      setFileSectionCollapsed(section, collapsed);
+    });
+    const filePathEl = document.createElement('span');
+    filePathEl.className = 'file-header-path';
+    filePathEl.textContent = filePath;
+    header.appendChild(collapseBtn);
+    header.appendChild(filePathEl);
+    section.appendChild(header);
+
+    fileSectionByPath.set(filePath, section);
+    filesRoot.appendChild(section);
+  }
+
   filesNavResizer.addEventListener('mousedown', (event) => {
     event.preventDefault();
     const shellRect = contentShell.getBoundingClientRect();
@@ -1672,198 +1715,115 @@ export function renderCodeView(container) {
     document.addEventListener('mouseup', onUp);
   });
 
-  for (const { treeNodeKey, functionId } of flowOrder) {
-    const fn = flowPayload.functionsById[functionId];
-    if (!fn) continue;
-    const block = document.createElement('div');
-    block.className = 'function-block' + (functionId === root.id ? ' root' : '');
-    block.dataset.functionId = functionId;
-    block.dataset.treeNodeKey = treeNodeKey;
-    block.dataset.file = fn.file;
-    if (fn.changeType) block.dataset.changeType = fn.changeType;
-    const isActive =
-      uiState.activeFunctionId === functionId ||
-      uiState.activeTreeNodeKey === treeNodeKey;
-    const isRead = uiState.readFunctionIds?.has?.(functionId);
-    const isCollapsed = uiState.collapsedFunctionIds?.has?.(functionId);
-    if (isActive) block.classList.add('active');
-    if (isRead) block.classList.add('read');
-    if (isCollapsed) block.classList.add('collapsed');
-
-    // Collapsible content wrapper (function body and caller info).
-    const content = document.createElement('div');
-    content.className = 'function-block-content';
-    block.appendChild(content);
-
-    const toggleBtn = document.createElement('button');
-    toggleBtn.type = 'button';
-    toggleBtn.className = 'function-block-toggle-btn';
-    const updateToggleLabel = () => {
-      const nowCollapsed = uiState.collapsedFunctionIds?.has?.(functionId);
-      toggleBtn.textContent = nowCollapsed ? '+' : '–';
-      toggleBtn.title = nowCollapsed ? 'Expand function body' : 'Collapse function body';
-      toggleBtn.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
-    };
-    updateToggleLabel();
-    toggleBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      setFunctionCollapsedState(functionId);
-    });
-
-    const doneBtn = document.createElement('button');
-    doneBtn.type = 'button';
-    doneBtn.className = 'function-block-done-btn';
-    doneBtn.textContent = '✓';
-    const updateDoneLabel = () => {
-      const nowRead = uiState.readFunctionIds?.has?.(functionId);
-      if (nowRead) {
-        doneBtn.classList.add('checked');
-        doneBtn.title = 'Marked as done (click to mark as not done)';
-        doneBtn.setAttribute('aria-pressed', 'true');
-      } else {
-        doneBtn.classList.remove('checked');
-        doneBtn.title = 'Mark this function as done/read';
-        doneBtn.setAttribute('aria-pressed', 'false');
-      }
-    };
-    updateDoneLabel();
-    doneBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      setFunctionReadState(functionId);
-    });
-
-    // Always derive the caller from this card's flow path. There is one code card per function
-    // (first DFS occurrence); mixing in activeTreeNodeKey caused null/mismatch when selection
-    // state and the card key diverged, so "Return to call site" was missing for some navigations.
-    const callerId = getCallerFromTreeNodeKey(treeNodeKey);
-    const baseCallSiteReturn =
-      callerId != null
-        ? {
-            callerId,
-            parentTreeNodeKey: getParentTreeNodeKey(treeNodeKey),
-            callerName:
-              getFunctionDisplayName(flowPayload.functionsById[callerId]) || callerId,
-            calleeTreeNodeKey: treeNodeKey
-          }
-        : null;
-    const callSiteReturn =
-      baseCallSiteReturn && !uiState.callSiteReturnConsumedKeys?.has?.(treeNodeKey)
-        ? baseCallSiteReturn
-        : null;
-
-    renderFunctionBody(
-      content,
-      flowPayload,
-      uiState,
-      fn,
-      sourceLinesByFile,
-      diffLinesByFile,
-      filesWithModuleContext,
-      moduleMetaByFile,
-      calleesByCaller,
-      flowFnIds,
-      '',
-      treeNodeKey,
-      prContext,
-      callSiteReturn,
-      isCollapsed,
-      canonicalKeyByFunctionId
-    );
-
-    // Attach checkbox-style "done/read" control into the existing header inside this block:
-    // prefer module-context header if present, otherwise file-name header.
-    const headerEl =
-      block.querySelector('.module-context-header') ||
-      block.querySelector('.file-name-header');
-    if (headerEl) {
-      const controls = document.createElement('div');
-      controls.className = 'function-block-header-controls';
-      const headerToggleBtn = toggleBtn.cloneNode(true);
-      const headerDoneBtn = doneBtn.cloneNode(true);
-      headerToggleBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        setFunctionCollapsedState(functionId);
-      });
-      headerDoneBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        setFunctionReadState(functionId);
-      });
-      controls.appendChild(headerToggleBtn);
-      controls.appendChild(headerDoneBtn);
-      headerEl.appendChild(controls);
+  function applyFilesNavCollapsed(collapsed) {
+    filesNavCollapsed = collapsed;
+    filesNav.classList.toggle('code-files-nav-collapsed', collapsed);
+    if (collapsed) {
+      savedFilesNavWidthPx = clampFilesNavWidth(filesNav.getBoundingClientRect().width || filesNavWidthPx);
+      filesNav.style.width = '44px';
+    } else {
+      filesNavWidthPx = clampFilesNavWidth(savedFilesNavWidthPx || filesNavWidthPx);
+      filesNav.style.width = `${filesNavWidthPx}px`;
     }
-    fileSection.appendChild(block);
+    filesNavResizer.style.display = collapsed ? 'none' : '';
+    filesPanelToggleBtn.innerHTML = collapsed
+      ? `
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+          <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 1 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"></path>
+        </svg>
+      `
+      : `
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+          <path d="M9.78 12.78a.75.75 0 0 1-1.06 0L4.47 8.53a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 1 1 1.06 1.06L6.06 8l3.72 3.72a.75.75 0 0 1 0 1.06Z"></path>
+        </svg>
+      `;
+    filesPanelToggleBtn.title = collapsed ? 'Show file panel' : 'Hide file panel';
+    filesPanelToggleBtn.setAttribute('aria-label', collapsed ? 'Show file panel' : 'Hide file panel');
+    filesPanelToggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
-  contentScroller.appendChild(fileSection);
+
+  filesPanelToggleBtn.addEventListener('click', () => {
+    applyFilesNavCollapsed(!filesNavCollapsed);
+  });
+  applyFilesNavCollapsed(filesNavCollapsed);
+
+  for (const filePath of changedFiles) {
+    const section = fileSectionByPath.get(filePath);
+    if (!section) continue;
+    const rows = diffLinesByFile[filePath] || [];
+    const body = document.createElement('div');
+    body.className = 'file-content';
+    renderDiffRows(body, filePath, rows, prContext, `file::${filePath}`);
+    section.appendChild(body);
+    setFileSectionCollapsed(section, collapsedFilePaths.has(filePath));
+  }
+
+  collapseAllBtn.addEventListener('click', () => {
+    collapsedFilePaths = new Set(changedFiles);
+    for (const filePath of changedFiles) {
+      const section = fileSectionByPath.get(filePath);
+      if (section) setFileSectionCollapsed(section, true);
+    }
+  });
+
+  expandAllBtn.addEventListener('click', () => {
+    collapsedFilePaths = new Set();
+    for (const filePath of changedFiles) {
+      const section = fileSectionByPath.get(filePath);
+      if (section) setFileSectionCollapsed(section, false);
+    }
+  });
+
+  contentScroller.appendChild(filePanelToolbar);
+  contentScroller.appendChild(filesRoot);
   contentShell.appendChild(filesNav);
   contentShell.appendChild(filesNavResizer);
   contentShell.appendChild(contentScroller);
   container.appendChild(contentShell);
   contentScroller.scrollTop = codePaneScrollTop;
   contentScroller.scrollLeft = codePaneScrollLeft;
+  const activeFunction = uiState.activeFunctionId
+    ? flowPayload.functionsById[uiState.activeFunctionId]
+    : null;
+  const activeFunctionKey = activeFunction?.id ? `fn:${activeFunction.id}` : null;
+  const activeFileKey = !activeFunctionKey && activeFile ? `file:${activeFile}` : null;
+  const nextScrollKey = activeFunctionKey || activeFileKey;
+  const autoScrollSuppressed = Date.now() < suppressAutoScrollUntil;
 
-  // Determine the current active code block, preferring the specific tree-node path
-  // when available so different occurrences of the same function scroll independently.
-  const activeTreeNodeKey = uiState.activeTreeNodeKey || null;
-  const activeFunctionId =
-    getFunctionIdFromTreeNodeKey(activeTreeNodeKey) || uiState.activeFunctionId;
+  contentScroller.querySelectorAll('.diff-line-function-target').forEach((el) => {
+    el.classList.remove('diff-line-function-target');
+  });
 
-  // Build a stable key that distinguishes different occurrences of the same function.
-  const activeScrollKey = activeTreeNodeKey || (activeFunctionId ? `fn:${activeFunctionId}` : null);
-
-  const pendingReturnScroll = uiState.callSiteReturnScrollTarget;
-  const applyReturnScroll =
-    pendingReturnScroll &&
-    activeTreeNodeKey &&
-    pendingReturnScroll.callerTreeNodeKey === activeTreeNodeKey;
-
-  // Only auto-center when the active target changes, so manual scrolling isn't
-  // constantly overridden on every store update (e.g., when updating "you are here").
-  if (applyReturnScroll) {
-    const lineOk = applyCallSiteReturnScroll(contentScroller, pendingReturnScroll);
-    clearCallSiteReturnScrollTarget();
-    lastScrolledToActiveKey = activeScrollKey;
-    if (!lineOk && activeTreeNodeKey) {
-      const block = contentScroller.querySelector(
-        `.function-block[data-tree-node-key="${CSS.escape(activeTreeNodeKey)}"]`
+  if (!autoScrollSuppressed && nextScrollKey && nextScrollKey !== lastScrolledToActiveKey) {
+    let target = null;
+    if (activeFunction?.file) {
+      const section = contentScroller.querySelector(
+        `.file-section[data-file-anchor="${CSS.escape(activeFunction.file)}"]`
       );
-      if (block) {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => scrollToVerticalCenter(contentScroller, block));
-        });
+      if (!autoScrollSuppressed && section && collapsedFilePaths.has(activeFunction.file)) {
+        collapsedFilePaths.delete(activeFunction.file);
+        setFileSectionCollapsed(section, false);
       }
-    }
-  } else if (activeScrollKey && activeScrollKey !== lastScrolledToActiveKey) {
-    let el = null;
-    if (activeTreeNodeKey) {
-      el = contentScroller.querySelector(
-        `.function-block[data-tree-node-key="${CSS.escape(activeTreeNodeKey)}"]`
+      const startLine = Number(activeFunction.startLine || 0);
+      target =
+        section?.querySelector?.(`.diff-line[data-flowdiff-new-line="${startLine}"]`) ||
+        section?.querySelector?.(`.diff-line[data-flowdiff-anchor-new="${startLine}"]`) ||
+        section?.querySelector?.(`.diff-line[data-flowdiff-old-line="${startLine}"]`) ||
+        section;
+      if (target?.classList?.contains('diff-line')) target.classList.add('diff-line-function-target');
+    } else if (activeFile) {
+      target = contentScroller.querySelector(
+        `.file-section[data-file-anchor="${CSS.escape(activeFile)}"]`
       );
     }
-    if (!el && activeFunctionId) {
-      el = contentScroller.querySelector(
-        `.function-block[data-function-id="${CSS.escape(activeFunctionId)}"]`
-      );
-    }
-    if (el) {
-      lastScrolledToActiveKey = activeScrollKey;
+    if (target) {
+      lastScrolledToActiveKey = nextScrollKey;
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => scrollToVerticalCenter(contentScroller, el));
+        requestAnimationFrame(() => scrollToVerticalCenter(contentScroller, target));
       });
     }
   }
-  if (!activeScrollKey) lastScrolledToActiveKey = null;
-
-  // Explicitly mark the "you are here" function block in the code view,
-  // based on the function ID derived from the tree's inViewTreeNodeKey.
-  const inViewFnId =
-    getFunctionIdFromTreeNodeKey(uiState.inViewTreeNodeKey) || null;
-  if (inViewFnId) {
-    const inViewBlock = contentScroller.querySelector(
-      `.function-block[data-function-id="${CSS.escape(inViewFnId)}"]`
-    );
-    if (inViewBlock) inViewBlock.classList.add('in-view');
-  }
+  if (!nextScrollKey) lastScrolledToActiveKey = null;
 
   // Live in-view sync on every scroll caused frequent full re-renders that interrupted
   // momentum scrolling. Keep code-pane scrolling uninterrupted.

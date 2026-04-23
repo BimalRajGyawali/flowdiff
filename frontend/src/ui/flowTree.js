@@ -5,12 +5,9 @@
 
 import {
   getState,
-  toggleExpandedTreeNode,
   setActiveFunction,
   restoreCallSiteReturnTreeNode,
-  expandFlowTreeToDepth,
-  collapseFlowTree,
-  getFlowTreeKeysAtDepth
+  setSelectedFlow
 } from '../state/store.js';
 import { getFunctionDisplayName } from '../parser/functionDisplayName.js';
 
@@ -37,57 +34,52 @@ export function renderFlowTree(container) {
     return;
   }
 
-  const selectedFlow = flowPayload.flows.find((f) => f.id === uiState.selectedFlowId);
-  if (!selectedFlow) {
-    container.textContent = 'Select a flow.';
-    return;
-  }
-
-  const root = flowPayload.functionsById[selectedFlow.rootId];
-  if (!root) {
-    container.textContent = 'Root not found.';
-    return;
-  }
-
   const wrapper = document.createElement('div');
   wrapper.className = 'flow-tree-wrapper';
 
-  const hasExpandableNodes = flowPayload.edges.some((e) => e.callerId === root.id);
-  const rootKey = `root:${root.id}`;
+  const title = document.createElement('div');
+  title.className = 'flow-tree-pane-title';
+  title.textContent = 'FLOWS';
+  wrapper.appendChild(title);
 
-  // Reset per-render tracking of first occurrences.
-  firstTreeNodeKeyByFunctionId.clear();
-  firstTreeNodeKeyByFunctionId.set(root.id, rootKey);
-  if (hasExpandableNodes) {
-    const toolbar = document.createElement('div');
-    toolbar.className = 'flow-tree-toolbar';
-    const currentFlowKeys = () => {
-      const { uiState: state } = getState();
-      return new Set([...state.flowTreeExpandedIds].filter((k) => k === rootKey || k.startsWith(rootKey + '/')));
-    };
-    const setsEqual = (a, b) => a.size === b.size && [...a].every((k) => b.has(k));
+  for (let idx = 0; idx < flowPayload.flows.length; idx++) {
+    const flow = flowPayload.flows[idx];
+    const root = flowPayload.functionsById[flow.rootId];
+    if (!root) continue;
+    const rootKey = `root:${root.id}`;
+    firstTreeNodeKeyByFunctionId.clear();
+    firstTreeNodeKeyByFunctionId.set(root.id, rootKey);
 
-    const allBtn = document.createElement('button');
-    allBtn.type = 'button';
-    allBtn.className = 'flow-tree-toolbar-btn';
-    allBtn.innerHTML = '<span class="flow-tree-toolbar-icon" aria-hidden="true">⤢</span><span class="flow-tree-toolbar-label">Full tree</span>';
-    allBtn.title = 'Expand entire tree (click again to collapse)';
-    allBtn.addEventListener('click', () => {
-      const target = getFlowTreeKeysAtDepth(Infinity);
-      if (setsEqual(currentFlowKeys(), target)) collapseFlowTree();
-      else expandFlowTreeToDepth(Infinity);
-    });
-    toolbar.appendChild(allBtn);
-    wrapper.appendChild(toolbar);
+    const section = document.createElement('section');
+    section.className = 'flow-tree-flow-section';
+    if (flow.id === uiState.selectedFlowId) section.classList.add('active');
+
+    const header = document.createElement('button');
+    header.type = 'button';
+    header.className = 'flow-tree-flow-header';
+    if (flow.id === uiState.selectedFlowId) header.classList.add('active');
+    header.innerHTML = `
+      <span class="flow-tree-flow-dot"></span>
+      <span class="flow-tree-flow-title">Flow ${idx + 1} — ${escapeHtml(flow.name ?? root.name ?? flow.rootId)}</span>
+    `;
+    header.addEventListener('click', () => setSelectedFlow(flow.id, flow.rootId));
+    section.appendChild(header);
+
+    const tree = document.createElement('div');
+    tree.className = 'flow-tree';
+    const pathFromRoot = new Set([root.id]);
+    const pathKeysById = new Map([[root.id, rootKey]]);
+    renderNode(tree, flowPayload, root, false, rootKey, pathFromRoot, pathKeysById, flow.id, flow.rootId, true, 0);
+    section.appendChild(tree);
+    wrapper.appendChild(section);
+
+    if (idx < flowPayload.flows.length - 1) {
+      const sep = document.createElement('div');
+      sep.className = 'flow-tree-flow-separator';
+      wrapper.appendChild(sep);
+    }
   }
 
-  const tree = document.createElement('div');
-  tree.className = 'flow-tree';
-  const pathFromRoot = new Set([root.id]);
-  const pathKeysById = new Map([[root.id, rootKey]]);
-  renderNode(tree, flowPayload, root, false, rootKey, pathFromRoot, pathKeysById);
-
-  wrapper.appendChild(tree);
   container.appendChild(wrapper);
 
   if (uiState.activeTreeNodeKey) {
@@ -113,9 +105,21 @@ export function renderFlowTree(container) {
  * @param {Set<string>} pathFromRoot - function IDs from root to this node (recursion = callee already in path, e.g. A→C→A)
  * @param {Map<string, string>} pathKeysById - function id -> treeNodeKey of first occurrence on path (so recursive click can jump to original)
  */
-function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, pathKeysById) {
+function renderNode(
+  parent,
+  payload,
+  fn,
+  isLast,
+  treeNodeKey,
+  pathFromRoot,
+  pathKeysById,
+  flowId,
+  flowRootId,
+  forceExpanded = false,
+  depth = 0
+) {
   const { uiState } = getState();
-  const expanded = uiState.flowTreeExpandedIds.has(treeNodeKey);
+  const expanded = forceExpanded || uiState.flowTreeExpandedIds.has(treeNodeKey);
   const isActive = uiState.activeTreeNodeKey === treeNodeKey;
   const childEdges = payload.edges
     .filter((e) => e.callerId === fn.id)
@@ -141,13 +145,13 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
     (isInView ? ' in-view' : '') +
     (isCallHover ? ' call-hover-target' : '') +
     (isRead ? ' read' : '');
-  const expandIcon = hasChildren ? (expanded ? '▾' : '▸') : '◦';
-  const changeBadge = fn.changeType ? `<span class="flow-tree-badge flow-tree-badge-${fn.changeType}" title="${fn.changeType}"></span>` : '';
+  const leadingIcon = depth > 0 ? '↳' : '';
   const sharedHint = isMultiFlow
     ? `<span class="flow-tree-shared-hint" title="Also appears in other flows (collapsed in code view)">↗</span>`
     : '';
   const labelHtml = flowTreeLabelHtml(fn);
-  row.innerHTML = `<span class="flow-tree-icon">${expandIcon}</span><span class="flow-tree-label">${changeBadge}${labelHtml}${sharedHint}</span>`;
+  row.classList.add(depth === 0 ? 'flow-tree-node-root' : 'flow-tree-node-child');
+  row.innerHTML = `<span class="flow-tree-icon">${leadingIcon}</span><span class="flow-tree-label">${labelHtml}${sharedHint}</span>`;
   row.dataset.functionId = fn.id;
   row.dataset.treeNodeKey = treeNodeKey;
 
@@ -158,18 +162,15 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
   // Clicking the row selects the function (syncs code view) without toggling expansion.
   row.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (uiState.selectedFlowId !== flowId) setSelectedFlow(flowId, flowRootId);
     restoreCallSiteReturnTreeNode(treeNodeKey);
     setActiveFunction(fn.id, treeNodeKey);
   });
 
   // Clicking the icon toggles expansion independently.
   const iconEl = row.querySelector('.flow-tree-icon');
-  if (iconEl && hasChildren) {
+  if (!forceExpanded && iconEl && hasChildren) {
     iconEl.style.cursor = 'pointer';
-    iconEl.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleExpandedTreeNode(treeNodeKey);
-    });
   }
   item.appendChild(row);
 
@@ -203,12 +204,14 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
           (recInView ? ' in-view' : '') +
           (recCallHover ? ' call-hover-target' : '') +
           (recIsRead ? ' read' : '');
-        recRow.innerHTML = `<span class="flow-tree-icon">↻</span><span class="flow-tree-label">${flowTreeLabelHtml(child)}</span>`;
+        recRow.classList.add('flow-tree-node-child');
+        recRow.innerHTML = `<span class="flow-tree-icon">↳</span><span class="flow-tree-label">${flowTreeLabelHtml(child)}</span>`;
         recRow.title = 'Click to jump to where this function is shown above';
         recRow.dataset.functionId = child.id;
         recRow.dataset.treeNodeKey = originalKey;
         recRow.addEventListener('click', (ev) => {
           ev.stopPropagation();
+          if (uiState.selectedFlowId !== flowId) setSelectedFlow(flowId, flowRootId);
           restoreCallSiteReturnTreeNode(originalKey);
           setActiveFunction(child.id, originalKey);
         });
@@ -219,7 +222,19 @@ function renderNode(parent, payload, fn, isLast, treeNodeKey, pathFromRoot, path
         if (!firstTreeNodeKeyByFunctionId.has(child.id)) {
           firstTreeNodeKeyByFunctionId.set(child.id, childKey);
         }
-        renderNode(branch, payload, child, i === children.length - 1, childKey, pathIncludingThis, pathKeysIncludingThis);
+        renderNode(
+          branch,
+          payload,
+          child,
+          i === children.length - 1,
+          childKey,
+          pathIncludingThis,
+          pathKeysIncludingThis,
+          flowId,
+          flowRootId,
+          forceExpanded,
+          depth + 1
+        );
       }
     }
     item.appendChild(branch);
