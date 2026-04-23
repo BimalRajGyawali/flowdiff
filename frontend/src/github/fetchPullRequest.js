@@ -12,7 +12,7 @@ import { extractChangedFunctions } from '../parser/extractChangedFunctions.js';
 import { buildFlows } from '../parser/buildFlows.js';
 import { getFunctionDisplayName } from '../parser/functionDisplayName.js';
 
-const CACHE_VERSION = 'v15';
+const CACHE_VERSION = 'v16';
 
 function getCacheKey(owner, repo, number) {
   return `flowdiff:${CACHE_VERSION}:${owner}/${repo}#${number}`;

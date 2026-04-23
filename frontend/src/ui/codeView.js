@@ -236,6 +236,17 @@ function scrollToVerticalCenter(container, el) {
   }
 }
 
+function elementOffsetTopInScroller(scroller, el) {
+  let offsetTop = 0;
+  /** @type {HTMLElement | null} */
+  let node = /** @type {HTMLElement | null} */ (el);
+  while (node && node !== scroller && node.offsetParent) {
+    offsetTop += node.offsetTop;
+    node = /** @type {HTMLElement | null} */ (node.offsetParent);
+  }
+  return offsetTop;
+}
+
 function getFunctionIdFromTreeNodeKey(treeNodeKey) {
   if (!treeNodeKey) return null;
   const parts = treeNodeKey.split('/');
@@ -341,6 +352,29 @@ function highlightPython(code) {
   return window.Prism.highlight(code, window.Prism.languages.python, 'python');
 }
 
+function getPythonSignatureName(line) {
+  if (!line) return null;
+  const m = String(line).match(/^\s*(?:async\s+def|def)\s+([A-Za-z_]\w*)\s*\(/);
+  return m ? m[1] : null;
+}
+
+function emphasizeSignatureNameInHtml(line, lineHtml) {
+  const fnName = getPythonSignatureName(line);
+  if (!fnName) return lineHtml;
+  const escaped = escapeHtml(fnName);
+  const tokenWrapped = `<span class="token function">${escaped}</span>`;
+  if (lineHtml.includes(tokenWrapped)) {
+    return lineHtml.replace(
+      tokenWrapped,
+      `<span class="token function flowdiff-signature-name">${escaped}</span>`
+    );
+  }
+  return lineHtml.replace(
+    new RegExp(`\\b${escapeRegex(escaped)}\\b`),
+    `<span class="flowdiff-signature-name">${escaped}</span>`
+  );
+}
+
 function getCommonPrefixLength(a, b) {
   const n = Math.min(a.length, b.length);
   let i = 0;
@@ -390,7 +424,34 @@ const CTX_COLLAPSE_TAIL_LINES = 3;
  * @param {any[]} rows
  * @returns {any[]}
  */
-function expandContextCollapseRows(rows) {
+function expandContextCollapseRows(rows, preserveNewLines = null) {
+  const preserved = preserveNewLines instanceof Set ? preserveNewLines : null;
+
+  function flushContextRun(run, outRows) {
+    if (run.length < CTX_COLLAPSE_MIN_RUN) {
+      outRows.push(...run);
+      return;
+    }
+    const h = CTX_COLLAPSE_HEAD_LINES;
+    const t = CTX_COLLAPSE_TAIL_LINES;
+    if (run.length <= h + t) {
+      outRows.push(...run);
+      return;
+    }
+    const head = run.slice(0, h);
+    const tail = run.slice(-t);
+    const hidden = run.slice(h, run.length - t);
+    outRows.push(...head);
+    outRows.push({
+      type: 'ctx-collapse',
+      hiddenRows: hidden,
+      lineCount: hidden.length,
+      startLine: hidden[0]?.newLineNumber ?? hidden[0]?.oldLineNumber,
+      endLine: hidden[hidden.length - 1]?.newLineNumber ?? hidden[hidden.length - 1]?.oldLineNumber
+    });
+    outRows.push(...tail);
+  }
+
   const out = [];
   let i = 0;
   while (i < rows.length) {
@@ -403,26 +464,25 @@ function expandContextCollapseRows(rows) {
     let j = i;
     while (j < rows.length && rows[j].type === 'ctx') j++;
     const run = rows.slice(i, j);
-    if (run.length < CTX_COLLAPSE_MIN_RUN) {
-      out.push(...run);
+    if (!preserved || preserved.size === 0) {
+      flushContextRun(run, out);
     } else {
-      const h = CTX_COLLAPSE_HEAD_LINES;
-      const t = CTX_COLLAPSE_TAIL_LINES;
-      if (run.length <= h + t) {
-        out.push(...run);
-      } else {
-        const head = run.slice(0, h);
-        const tail = run.slice(-t);
-        const hidden = run.slice(h, run.length - t);
-        out.push(...head);
-        out.push({
-          type: 'ctx-collapse',
-          hiddenRows: hidden,
-          lineCount: hidden.length,
-          startLine: hidden[0]?.newLineNumber ?? hidden[0]?.oldLineNumber,
-          endLine: hidden[hidden.length - 1]?.newLineNumber ?? hidden[hidden.length - 1]?.oldLineNumber
-        });
-        out.push(...tail);
+      let segment = [];
+      for (const ctxRow of run) {
+        const n = ctxRow?.newLineNumber != null ? Number(ctxRow.newLineNumber) : null;
+        const keepVisible = n != null && preserved.has(n);
+        if (keepVisible) {
+          if (segment.length) {
+            flushContextRun(segment, out);
+            segment = [];
+          }
+          out.push(ctxRow);
+          continue;
+        }
+        segment.push(ctxRow);
+      }
+      if (segment.length) {
+        flushContextRun(segment, out);
       }
     }
     i = j;
@@ -778,7 +838,7 @@ function buildRangeDisplayRows(ranges, sourceLines, diffLines, excludedLineNumbe
  */
 function appendPlainDiffRow(container, rowData) {
   const line = rowData.content;
-  const lineHtml =
+  let lineHtml =
     rowData.type === 'add'
       ? hasMeaningfulIntraline(rowData.intraline)
         ? applyIntralineHighlight(line, rowData.intraline, 'intraline intraline-add')
@@ -788,12 +848,17 @@ function appendPlainDiffRow(container, rowData) {
           ? applyIntralineHighlight(line, rowData.intraline, 'intraline intraline-del')
           : highlightPython(line)
         : highlightPython(line);
+  if (rowData.type === 'add') {
+    lineHtml = emphasizeSignatureNameInHtml(line, lineHtml);
+  }
 
   const oldNumHtml = rowData.oldLineNumber != null && rowData.oldLineNumber !== '' ? String(rowData.oldLineNumber) : '';
   const newNumHtml = rowData.newLineNumber != null ? String(rowData.newLineNumber) : '';
 
   const row = document.createElement('div');
   row.className = `diff-line diff-line-${rowData.type}`;
+  const isSig = !!getPythonSignatureName(line);
+  if (isSig && rowData.type === 'add') row.classList.add('diff-line-signature-change');
   if (rowData.newLineNumber != null) row.dataset.flowdiffNewLine = String(rowData.newLineNumber);
   if (rowData.anchorNewLineNumber != null) row.dataset.flowdiffAnchorNew = String(rowData.anchorNewLineNumber);
   if (rowData.oldLineNumber != null && rowData.oldLineNumber !== '')
@@ -810,8 +875,15 @@ function appendPlainDiffRow(container, rowData) {
 /**
  * @param {string | null} [collapseScopeKey] - prefix for persisting expand state (e.g. module-context scope)
  */
-function renderDiffRows(container, filePath, rows, prContext, collapseScopeKey = null) {
-  const toRender = expandContextCollapseRows(rows);
+function renderDiffRows(
+  container,
+  filePath,
+  rows,
+  prContext,
+  collapseScopeKey = null,
+  preserveNewLines = null
+) {
+  const toRender = expandContextCollapseRows(rows, preserveNewLines);
   for (const rowData of toRender) {
     if (rowData.type === 'ctx-collapse') {
       const wrap = document.createElement('div');
@@ -854,6 +926,86 @@ function getFlowFunctionIds(flow, payload) {
     }
   }
   return ids;
+}
+
+/**
+ * Ensure changed function definitions are visible in file diffs.
+ * If a changed function body appears but its `def` line is outside patch context,
+ * inject context rows from the definition down to first touched line; long runs are
+ * subsequently collapsed by existing context-collapse rendering.
+ * @param {string} filePath
+ * @param {any[]} rows
+ * @param {Record<string, import('../flowSchema.js').FunctionMeta>} functionsById
+ * @param {string[]} sourceLines
+ * @returns {any[]}
+ */
+function includeChangedFunctionDefinitions(filePath, rows, functionsById, sourceLines) {
+  if (!sourceLines?.length) return rows;
+  const fns = Object.values(functionsById)
+    .filter((fn) => fn?.file === filePath && fn?.changed && fn.changeType !== 'deleted')
+    .sort((a, b) => a.startLine - b.startLine);
+  if (fns.length === 0) return rows;
+
+  const out = [...rows];
+  const existingByNewLine = new Set(
+    out
+      .map((r) =>
+        r?.newLineNumber != null
+          ? Number(r.newLineNumber)
+          : r?.anchorNewLineNumber != null
+            ? Number(r.anchorNewLineNumber)
+            : null
+      )
+      .filter((n) => Number.isFinite(n))
+  );
+
+  for (const fn of fns) {
+    const fnStart = Number(fn.startLine);
+    const fnEnd = Number(fn.endLine);
+    if (!Number.isFinite(fnStart) || !Number.isFinite(fnEnd) || fnEnd < fnStart) continue;
+
+    const rowsInFn = out.filter((r) => {
+      const n = r?.newLineNumber != null
+        ? Number(r.newLineNumber)
+        : r?.anchorNewLineNumber != null
+          ? Number(r.anchorNewLineNumber)
+          : null;
+      return n != null && n >= fnStart && n <= fnEnd;
+    });
+    const hasTouchedInFn = rowsInFn.some((r) => r.type === 'add' || r.type === 'del');
+    if (!hasTouchedInFn) continue;
+    if (existingByNewLine.has(fnStart)) continue;
+
+    const firstTouched = Math.min(
+      ...rowsInFn
+        .filter((r) => r.type === 'add' || r.type === 'del')
+        .map((r) =>
+          r?.newLineNumber != null
+            ? Number(r.newLineNumber)
+            : r?.anchorNewLineNumber != null
+              ? Number(r.anchorNewLineNumber)
+              : fnStart
+        )
+    );
+    const injectEnd = Number.isFinite(firstTouched) ? Math.max(fnStart, firstTouched - 1) : fnStart;
+    for (let ln = fnStart; ln <= injectEnd; ln++) {
+      if (existingByNewLine.has(ln)) continue;
+      out.push({
+        type: 'ctx',
+        oldLineNumber: '',
+        newLineNumber: ln,
+        anchorNewLineNumber: ln,
+        content: sourceLines[ln - 1] ?? ''
+      });
+      existingByNewLine.add(ln);
+    }
+  }
+
+  const key = (r) =>
+    r.type === 'del'
+      ? Number(r.anchorNewLineNumber ?? r.newLineNumber ?? 0)
+      : Number(r.newLineNumber ?? r.anchorNewLineNumber ?? 0);
+  return out.sort((a, b) => key(a) - key(b));
 }
 
 function toBaseName(path) {
@@ -1043,11 +1195,16 @@ function appendFunctionBodyDiffLine(
   } else {
     lineHtml = highlightPython(indent + line);
   }
+  if (rowData.type === 'add') {
+    lineHtml = emphasizeSignatureNameInHtml(line, lineHtml);
+  }
 
   const oldNumHtml = rowData.oldLineNumber != null && rowData.oldLineNumber !== '' ? String(rowData.oldLineNumber) : '';
   const newNumHtml = rowData.newLineNumber != null ? String(rowData.newLineNumber) : '';
   const row = document.createElement('div');
   row.className = `diff-line diff-line-${rowData.type}`;
+  const isSig = !!getPythonSignatureName(line);
+  if (isSig && rowData.type === 'add') row.classList.add('diff-line-signature-change');
   if (rowData.newLineNumber != null) row.dataset.flowdiffNewLine = String(rowData.newLineNumber);
   if (rowData.anchorNewLineNumber != null) row.dataset.flowdiffAnchorNew = String(rowData.anchorNewLineNumber);
   if (rowData.oldLineNumber != null && rowData.oldLineNumber !== '')
@@ -1400,7 +1557,10 @@ function renderFunctionBody(
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
   const calleesForFind = buildCalleesForFind(calleesWithIndex, fn.id, flowFnIds, payload.functionsById);
   attachCallSitesToRows(fnDiffLines, calleesWithIndex, calleesForFind);
-  const rowsToRender = expandContextCollapseRows(fnDiffLines);
+  const rowsToRender = expandContextCollapseRows(
+    fnDiffLines,
+    fn.changed && fn.changeType !== 'deleted' ? new Set([Number(fn.startLine)]) : null
+  );
 
   for (const rowData of rowsToRender) {
     if (rowData.type === 'ctx-collapse') {
@@ -1489,9 +1649,19 @@ export function renderCodeView(container) {
 
   const sourceLinesByFile = {};
   const diffLinesByFile = {};
+  const changedFnStartLinesByFile = new Map();
+  const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId) || null;
+  const flowFnIds = selectedFlow ? getFlowFunctionIds(selectedFlow, flowPayload) : new Set();
   for (const file of flowPayload.files) {
     sourceLinesByFile[file.path] = file.sourceLines || [];
     diffLinesByFile[file.path] = buildDiffLines(file.hunks || []);
+  }
+  for (const fn of Object.values(flowPayload.functionsById || {})) {
+    if (!fn?.file || !fn?.changed || fn.changeType === 'deleted') continue;
+    const start = Number(fn.startLine);
+    if (!Number.isFinite(start)) continue;
+    if (!changedFnStartLinesByFile.has(fn.file)) changedFnStartLinesByFile.set(fn.file, new Set());
+    changedFnStartLinesByFile.get(fn.file).add(start);
   }
   const contentShell = document.createElement('div');
   contentShell.className = 'code-pane-shell';
@@ -1505,29 +1675,11 @@ export function renderCodeView(container) {
   filesNavResizer.setAttribute('aria-orientation', 'vertical');
   const contentScroller = document.createElement('div');
   contentScroller.className = 'code-pane-content';
-  const filePanelToolbar = document.createElement('div');
-  filePanelToolbar.className = 'code-file-panel-toolbar';
-  const expandAllBtn = document.createElement('button');
-  expandAllBtn.type = 'button';
-  expandAllBtn.className = 'code-file-panel-toolbar-btn';
-  expandAllBtn.textContent = 'Expand all';
   const filesPanelToggleBtn = document.createElement('button');
   filesPanelToggleBtn.type = 'button';
   filesPanelToggleBtn.className = 'code-files-nav-toggle-btn';
-  const collapseAllBtn = document.createElement('button');
-  collapseAllBtn.type = 'button';
-  collapseAllBtn.className = 'code-file-panel-toolbar-btn';
-  collapseAllBtn.textContent = 'Collapse all';
-  filePanelToolbar.appendChild(expandAllBtn);
-  filePanelToolbar.appendChild(collapseAllBtn);
   const filesRoot = document.createElement('div');
   filesRoot.className = 'code-files-root';
-
-  const fileFnCount = new Map();
-  for (const fn of Object.values(flowPayload.functionsById || {})) {
-    if (!fn?.file) continue;
-    fileFnCount.set(fn.file, (fileFnCount.get(fn.file) || 0) + 1);
-  }
 
   const activeFnFromSelection = flowPayload.functionsById[uiState.activeFunctionId];
   const activeFile = uiState.selectedFileInFlow || activeFnFromSelection?.file || null;
@@ -1637,7 +1789,6 @@ export function renderCodeView(container) {
           <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M2.75 1h5.5c.464 0 .909.184 1.237.513l3 3c.329.328.513.773.513 1.237v7.5A1.75 1.75 0 0 1 11.25 15h-8.5A1.75 1.75 0 0 1 1 13.25v-10.5C1 1.784 1.784 1 2.75 1Zm5.5 1.5h-5.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25V6H9.75A1.75 1.75 0 0 1 8 4.25V2.5h.25Zm1.25.31V4.25c0 .138.112.25.25.25h1.44L9.5 2.81Z"></path><path d="M8 8.25a.75.75 0 0 1 .75.75v.75h.75a.75.75 0 0 1 0 1.5h-.75V12a.75.75 0 0 1-1.5 0v-.75H6.5a.75.75 0 0 1 0-1.5h.75V9A.75.75 0 0 1 8 8.25Z"></path></svg>
         </span>
         <span class="code-files-nav-name">${escapeHtml(toBaseName(filePath))}</span>
-        <span class="code-files-nav-count">${fileFnCount.get(filePath) || 0}</span>
       `;
       navItem.addEventListener('click', () => scrollToFile(filePath));
       parentEl.appendChild(navItem);
@@ -1676,10 +1827,24 @@ export function renderCodeView(container) {
     collapseBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       suppressAutoScrollUntil = Date.now() + AUTO_SCROLL_SUPPRESS_MS;
+      const beforeScrollTop = contentScroller.scrollTop;
+      const beforeTop = section.getBoundingClientRect().top;
+      const sectionTopInScroller = elementOffsetTopInScroller(contentScroller, section);
       const collapsed = !collapsedFilePaths.has(filePath);
       if (collapsed) collapsedFilePaths.add(filePath);
       else collapsedFilePaths.delete(filePath);
       setFileSectionCollapsed(section, collapsed);
+      requestAnimationFrame(() => {
+        // If collapsing while this header is sticky, keep this card as the anchored one
+        // by snapping viewport to the section start (prevents next header takeover).
+        if (collapsed && beforeScrollTop > sectionTopInScroller) {
+          contentScroller.scrollTop = sectionTopInScroller;
+          return;
+        }
+        const afterTop = section.getBoundingClientRect().top;
+        const delta = afterTop - beforeTop;
+        contentScroller.scrollTop = beforeScrollTop + delta;
+      });
     });
     const filePathEl = document.createElement('span');
     filePathEl.className = 'file-header-path';
@@ -1750,31 +1915,27 @@ export function renderCodeView(container) {
   for (const filePath of changedFiles) {
     const section = fileSectionByPath.get(filePath);
     if (!section) continue;
-    const rows = diffLinesByFile[filePath] || [];
+    const rows = includeChangedFunctionDefinitions(
+      filePath,
+      diffLinesByFile[filePath] || [],
+      flowPayload.functionsById || {},
+      sourceLinesByFile[filePath] || []
+    );
     const body = document.createElement('div');
     body.className = 'file-content';
-    renderDiffRows(body, filePath, rows, prContext, `file::${filePath}`);
+    renderDiffRows(
+      body,
+      filePath,
+      rows,
+      prContext,
+      `file::${filePath}`,
+      changedFnStartLinesByFile.get(filePath) || null
+    );
     section.appendChild(body);
     setFileSectionCollapsed(section, collapsedFilePaths.has(filePath));
+
   }
 
-  collapseAllBtn.addEventListener('click', () => {
-    collapsedFilePaths = new Set(changedFiles);
-    for (const filePath of changedFiles) {
-      const section = fileSectionByPath.get(filePath);
-      if (section) setFileSectionCollapsed(section, true);
-    }
-  });
-
-  expandAllBtn.addEventListener('click', () => {
-    collapsedFilePaths = new Set();
-    for (const filePath of changedFiles) {
-      const section = fileSectionByPath.get(filePath);
-      if (section) setFileSectionCollapsed(section, false);
-    }
-  });
-
-  contentScroller.appendChild(filePanelToolbar);
   contentScroller.appendChild(filesRoot);
   contentShell.appendChild(filesNav);
   contentShell.appendChild(filesNavResizer);

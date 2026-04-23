@@ -159,76 +159,173 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
       }
 
       for (const { calleeId, callIndex } of callOrder) {
-        edges.push({ callerId: caller.id, calleeId, callIndex });
+        edges.push({ callerId: caller.id, calleeId, callIndex, relationType: 'call' });
       }
     }
   }
 
-  const roots = new Set(Object.keys(functionsById));
+  // Add class-membership links for changed methods in the same class.
+  // We model these as synthetic edges from an anchor method to sibling methods so
+  // existing tree/code traversal can include class-related peers.
+  const edgeKeys = new Set(edges.map((e) => `${e.callerId}->${e.calleeId}`));
+  const outgoingByCaller = new Map();
   for (const e of edges) {
-    const callerPath = functionsById[e.callerId]?.file;
-    // Tests often call production APIs (e.g. block.run); those edges must not
-    // strip production entrypoints from the root set.
-    if (isTestFile(callerPath ?? '')) continue;
-    roots.delete(e.calleeId);
+    const v = outgoingByCaller.get(e.callerId) || [];
+    v.push(e.callIndex);
+    outgoingByCaller.set(e.callerId, v);
+  }
+  function nextCallIndex(callerId) {
+    const used = outgoingByCaller.get(callerId) || [];
+    const n = used.length ? Math.max(...used) + 1 : 0;
+    used.push(n);
+    outgoingByCaller.set(callerId, used);
+    return n;
+  }
+  const changedMethods = Object.entries(functionsById)
+    .filter(([, fn]) => fn?.kind === 'method' && fn?.className && fn?.changeType !== 'deleted');
+  const classBuckets = new Map(); // `${file}::${className}` -> [{id, fn}]
+  for (const [id, fn] of changedMethods) {
+    const k = `${fn.file}::${fn.className}`;
+    const list = classBuckets.get(k) || [];
+    list.push({ id, fn });
+    classBuckets.set(k, list);
+  }
+  for (const list of classBuckets.values()) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => a.fn.startLine - b.fn.startLine);
+    const anchorId = list[0].id;
+    const memberIdSet = new Set(list.map((x) => x.id));
+    const methodsInAnyCallRelation = new Set(
+      edges
+        .filter(
+          (e) =>
+            e.relationType === 'call' &&
+            (memberIdSet.has(e.callerId) || memberIdSet.has(e.calleeId))
+        )
+        .flatMap((e) => [e.callerId, e.calleeId])
+    );
+    for (let i = 1; i < list.length; i++) {
+      const calleeId = list[i].id;
+      // If a method already participates in any call relation in this class component,
+      // do not add an extra synthetic class edge for it (prevents duplicate rhizome rows).
+      if (methodsInAnyCallRelation.has(calleeId)) continue;
+      const key = `${anchorId}->${calleeId}`;
+      if (edgeKeys.has(key)) continue;
+      edgeKeys.add(key);
+      edges.push({
+        callerId: anchorId,
+        calleeId,
+        callIndex: nextCallIndex(anchorId),
+        relationType: 'class'
+      });
+    }
   }
 
-  // Suppress “inner” roots that are already reachable from another (main) root.
-  // This avoids showing duplicated flows for functions that are already part of
-  // another flow’s call-tree in the UI.
+  // Build undirected connectivity for rhizome grouping:
+  // connected by either direct call relationship or class-membership links above.
+  const eligibleIds = Object.entries(functionsById)
+    .filter(([, fn]) => fn && fn.changeType !== 'deleted' && !isTestFunction(fn))
+    .map(([id]) => id);
+  const eligibleSet = new Set(eligibleIds);
+  const undirected = new Map();
+  function link(a, b) {
+    if (!eligibleSet.has(a) || !eligibleSet.has(b)) return;
+    if (!undirected.has(a)) undirected.set(a, new Set());
+    if (!undirected.has(b)) undirected.set(b, new Set());
+    undirected.get(a).add(b);
+    undirected.get(b).add(a);
+  }
+  for (const e of edges) link(e.callerId, e.calleeId);
+
+  const components = [];
+  const seen = new Set();
+  for (const id of eligibleIds) {
+    if (seen.has(id)) continue;
+    const comp = new Set([id]);
+    seen.add(id);
+    const stack = [id];
+    while (stack.length) {
+      const cur = stack.pop();
+      const neigh = undirected.get(cur) || new Set();
+      for (const nxt of neigh) {
+        if (seen.has(nxt)) continue;
+        seen.add(nxt);
+        comp.add(nxt);
+        stack.push(nxt);
+      }
+    }
+    components.push(comp);
+  }
+
   const adjacency = new Map(); // callerId -> calleeIds[]
   for (const e of edges) {
     const list = adjacency.get(e.callerId) || [];
     list.push(e.calleeId);
     adjacency.set(e.callerId, list);
   }
-
-  const rootIds = Array.from(roots);
-  const shownRootIds = rootIds.filter((rootId) => {
-    const root = functionsById[rootId];
-    return root && !isTestFunction(root);
-  });
-  const shownRootIdSet = new Set(shownRootIds);
-
-  const rootsToRemove = new Set();
-  for (const src of shownRootIds) {
-    const visited = new Set([src]);
-    const stack = [src];
+  function reachableFrom(rootId, members) {
+    const reached = new Set([rootId]);
+    const stack = [rootId];
     while (stack.length) {
       const cur = stack.pop();
       const outs = adjacency.get(cur) || [];
       for (const nxt of outs) {
-        if (visited.has(nxt)) continue;
-        visited.add(nxt);
+        if (!members.has(nxt) || reached.has(nxt)) continue;
+        reached.add(nxt);
         stack.push(nxt);
       }
     }
-    for (const maybeRoot of visited) {
-      if (maybeRoot !== src && shownRootIdSet.has(maybeRoot)) rootsToRemove.add(maybeRoot);
-    }
+    return reached;
   }
 
-  const filteredRootIds = rootIds.filter((id) => !rootsToRemove.has(id));
+  const flows = components
+    .map((members) => {
+      const memberList = [...members];
+      const inDegree = new Map(memberList.map((id) => [id, 0]));
+      for (const e of edges) {
+        if (members.has(e.callerId) && members.has(e.calleeId)) {
+          inDegree.set(e.calleeId, (inDegree.get(e.calleeId) || 0) + 1);
+        }
+      }
+      const roots = memberList.filter((id) => (inDegree.get(id) || 0) === 0);
+      const candidateIds = roots.length ? roots : memberList;
+      candidateIds.sort((a, b) => {
+        const fa = functionsById[a];
+        const fb = functionsById[b];
+        if ((fa?.file || '') !== (fb?.file || '')) return String(fa?.file || '').localeCompare(String(fb?.file || ''));
+        if ((fa?.startLine || 0) !== (fb?.startLine || 0)) return (fa?.startLine || 0) - (fb?.startLine || 0);
+        return String(fa?.name || '').localeCompare(String(fb?.name || ''));
+      });
+      const rootId = candidateIds[0];
 
-  const flows = filteredRootIds
-    .map((rootId) => {
+      // Ensure every member is reachable from root in directed traversal used by UI.
+      const reached = reachableFrom(rootId, members);
+      for (const id of memberList) {
+        if (id === rootId || reached.has(id)) continue;
+        const k = `${rootId}->${id}`;
+        if (edgeKeys.has(k)) continue;
+        edgeKeys.add(k);
+        edges.push({
+          callerId: rootId,
+          calleeId: id,
+          callIndex: nextCallIndex(rootId),
+          relationType: 'class'
+        });
+      }
+
       const root = functionsById[rootId];
       return {
         id: rootId,
         rootId,
-        name: root ? getFunctionDisplayName(root) : rootId.split(':').pop()
+        name: root ? getFunctionDisplayName(root) : rootId.split(':').pop(),
+        _size: memberList.length
       };
     })
-    .filter((f) => {
-      const root = functionsById[f.rootId];
-      return root && !isTestFunction(root);
-    })
     .sort((a, b) => {
-      const sizeA = flowSizeFromRoot(a.rootId, adjacency);
-      const sizeB = flowSizeFromRoot(b.rootId, adjacency);
-      if (sizeA !== sizeB) return sizeB - sizeA;
+      if (a._size !== b._size) return b._size - a._size;
       return String(a.name || '').localeCompare(String(b.name || ''));
-    });
+    })
+    .map(({ _size, ...rest }) => rest);
 
   return { flows, edges };
 }

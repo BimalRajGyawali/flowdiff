@@ -39,7 +39,7 @@ export function renderFlowTree(container) {
 
   const title = document.createElement('div');
   title.className = 'flow-tree-pane-title';
-  title.textContent = 'FLOWS';
+  title.textContent = 'RHIZOMES';
   wrapper.appendChild(title);
 
   for (let idx = 0; idx < flowPayload.flows.length; idx++) {
@@ -53,17 +53,6 @@ export function renderFlowTree(container) {
     const section = document.createElement('section');
     section.className = 'flow-tree-flow-section';
     if (flow.id === uiState.selectedFlowId) section.classList.add('active');
-
-    const header = document.createElement('button');
-    header.type = 'button';
-    header.className = 'flow-tree-flow-header';
-    if (flow.id === uiState.selectedFlowId) header.classList.add('active');
-    header.innerHTML = `
-      <span class="flow-tree-flow-dot"></span>
-      <span class="flow-tree-flow-title">Flow ${idx + 1} — ${escapeHtml(flow.name ?? root.name ?? flow.rootId)}</span>
-    `;
-    header.addEventListener('click', () => setSelectedFlow(flow.id, flow.rootId));
-    section.appendChild(header);
 
     const tree = document.createElement('div');
     tree.className = 'flow-tree';
@@ -116,7 +105,8 @@ function renderNode(
   flowId,
   flowRootId,
   forceExpanded = false,
-  depth = 0
+  callDepth = 0,
+  incomingRelation = 'call'
 ) {
   const { uiState } = getState();
   const expanded = forceExpanded || uiState.flowTreeExpandedIds.has(treeNodeKey);
@@ -128,6 +118,7 @@ function renderNode(
 
   const item = document.createElement('div');
   item.className = 'flow-tree-item' + (isLast ? ' flow-tree-item-last' : '');
+  item.style.setProperty('--tree-indent', `${16 + callDepth * 18}px`);
 
   const isInView = uiState.inViewTreeNodeKey === treeNodeKey;
   const isCallHover = uiState.hoveredTreeNodeKey === treeNodeKey;
@@ -145,12 +136,13 @@ function renderNode(
     (isInView ? ' in-view' : '') +
     (isCallHover ? ' call-hover-target' : '') +
     (isRead ? ' read' : '');
-  const leadingIcon = depth > 0 ? '↳' : '';
+  const leadingIcon = flowTreeCallMarkerHtml(fn, callDepth, incomingRelation);
   const sharedHint = isMultiFlow
     ? `<span class="flow-tree-shared-hint" title="Also appears in other flows (collapsed in code view)">↗</span>`
     : '';
   const labelHtml = flowTreeLabelHtml(fn);
-  row.classList.add(depth === 0 ? 'flow-tree-node-root' : 'flow-tree-node-child');
+  row.classList.add(callDepth === 0 ? 'flow-tree-node-root' : 'flow-tree-node-child');
+  row.style.paddingLeft = `${16 + callDepth * 18}px`;
   row.innerHTML = `<span class="flow-tree-icon">${leadingIcon}</span><span class="flow-tree-label">${labelHtml}${sharedHint}</span>`;
   row.dataset.functionId = fn.id;
   row.dataset.treeNodeKey = treeNodeKey;
@@ -185,6 +177,7 @@ function renderNode(
       const e = childEdges[i];
       const childKey = `${treeNodeKey}/e:${e.callerId}:${e.callIndex}:${e.calleeId}`;
       const child = children[i];
+      const rel = e.relationType === 'call' ? 'call' : 'class';
       const isRecursive = pathIncludingThis.has(child.id);
       const firstKey = firstTreeNodeKeyByFunctionId.get(child.id);
 
@@ -205,7 +198,11 @@ function renderNode(
           (recCallHover ? ' call-hover-target' : '') +
           (recIsRead ? ' read' : '');
         recRow.classList.add('flow-tree-node-child');
-        recRow.innerHTML = `<span class="flow-tree-icon">↳</span><span class="flow-tree-label">${flowTreeLabelHtml(child)}</span>`;
+        const recDepth = callDepth + (rel === 'call' ? 1 : 0);
+        recItem.style.setProperty('--tree-indent', `${16 + recDepth * 18}px`);
+        recRow.style.paddingLeft = `${16 + recDepth * 18}px`;
+        const recIcon = flowTreeCallMarkerHtml(child, recDepth, rel);
+        recRow.innerHTML = `<span class="flow-tree-icon">${recIcon}</span><span class="flow-tree-label">${flowTreeLabelHtml(child)}</span>`;
         recRow.title = 'Click to jump to where this function is shown above';
         recRow.dataset.functionId = child.id;
         recRow.dataset.treeNodeKey = originalKey;
@@ -233,7 +230,8 @@ function renderNode(
           flowId,
           flowRootId,
           forceExpanded,
-          depth + 1
+          callDepth + (rel === 'call' ? 1 : 0),
+          rel
         );
       }
     }
@@ -265,4 +263,19 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+/**
+ * @param {import('../flowSchema.js').FunctionMeta} fn
+ * @param {number} callDepth
+ * @param {'call' | 'class'} incomingRelation
+ */
+function flowTreeCallMarkerHtml(fn, callDepth, incomingRelation) {
+  if (callDepth <= 0 || incomingRelation !== 'call') return '';
+  const tone = fn.changeType === 'added'
+    ? 'added'
+    : fn.changeType === 'deleted'
+      ? 'deleted'
+      : 'modified';
+  return `<span class="flow-tree-call-marker flow-tree-call-marker-${tone}" aria-hidden="true"></span>`;
 }
