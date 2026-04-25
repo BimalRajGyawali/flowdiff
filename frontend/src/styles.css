@@ -701,6 +701,15 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100%;
+  padding-bottom: 56px;
+}
+
+.flow-tree-wrapper::after {
+  content: '';
+  display: block;
+  height: 1px;
+  background: #e4e8ef;
+  margin: 4px 0;
 }
 
 .flow-tree-pane-title {
@@ -714,8 +723,14 @@ body {
 }
 
 .flow-tree-flow-section {
-  padding: 6px 0 10px;
-  margin: 0 0 10px;
+  padding: 3px 0;
+  margin: 0;
+}
+
+/* Single-node rhizomes don't need as much vertical breathing room. */
+.flow-tree-flow-section--single-node {
+  padding: 3px 0;
+  margin: 0;
 }
 
 /* Row above the root function: expand/collapse only (no label) */
@@ -724,8 +739,12 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 10px 4px 12px;
+  padding: 0 10px 2px 12px;
   margin: 0;
+}
+
+.flow-tree-flow-section--single-node .flow-tree-flow-header {
+  padding-bottom: 0;
 }
 
 .flow-tree-flow-section-caret {
@@ -814,7 +833,7 @@ body {
 .flow-tree-flow-separator {
   height: 1px;
   background: #e4e8ef;
-  margin: 8px 0 12px;
+  margin: 4px 0;
 }
 
 .flow-tree-toolbar {

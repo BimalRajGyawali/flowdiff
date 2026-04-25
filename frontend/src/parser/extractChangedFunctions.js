@@ -128,8 +128,6 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
   const files = [];
 
   for (const pf of parsed.files) {
-    if (!pf.path.endsWith('.py')) continue;
-
     const changedRanges = pf.hunks.flatMap((h) => {
       const start = h.newStart;
       const end = h.newStart + (h.newLines || 1) - 1;
@@ -138,6 +136,7 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
 
     const visibleLines = buildVisibleLines(pf.hunks);
     const hasFullFile = typeof fileContentsByPath[pf.path] === 'string';
+    const isPythonFile = pf.path.endsWith('.py');
 
     // GitHub hunks are often compressed: changed lines inside a function may appear without the
     // `def` line. `visibleLines` still carry real new-file line numbers for those edits. Matching
@@ -146,6 +145,21 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
     const sourceText = fileContentsByPath[pf.path] ?? visibleLines.map((line) => line.content).join('\n');
     const sourceLines = sourceText.split('\n');
     const fileEndLine = sourceLines.length;
+
+    // Keep every changed file in payload for file-nav + outside-rhizome full-file diff views.
+    // Function/rhizome extraction remains Python-only.
+    if (!isPythonFile) {
+      files.push({
+        path: pf.path,
+        hunks: pf.hunks,
+        changedRanges,
+        moduleChangedRanges: [],
+        moduleChangedSymbols: [],
+        moduleExcludedLineNumbers: [],
+        sourceLines
+      });
+      continue;
+    }
 
     /** @type {{ name: string, lineNum: number, indent: number, snippet: string, defAdded: boolean, endLine?: number }[]} */
     let defs;

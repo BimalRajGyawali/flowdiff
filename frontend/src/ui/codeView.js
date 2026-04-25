@@ -1132,6 +1132,74 @@ function collectFlowOrder(rootId, payload) {
 }
 
 /**
+ * Keep nested Python defs inside parent cards only.
+ * Hard guard: if a function/method node's span is fully contained by an ancestor
+ * class/function/method span from its tree-node path in the same file, suppress it as a separate card.
+ * Keeps the node in the rhizome tree, but avoids duplicate code cards.
+ * @param {{ treeNodeKey: string, functionId: string }[]} order
+ * @param {import('../flowSchema.js').FlowPayload} payload
+ * @returns {{ treeNodeKey: string, functionId: string }[]}
+ */
+function filterNestedFunctionCards(order, payload) {
+  /**
+   * Sequence of function ids along this tree path, in order from root to current node.
+   * root:RID => [RID]
+   * root:RID/e:RID:0:C1/e:C1:2:C2 => [RID, C1, C2]
+   * @param {string} treeNodeKey
+   * @returns {string[]}
+   */
+  function functionPathIdsFromTreeNodeKey(treeNodeKey) {
+    if (!treeNodeKey) return [];
+    const ids = [];
+    for (const seg of String(treeNodeKey).split('/')) {
+      if (seg.startsWith('root:')) {
+        ids.push(seg.slice(5));
+        continue;
+      }
+      if (seg.startsWith('e:')) {
+        const p = seg.split(':');
+        if (p.length >= 4) ids.push(p[3]);
+      }
+    }
+    return ids;
+  }
+
+  const kept = [];
+  for (const item of order) {
+    const fn = payload.functionsById[item.functionId];
+    if (!fn) continue;
+    const fnStart = Number(fn.startLine);
+    const fnEnd = Number(fn.endLine);
+    if (!Number.isFinite(fnStart) || !Number.isFinite(fnEnd) || fnEnd < fnStart) {
+      kept.push(item);
+      continue;
+    }
+    // Keep class cards as top-level structural cards; nested methods/functions render in-body.
+    const fnKind = fn.kind || 'function';
+    if (fnKind === 'class') {
+      kept.push(item);
+      continue;
+    }
+    const pathIds = functionPathIdsFromTreeNodeKey(item.treeNodeKey);
+    const ancestorIds = pathIds.slice(0, -1);
+    const nestedUnderAncestor = ancestorIds.some((ancestorId) => {
+      const parentFn = payload.functionsById[ancestorId];
+      if (!parentFn || parentFn.file !== fn.file) return false;
+      const parentStart = Number(parentFn.startLine);
+      const parentEnd = Number(parentFn.endLine);
+      if (!Number.isFinite(parentStart) || !Number.isFinite(parentEnd) || parentEnd < parentStart) {
+        return false;
+      }
+      const parentKind = parentFn.kind || 'function';
+      if (!['class', 'function', 'method'].includes(parentKind)) return false;
+      return fnStart >= parentStart && fnEnd <= parentEnd;
+    });
+    if (!nestedUnderAncestor) kept.push(item);
+  }
+  return kept;
+}
+
+/**
  * Assignment symbols from the parser plus best-effort import names from module-level changed lines.
  * Used to score which function body references module edits most (word-boundary matches).
  * @param {{ start: number, end: number }[]} moduleChangedRanges
@@ -1331,11 +1399,15 @@ function findCallSitesInLine(line, callees) {
   const sites = [];
   /** Same source range must not be claimed by multiple callees that share a short `name`. */
   const claimed = new Set();
+  const trimmed = String(line || '').trimStart();
+  const isDefinitionLine = /^(?:async\s+def|def|class)\b/.test(trimmed);
   for (const { calleeId, name } of callees) {
     const re = new RegExp(`\\b${name}\\s*\\(`, 'g');
     let m;
     while ((m = re.exec(line)) !== null) {
       const start = m.index;
+      // Never treat declarations (def/class signatures) as call sites.
+      if (isDefinitionLine) continue;
       const openParen = line.indexOf('(', start);
       const end = findCallEnd(line, openParen);
       const key = `${start}:${end}`;
@@ -2082,11 +2154,12 @@ export function renderCodeView(container) {
   const flowFnIds = selectedFlow
     ? getFlowFunctionIds(selectedFlow, flowPayload)
     : new Set(standaloneClass ? [standaloneClass.id] : []);
-  const rhizomeOrder = selectedFlow
+  const rhizomeOrderRaw = selectedFlow
     ? collectFlowOrder(selectedFlow.rootId, flowPayload)
     : (standaloneClass
         ? [{ treeNodeKey: `standalone-class:${standaloneClass.id}`, functionId: standaloneClass.id }]
         : []);
+  const rhizomeOrder = filterNestedFunctionCards(rhizomeOrderRaw, flowPayload);
   const canonicalKeyByFunctionId = new Map();
   for (const { treeNodeKey, functionId } of rhizomeOrder) {
     if (!canonicalKeyByFunctionId.has(functionId)) canonicalKeyByFunctionId.set(functionId, treeNodeKey);
@@ -2195,7 +2268,7 @@ export function renderCodeView(container) {
   navTitleText.innerHTML = `<span class="code-files-nav-rhizome-kicker">Files</span>`;
   const navTitleName = document.createElement('div');
   navTitleName.className = 'code-files-nav-rhizome-name';
-  navTitleName.textContent = `${allChangedFiles.length} paths`;
+  navTitleName.textContent = `${allChangedFiles.length} files`;
   navTitleName.title =
     'Rhizome files: path touches at least one node in any flow in this PR (sort first). Muted: never in any flow—click for full file diff.';
   const titleStack = document.createElement('div');
@@ -2278,8 +2351,16 @@ export function renderCodeView(container) {
   function renderTree(parentEl, node, depth = 0, filterText = '', parentPath = '') {
     const folderEntries = [...node.folders.entries()].sort((a, b) => a[0].localeCompare(b[0]));
     for (const [folderName, childNode] of folderEntries) {
-      if (!hasVisibleDescendant(childNode, filterText)) continue;
-      const folderPath = parentPath ? `${parentPath}/${folderName}` : folderName;
+      let compactLabel = folderName;
+      let folderPath = parentPath ? `${parentPath}/${folderName}` : folderName;
+      let compactNode = childNode;
+      while (compactNode.files.length === 0 && compactNode.folders.size === 1) {
+        const [nextName, nextNode] = [...compactNode.folders.entries()][0];
+        compactLabel += `/${nextName}`;
+        folderPath += `/${nextName}`;
+        compactNode = nextNode;
+      }
+      if (!hasVisibleDescendant(compactNode, filterText)) continue;
       const details = document.createElement('details');
       details.className = 'code-files-nav-folder';
       if (!filesNavFolderStateInitialized && !filesNavFolderOpenState.has(folderPath)) {
@@ -2296,12 +2377,12 @@ export function renderCodeView(container) {
         <span class="code-files-nav-folder-icon" aria-hidden="true">
           <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M1.75 2A1.75 1.75 0 0 0 0 3.75v8.5C0 13.216.784 14 1.75 14h12.5A1.75 1.75 0 0 0 16 12.25v-7.5A1.75 1.75 0 0 0 14.25 3H8.06l-.97-1.21A1.75 1.75 0 0 0 5.72 1H1.75ZM1.5 3.75a.25.25 0 0 1 .25-.25h3.97a.25.25 0 0 1 .2.095l1.37 1.71a.75.75 0 0 0 .59.28h6.37a.25.25 0 0 1 .25.25v6.42a.25.25 0 0 1-.25.25H1.75a.25.25 0 0 1-.25-.25v-8.5Z"></path></svg>
         </span>
-        <span class="code-files-nav-folder-name">${escapeHtml(folderName)}</span>
+        <span class="code-files-nav-folder-name">${escapeHtml(compactLabel)}</span>
       `;
       details.appendChild(summary);
       const body = document.createElement('div');
       body.className = 'code-files-nav-folder-body';
-      renderTree(body, childNode, depth + 1, filterText, folderPath);
+      renderTree(body, compactNode, depth + 1, filterText, folderPath);
       details.appendChild(body);
       details.addEventListener('toggle', () => {
         filesNavFolderOpenState.set(folderPath, details.open);

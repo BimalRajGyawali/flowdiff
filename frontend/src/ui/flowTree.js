@@ -345,6 +345,7 @@ export function renderFlowTree(container) {
 
     const flowFnIds = new Set(flowFnIdsByFlowId.get(flow.id) || [flow.rootId]);
     const hasExpandableFlowTree = flowFnIds.size > 2;
+    if (!hasExpandableFlowTree) section.classList.add('flow-tree-flow-section--single-node');
     const diffStats = getRhizomeLineDiffStats(
       flowFnIds,
       flowPayload,
