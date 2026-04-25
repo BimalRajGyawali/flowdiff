@@ -1436,10 +1436,10 @@ body {
   display: flex;
   width: 100%;
   border: none;
-  min-height: 22px;
+  min-height: 24px;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   font-size: 13px;
-  line-height: 22px;
+  line-height: 24px;
 }
 
 .diff-num {
@@ -1447,11 +1447,11 @@ body {
   width: 44px;
   min-width: 44px;
   padding: 0 8px;
-  line-height: 22px;
+  line-height: 24px;
   text-align: right;
   white-space: nowrap;
   color: #57606a;
-  background: #f6f8fa;
+  background: #f8fafc;
   user-select: none;
 }
 
@@ -1485,7 +1485,7 @@ body {
   width: 24px;
   min-width: 24px;
   padding: 0 4px;
-  line-height: 22px;
+  line-height: 24px;
   text-align: center;
   white-space: nowrap;
   user-select: none;
@@ -1510,7 +1510,7 @@ body {
 .diff-code {
   flex: 1;
   margin: 0;
-  padding: 0 10px;
+  padding: 0 12px;
   overflow-x: hidden;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1519,7 +1519,7 @@ body {
   border: none;
   font-family: inherit;
   font-size: 13px;
-  line-height: 22px;
+  line-height: 24px;
   min-width: 0;
   tab-size: 8;
 }
@@ -1574,6 +1574,10 @@ body {
 
 .diff-line-ctx .diff-code {
   background: #ffffff;
+}
+
+.diff-line-ctx:nth-child(even) .diff-code {
+  background: #fbfdff;
 }
 
 .diff-line.diff-line-function-target {
@@ -2193,7 +2197,15 @@ body {
 .code-pane .token.doctype,
 .code-pane .token.cdata {
   color: #6e7781;
-  font-style: italic;
+  font-style: normal;
+}
+
+/* Treat Python docstrings like comments for readability consistency. */
+.diff-line-docstring .diff-code,
+.diff-line-docstring .diff-code code,
+.diff-line-docstring .diff-code .token,
+.diff-line-docstring .token.string {
+  color: #0a3069 !important;
 }
 
 .code-pane .token.namespace {
@@ -2204,7 +2216,7 @@ body {
 .code-pane .token.atrule,
 .code-pane .token.important,
 .code-pane .token.deleted {
-  color: #cf222e;
+  color: #b42318;
 }
 
 .code-pane .token.string,
@@ -2224,7 +2236,7 @@ body {
 
 .code-pane .token.function,
 .code-pane .token.class-name {
-  color: #8250df;
+  color: #6f42c1;
 }
 
 .code-pane .token.decorator-at {
@@ -2242,7 +2254,7 @@ body {
 
 .code-pane .token.punctuation,
 .code-pane .token.operator {
-  color: #1f2328;
+  color: #4b5563;
 }
 
 .code-pane .token.tag,
@@ -2255,10 +2267,55 @@ body {
   color: #0550ae;
 }
 
+.code-pane .token.builtin,
+.code-pane .token.char,
+.code-pane .token.escape,
+.code-pane .token.interpolation,
+.code-pane .token.parameter,
+.code-pane .token.parameter-variable {
+  color: #0550ae;
+}
+
+.code-pane .token.method,
+.code-pane .token.function-variable,
+.code-pane .token.maybe-class-name {
+  color: #6f42c1;
+}
+
+.code-pane .token.module,
+.code-pane .token.imports,
+.code-pane .token.annotation,
+.code-pane .token.class-name .token.punctuation {
+  color: #1f2328;
+}
+
+.code-pane .token.triple-quoted-string,
+.code-pane .token.heredoc-string,
+.code-pane .token.docstring {
+  color: #0a3069;
+}
+
+.code-pane .token.operator-word,
+.code-pane .token.logic,
+.code-pane .token.comparison {
+  color: #b42318;
+}
+
+.code-pane .token.placeholder,
+.code-pane .token.interpolation-punctuation {
+  color: #4b5563;
+}
+
 .code-pane .token.bold {
   font-weight: bold;
 }
 
 .code-pane .token.italic {
   font-style: italic;
+}
+
+/* Non-clickable call fallback: visible but not dominant. */
+.code-pane .flowdiff-generic-call {
+  color: #3b5b94;
+  font-weight: 400;
 }

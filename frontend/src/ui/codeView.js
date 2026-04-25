@@ -407,6 +407,62 @@ function getPythonSignatureName(line) {
   return m ? m[1] : null;
 }
 
+function isPythonCommentLine(line) {
+  return /^\s*#/.test(String(line ?? ''));
+}
+
+function countToken(text, token) {
+  let count = 0;
+  let idx = 0;
+  while (idx < text.length) {
+    const hit = text.indexOf(token, idx);
+    if (hit === -1) break;
+    count += 1;
+    idx = hit + token.length;
+  }
+  return count;
+}
+
+function markDocstringLineOnRow(rowData, state) {
+  if (!rowData || rowData.type === 'ctx-gap') return;
+  if (rowData.type === 'ctx-collapse') {
+    for (const hr of rowData.hiddenRows || []) markDocstringLineOnRow(hr, state);
+    return;
+  }
+  const line = String(rowData.content ?? '');
+  let isDocstringLine = !!state.inDocstring;
+  if (!state.inDocstring) {
+    const start = line.match(/^\s*(?:[rRuUbBfF]{0,2})?("""|''')/);
+    if (start) {
+      const quote = start[1];
+      isDocstringLine = true;
+      const occurrences = countToken(line, quote);
+      if (occurrences % 2 === 1) {
+        state.inDocstring = true;
+        state.quote = quote;
+      } else {
+        state.inDocstring = false;
+        state.quote = null;
+      }
+    }
+  } else {
+    const quote = state.quote || (line.includes('"""') ? '"""' : (line.includes("'''") ? "'''" : null));
+    if (quote) {
+      const occurrences = countToken(line, quote);
+      if (occurrences % 2 === 1) {
+        state.inDocstring = false;
+        state.quote = null;
+      }
+    }
+  }
+  rowData._isDocstringLine = isDocstringLine;
+}
+
+function markDocstringLines(rows) {
+  const state = { inDocstring: false, quote: null };
+  for (const rowData of rows || []) markDocstringLineOnRow(rowData, state);
+}
+
 function emphasizeSignatureNameInHtml(line, lineHtml) {
   const fnName = getPythonSignatureName(line);
   if (!fnName) return lineHtml;
@@ -976,16 +1032,17 @@ function buildRangeDisplayRows(ranges, sourceLines, diffLines, excludedLineNumbe
  */
 function appendPlainDiffRow(container, rowData) {
   const line = rowData.content;
+  const skipGenericCallParsing = !!rowData._isDocstringLine;
   let lineHtml =
     rowData.type === 'add'
       ? hasMeaningfulIntraline(rowData.intraline)
         ? applyIntralineHighlight(line, rowData.intraline, 'intraline intraline-add')
-        : highlightPython(line)
+        : highlightPythonWithGenericCalls(line, [], { skipGenericCallParsing })
       : rowData.type === 'del'
         ? hasMeaningfulIntraline(rowData.intraline)
           ? applyIntralineHighlight(line, rowData.intraline, 'intraline intraline-del')
-          : highlightPython(line)
-        : highlightPython(line);
+          : highlightPythonWithGenericCalls(line, [], { skipGenericCallParsing })
+        : highlightPythonWithGenericCalls(line, [], { skipGenericCallParsing });
   if (rowData.type === 'add') {
     lineHtml = emphasizeSignatureNameInHtml(line, lineHtml);
   }
@@ -997,6 +1054,8 @@ function appendPlainDiffRow(container, rowData) {
   row.className = `diff-line diff-line-${rowData.type}`;
   const isSig = !!getPythonSignatureName(line);
   if (isSig && rowData.type === 'add') row.classList.add('diff-line-signature-change');
+  if (isPythonCommentLine(line)) row.classList.add('diff-line-comment');
+  if (rowData._isDocstringLine) row.classList.add('diff-line-docstring');
   if (rowData.newLineNumber != null) row.dataset.flowdiffNewLine = String(rowData.newLineNumber);
   if (rowData.anchorNewLineNumber != null) row.dataset.flowdiffAnchorNew = String(rowData.anchorNewLineNumber);
   if (rowData.oldLineNumber != null && rowData.oldLineNumber !== '')
@@ -1035,6 +1094,7 @@ function renderDiffRows(
         })
       : rows;
   const toRender = expandContextCollapseRows(withGaps, preserveNewLines);
+  markDocstringLines(toRender);
   for (const rowData of toRender) {
     if (rowData.type === 'ctx-gap') {
       const gapStart = Number(rowData.startLine);
@@ -1782,6 +1842,49 @@ function findCallSitesInLine(line, callees) {
   return sites.sort((a, b) => a.start - b.start);
 }
 
+function findGenericCallNameSites(line, blockedRanges = []) {
+  const out = [];
+  const trimmed = String(line || '').trimStart();
+  if (/^(?:async\s+def|def|class)\b/.test(trimmed)) return out;
+  const re = /\b([A-Za-z_]\w*)\b(?=\s*\()/g;
+  let m;
+  while ((m = re.exec(line)) !== null) {
+    const name = m[1];
+    const start = m.index;
+    const end = start + name.length;
+    const blocked = blockedRanges.some((r) => start >= r.start && start < r.end);
+    if (blocked) continue;
+    out.push({ start, end, name });
+  }
+  return out;
+}
+
+function highlightPythonWithGenericCalls(line, blockedRanges = [], opts = {}) {
+  if (isPythonCommentLine(line) || opts.skipGenericCallParsing) return highlightPython(line);
+  const genericSites = findGenericCallNameSites(line, blockedRanges);
+  if (!genericSites.length) return highlightPython(line);
+  let composed = '';
+  let last = 0;
+  const placeholders = [];
+  for (let i = 0; i < genericSites.length; i++) {
+    const s = genericSites[i];
+    composed += line.slice(last, s.start);
+    const ph = `__flowdiff_generic_call_${i}__`;
+    composed += ph;
+    placeholders.push({ ph, name: s.name });
+    last = s.end;
+  }
+  composed += line.slice(last);
+  let html = highlightPython(composed);
+  for (const { ph, name } of placeholders) {
+    html = html.replace(
+      new RegExp(escapeRegex(ph), 'g'),
+      `<span class="flowdiff-generic-call">${escapeHtml(name)}</span>`
+    );
+  }
+  return html;
+}
+
 /**
  * Renders one diff row in a function body (syntax highlight + optional call-site links).
  * @param {HTMLElement} container
@@ -1820,7 +1923,9 @@ function appendFunctionBodyDiffLine(
       lastEnd = site.end;
     }
     lineWithPlaceholders += line.slice(lastEnd);
-    lineHtml = highlightPython(lineWithPlaceholders);
+    lineHtml = highlightPythonWithGenericCalls(lineWithPlaceholders, sites, {
+      skipGenericCallParsing: !!rowData._isDocstringLine
+    });
 
     for (let pi = 0; pi < placeholders.length; pi++) {
       const { placeholder, calleeId, start, end } = placeholders[pi];
@@ -1845,13 +1950,19 @@ function appendFunctionBodyDiffLine(
   } else if (rowData.type === 'add') {
     lineHtml = hasMeaningfulIntraline(rowData.intraline)
       ? applyIntralineHighlight(indent + line, rowData.intraline, 'intraline intraline-add')
-      : highlightPython(indent + line);
+      : highlightPythonWithGenericCalls(indent + line, [], {
+          skipGenericCallParsing: !!rowData._isDocstringLine
+        });
   } else if (rowData.type === 'del') {
     lineHtml = hasMeaningfulIntraline(rowData.intraline)
       ? applyIntralineHighlight(indent + line, rowData.intraline, 'intraline intraline-del')
-      : highlightPython(indent + line);
+      : highlightPythonWithGenericCalls(indent + line, [], {
+          skipGenericCallParsing: !!rowData._isDocstringLine
+        });
   } else {
-    lineHtml = highlightPython(indent + line);
+    lineHtml = highlightPythonWithGenericCalls(indent + line, [], {
+      skipGenericCallParsing: !!rowData._isDocstringLine
+    });
   }
   if (rowData.type === 'add') {
     lineHtml = emphasizeSignatureNameInHtml(line, lineHtml);
@@ -1863,6 +1974,8 @@ function appendFunctionBodyDiffLine(
   row.className = `diff-line diff-line-${rowData.type}`;
   const isSig = !!getPythonSignatureName(line);
   if (isSig && rowData.type === 'add') row.classList.add('diff-line-signature-change');
+  if (isPythonCommentLine(line)) row.classList.add('diff-line-comment');
+  if (rowData._isDocstringLine) row.classList.add('diff-line-docstring');
   if (rowData.newLineNumber != null) row.dataset.flowdiffNewLine = String(rowData.newLineNumber);
   if (rowData.anchorNewLineNumber != null) row.dataset.flowdiffAnchorNew = String(rowData.anchorNewLineNumber);
   if (rowData.oldLineNumber != null && rowData.oldLineNumber !== '')
@@ -2338,6 +2451,7 @@ function renderFunctionBody(
     fnDiffLines,
     fn.changed && fn.changeType !== 'deleted' ? new Set([Number(fn.startLine)]) : null
   );
+  markDocstringLines(rowsToRender);
 
   for (const rowData of rowsToRender) {
     if (rowData.type === 'ctx-collapse') {
