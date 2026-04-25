@@ -1,16 +1,18 @@
 /**
- * Code view pane: shows all functions of the selected flow in flow-tree order.
- * No inline expansion; call-site and flow-tree clicks navigate (scroll to + highlight) the function block.
+ * Code view pane: one selected rhizome (flow) at a time — functions in DFS order, single scroll.
+ * Left rail lists those functions; the middle rhizome tree stays in sync via scroll + selection.
  */
 
 import {
   getState,
+  setActiveFunction,
   setActiveFunctionFromInlineCallSite,
   returnFromCallSiteToCaller,
   restoreCallSiteReturnTreeNode,
   clearCallSiteReturnScrollTarget,
   setInViewTreeNodeKey,
   setSelectedFileInFlow,
+  setCodePaneOutsideDiffPath,
   setFunctionReadState,
   setFunctionCollapsedState,
   setHoveredTreeNodeKey
@@ -20,10 +22,8 @@ import { getFunctionDisplayName } from '../parser/functionDisplayName.js';
 
 let lastScrolledToActiveKey = null;
 let scrollRAF = null;
-let moduleContextExpandedKeys = new Set();
 /** Expanded "unchanged lines" collapse toggles; survives scroll-driven re-renders. */
 let ctxCollapseExpandedKeys = new Set();
-let moduleContextFlowId = null;
 let filesNavWidthPx = 260;
 const FILES_NAV_WIDTH_MIN = 190;
 const FILES_NAV_WIDTH_MAX = 520;
@@ -36,6 +36,8 @@ let suppressAutoScrollUntil = 0;
 const AUTO_SCROLL_SUPPRESS_MS = 450;
 let codePaneScrollTop = 0;
 let codePaneScrollLeft = 0;
+/** When PR head or selected rhizome changes, reset scroll + scroll-to-active bookkeeping. */
+let lastRhizomeCodeViewKey = '';
 
 /**
  * Return-to-call-site highlight must survive `innerHTML` rebuilds (scroll / in-view updates re-render).
@@ -136,6 +138,21 @@ function updateInViewFromScroll(container) {
     setInViewTreeNodeKey(null);
     return;
   }
+
+  // When several rhizome cards are visible in one file (e.g. class membership methods), do not
+  // let “closest to center” pick the wrong one — prefer the selected function if its block is on screen.
+  const { uiState } = getState();
+  const activeKey = uiState.activeTreeNodeKey;
+  if (activeKey) {
+    const activeBlock = container.querySelector(
+      `.function-block[data-tree-node-key="${CSS.escape(activeKey)}"]`
+    );
+    if (activeBlock && blockIntersectsScrollport(container, activeBlock)) {
+      setInViewTreeNodeKey(activeKey);
+      return;
+    }
+  }
+
   const cRect = container.getBoundingClientRect();
   const centerY = cRect.top + cRect.height / 2;
   let best = null;
@@ -158,6 +175,13 @@ function isElementInView(container, el) {
   const eRect = el.getBoundingClientRect();
   const padding = 40;
   return eRect.top >= cRect.top - padding && eRect.bottom <= cRect.bottom + padding;
+}
+
+/** True if any part of `el` is visible in `container`’s scrollport (for matching tree “in view” to the selected card). */
+function blockIntersectsScrollport(container, el) {
+  const cRect = container.getBoundingClientRect();
+  const eRect = el.getBoundingClientRect();
+  return eRect.bottom > cRect.top + 0.5 && eRect.top < cRect.bottom - 0.5;
 }
 
 /**
@@ -210,11 +234,15 @@ function applyCallSiteReturnScroll(container, t) {
   return true;
 }
 
-function scrollToVerticalCenter(container, el) {
+/**
+ * @param {{ behavior?: 'auto' | 'smooth' }} [opts] - use `auto` when scrolling to a selected function so the first in-view sync sees the target in the scrollport
+ */
+function scrollToVerticalCenter(container, el, opts = {}) {
   if (!el) return;
 
   // The code pane (`container`) is the vertical scroll container.
   const scroller = container;
+  const behavior = opts.behavior === 'smooth' ? 'smooth' : 'auto';
 
   // Compute element's offsetTop relative to the scroll container,
   // walking up through offsetParents until we reach the container.
@@ -230,7 +258,7 @@ function scrollToVerticalCenter(container, el) {
   const targetTop = Math.max(0, elCenter - scroller.clientHeight / 2);
 
   if (typeof scroller.scrollTo === 'function') {
-    scroller.scrollTo({ top: targetTop, behavior: 'smooth' });
+    scroller.scrollTo({ top: targetTop, behavior });
   } else {
     scroller.scrollTop = targetTop;
   }
@@ -928,6 +956,16 @@ function getFlowFunctionIds(flow, payload) {
   return ids;
 }
 
+/** Every function/class id that participates in **any** flow (union across `payload.flows`). */
+function collectUnionFlowFunctionIds(payload) {
+  const ids = new Set();
+  for (const flow of payload.flows || []) {
+    if (!flow?.rootId || !payload.functionsById[flow.rootId]) continue;
+    for (const id of getFlowFunctionIds(flow, payload)) ids.add(id);
+  }
+  return ids;
+}
+
 /**
  * Ensure changed function definitions are visible in file diffs.
  * If a changed function body appears but its `def` line is outside patch context,
@@ -1020,6 +1058,31 @@ function filePathSort(a, b) {
   return String(a).localeCompare(String(b));
 }
 
+/** Align function `file` fields with `flowPayload.files[].path` for nav / outside-diff checks. */
+function normalizeNavFilePath(p) {
+  let s = String(p || '').trim().replace(/\\/g, '/');
+  while (s.startsWith('./')) s = s.slice(2);
+  return s;
+}
+
+/**
+ * Normalized paths that “belong to the rhizome” in the file outline.
+ * Rule: if **any** changed unit that participates in **any** flow (any id in `unionFlowFnIds`)
+ * lives in a file, that path counts as a rhizome file for sorting / muting (not tied to the
+ * currently selected flow).
+ * @param {import('../flowSchema.js').FlowPayload} payload
+ * @param {Set<string>} unionFlowFnIds
+ * @returns {Set<string>}
+ */
+function rhizomeParticipatingFilePathNorms(payload, unionFlowFnIds) {
+  const paths = new Set();
+  for (const fnId of unionFlowFnIds) {
+    const p = payload.functionsById[fnId]?.file;
+    if (p) paths.add(normalizeNavFilePath(p));
+  }
+  return paths;
+}
+
 function clampFilesNavWidth(widthPx) {
   return Math.max(FILES_NAV_WIDTH_MIN, Math.min(FILES_NAV_WIDTH_MAX, widthPx));
 }
@@ -1066,6 +1129,166 @@ function collectFlowOrder(rootId, payload) {
 
   visit(rootId, rootKey, new Set());
   return list;
+}
+
+/**
+ * Assignment symbols from the parser plus best-effort import names from module-level changed lines.
+ * Used to score which function body references module edits most (word-boundary matches).
+ * @param {{ start: number, end: number }[]} moduleChangedRanges
+ * @param {string[]} sourceLines
+ * @param {string[]} [moduleChangedSymbols]
+ * @returns {string[]}
+ */
+function collectModuleRefSymbolsForScoring(moduleChangedRanges, sourceLines, moduleChangedSymbols) {
+  const set = new Set(moduleChangedSymbols || []);
+  for (const r of moduleChangedRanges || []) {
+    for (let ln = r.start; ln <= r.end; ln++) {
+      const line = sourceLines[ln - 1] ?? '';
+      if (/^\s+/.test(line)) continue;
+      if (/^\s*#/.test(line)) continue;
+      const fromImport = line.match(/^\s*from\s+[\w.]+\s+import\s+(.+)/);
+      if (fromImport) {
+        const tail = fromImport[1].split('#')[0];
+        for (const raw of tail.split(',')) {
+          const seg = raw.trim();
+          if (!seg || seg === '(' || seg === ')') continue;
+          const asPair = seg.match(/^(\w+)\s+as\s+(\w+)$/i);
+          if (asPair) {
+            set.add(asPair[1]);
+            set.add(asPair[2]);
+            continue;
+          }
+          const bare = seg.match(/^(\w+)$/);
+          if (bare && bare[1] !== '*') set.add(bare[1]);
+        }
+        continue;
+      }
+      const plainImport = line.match(/^\s*import\s+(.+)/);
+      if (plainImport) {
+        const tail = plainImport[1].split('#')[0];
+        for (const raw of tail.split(',')) {
+          const seg = raw.trim();
+          const asOnly = seg.match(/^[\w.]+\s+as\s+(\w+)$/i);
+          if (asOnly) {
+            set.add(asOnly[1]);
+            continue;
+          }
+          const first = seg.match(/^[\w.]+/);
+          if (first) {
+            const root = first[0].split('.')[0];
+            if (root) set.add(root);
+          }
+        }
+      }
+    }
+  }
+  return [...set].filter((s) => s && /^[A-Za-z_]\w*$/.test(String(s)));
+}
+
+/**
+ * @param {import('../flowSchema.js').FunctionMeta} fn
+ * @param {string[]} symbols
+ * @param {string[]} sourceLines
+ * @returns {number}
+ */
+function countModuleSymbolRefsInBody(fn, symbols, sourceLines) {
+  const start = Number(fn.startLine);
+  const end = Number(fn.endLine);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+  const body = sourceLines.slice(start - 1, end).join('\n');
+  let total = 0;
+  for (const sym of symbols) {
+    if (!sym || !/^[A-Za-z_]\w*$/.test(sym)) continue;
+    const escaped = sym.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`\\b${escaped}\\b`, 'g');
+    const m = body.match(re);
+    if (m) total += m.length;
+  }
+  return total;
+}
+
+/**
+ * Picks the single function/class id on a file that should show module-level (non-body) diff strips.
+ * Primary: max references to module symbols; tie: largest participating flow (by node count),
+ * then stable flow order, then first in that flow's DFS order among tied ids.
+ * @param {object} opts
+ * @param {import('../flowSchema.js').FunctionMeta[]} opts.candidates
+ * @param {{ start: number, end: number }[]} opts.moduleChangedRanges
+ * @param {string[]} opts.moduleChangedSymbols
+ * @param {string[]} opts.sourceLines
+ * @param {import('../flowSchema.js').FlowPayload} opts.payload
+ * @param {import('../flowSchema.js').Flow[]} opts.flows
+ * @param {import('../flowSchema.js').Flow | null} opts.selectedFlow
+ * @returns {string | null}
+ */
+function pickModuleContextHostFunctionId({
+  candidates,
+  moduleChangedRanges,
+  moduleChangedSymbols,
+  sourceLines,
+  payload,
+  flows,
+  selectedFlow
+}) {
+  if (!candidates?.length) return null;
+  const refSymbols = collectModuleRefSymbolsForScoring(
+    moduleChangedRanges,
+    sourceLines,
+    moduleChangedSymbols
+  );
+  let bestScore = -1;
+  /** @type {Map<string, number>} */
+  const scores = new Map();
+  for (const fn of candidates) {
+    const sc = refSymbols.length ? countModuleSymbolRefsInBody(fn, refSymbols, sourceLines) : 0;
+    scores.set(fn.id, sc);
+    if (sc > bestScore) bestScore = sc;
+  }
+  const T = new Set(candidates.filter((fn) => scores.get(fn.id) === bestScore).map((fn) => fn.id));
+
+  /** @type {{ flow: import('../flowSchema.js').Flow, size: number, index: number }[]} */
+  const qualifyingFlows = [];
+  const flowList = flows || [];
+  for (let i = 0; i < flowList.length; i++) {
+    const flow = flowList[i];
+    if (!flow?.rootId || !payload.functionsById[flow.rootId]) continue;
+    const flowIds = getFlowFunctionIds(flow, payload);
+    let hit = false;
+    for (const id of T) {
+      if (flowIds.has(id)) {
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) continue;
+    qualifyingFlows.push({ flow, size: flowIds.size, index: i });
+  }
+
+  /** @param {string} rootId */
+  function dfsFirstInSet(rootId) {
+    const order = collectFlowOrder(rootId, payload);
+    for (const { functionId } of order) {
+      if (T.has(functionId)) return functionId;
+    }
+    return null;
+  }
+
+  if (qualifyingFlows.length) {
+    const maxSize = Math.max(...qualifyingFlows.map((q) => q.size));
+    const largest = qualifyingFlows.filter((q) => q.size === maxSize);
+    largest.sort((a, b) => a.index - b.index);
+    const id = dfsFirstInSet(largest[0].flow.rootId);
+    if (id) return id;
+  }
+
+  if (selectedFlow?.rootId && payload.functionsById[selectedFlow.rootId]) {
+    const id = dfsFirstInSet(selectedFlow.rootId);
+    if (id) return id;
+  }
+
+  const metas = candidates.filter((fn) => T.has(fn.id));
+  metas.sort((a, b) => a.startLine - b.startLine || String(a.id).localeCompare(String(b.id)));
+  return metas[0]?.id ?? null;
 }
 
 /**
@@ -1285,27 +1508,108 @@ function moduleRangesAfterFunction(ranges, endLine) {
   return out.filter((x) => x.start <= x.end);
 }
 
-function moduleSymbolsInRanges(symbols, sourceLines, ranges) {
-  if (!symbols?.length || !ranges?.length) return [];
-  const hit = new Set();
+/**
+ * Remove [cutStart, cutEnd] (inclusive) from a list of line ranges. Used to avoid
+ * duplicating a class block in the module-level inline strip.
+ * @param {{ start: number, end: number }[] | null | undefined} ranges
+ * @param {number} cutStart
+ * @param {number} cutEnd
+ */
+function subtractIntervalFromModuleRanges(ranges, cutStart, cutEnd) {
+  if (!ranges?.length) return [];
+  if (cutStart > cutEnd) return ranges;
+  const out = [];
   for (const r of ranges) {
-    for (let ln = r.start; ln <= r.end; ln++) {
-      const text = sourceLines[ln - 1] ?? '';
-      if (/^\s+/.test(text)) continue;
-      const m = text.match(/^\s*([A-Za-z_]\w*)\s*=/);
-      if (m && symbols.includes(m[1])) hit.add(m[1]);
+    if (cutEnd < r.start || cutStart > r.end) {
+      out.push(r);
+      continue;
+    }
+    if (cutStart <= r.start && cutEnd >= r.end) {
+      continue;
+    }
+    if (cutStart > r.start) {
+      out.push({ start: r.start, end: Math.min(r.end, cutStart - 1) });
+    }
+    if (cutEnd < r.end) {
+      out.push({ start: Math.max(r.start, cutEnd + 1), end: r.end });
     }
   }
-  return [...hit].sort();
+  return out.filter((x) => x.start <= x.end);
 }
 
 /**
- * @param {'start' | 'end'} where - insert at start of container or append at end
- * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string, calleeTreeNodeKey: string } | null} [callSiteReturn]
+ * Line range of the enclosing class header (above a method def), for subtracting from module
+ * "before" ranges without mounting the class block.
+ * @param {import('../flowSchema.js').FlowPayload} payload
+ * @param {import('../flowSchema.js').FunctionMeta} methodFn
+ * @param {boolean} collapsedMode
+ * @returns {{ cut: { start: number, end: number } | null, classMeta: import('../flowSchema.js').FunctionMeta | null }}
  */
-function mountModuleContextSection(
+function getEnclosingClassContextForMethod(payload, methodFn, collapsedMode) {
+  if (collapsedMode || methodFn.kind !== 'method' || !payload.classDefAboveMethod) {
+    return { cut: null, classMeta: null };
+  }
+  const cId = payload.classDefAboveMethod[methodFn.id];
+  const cMeta = cId ? payload.functionsById[cId] : null;
+  if (!cMeta) return { cut: null, classMeta: null };
+  const rStart = cMeta.startLine;
+  const rEnd = methodFn.startLine - 1;
+  if (rEnd < rStart) return { cut: null, classMeta: null };
+  return { cut: { start: rStart, end: rEnd }, classMeta: cMeta };
+}
+
+/**
+ * Renders a changed `class` (lines above the current `def`, excluding earlier methods' bodies)
+ * inline in the method card—same block as the method diff, not a separate framed section.
+ * @returns {{ start: number, end: number } | null} line range removed from the module "before" panel
+ */
+function mountEnclosingClassDefinitionInBody(
   container,
-  where,
+  payload,
+  classMeta,
+  methodFn,
+  sourceLinesByFile,
+  diffLinesByFile,
+  prContext,
+  pathPrefix
+) {
+  const rStart = classMeta.startLine;
+  const rEnd = methodFn.startLine - 1;
+  if (rEnd < rStart) return null;
+
+  const excludedLineNumbers = new Set();
+  for (const fn of Object.values(payload.functionsById)) {
+    if (fn?.kind !== 'method' || fn.file !== methodFn.file || fn.className !== methodFn.className) continue;
+    if (fn.id === methodFn.id) continue;
+    if (fn.startLine < methodFn.startLine) {
+      for (let ln = fn.startLine; ln <= fn.endLine; ln++) excludedLineNumbers.add(ln);
+    }
+  }
+  const sourceLines = sourceLinesByFile[methodFn.file] || [];
+  const rows = buildRangeDisplayRows(
+    [{ start: rStart, end: rEnd }],
+    sourceLines,
+    diffLinesByFile[methodFn.file] || [],
+    excludedLineNumbers
+  );
+  if (!rows.length) {
+    return { start: rStart, end: rEnd };
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'class-definition-above';
+  const expandedKey = `${pathPrefix}::enclosing-class::${classMeta.id}`;
+  renderDiffRows(wrap, methodFn.file, rows, prContext, expandedKey);
+  container.appendChild(wrap);
+  return { start: rStart, end: rEnd };
+}
+
+/**
+ * Module-level diff lines in the same scrolling block as the function body (not card chrome).
+ * @param {'before' | 'after'} slot
+ */
+function mountModuleContextInline(
+  container,
   fileMeta,
   ranges,
   fn,
@@ -1313,73 +1617,22 @@ function mountModuleContextSection(
   diffLinesByFile,
   pathPrefix,
   prContext,
-  slot,
-  buttonLabel,
-  titleText,
-  callSiteReturn
+  slot
 ) {
   if (!ranges?.length) return;
-  const expandedKey = `${pathPrefix}::${fn.file}::module-${slot}::${fn.id}`;
-  const ctxId = `module-ctx-${slot}-${String(fn.id).replace(/[^a-zA-Z0-9]+/g, '_').slice(0, 96)}`;
-  const baseName = fn.file.replace(/^.*\//, '');
   const sourceLines = sourceLinesByFile[fn.file] || [];
-  const syms = moduleSymbolsInRanges(fileMeta.moduleChangedSymbols || [], sourceLines, ranges);
-  const symText = syms.slice(0, 8).join(', ');
-  const more = syms.length > 8 ? ` (+${syms.length - 8} more)` : '';
-
-  const ctx = document.createElement('div');
-  ctx.className = `module-context module-context--${slot}`;
-  ctx.dataset.moduleContextSection = `${fn.file}::${fn.id}::${slot}`;
-  const showFileName = slot !== 'after';
-  ctx.innerHTML = `
-    <div class="module-context-header">
-      <button type="button" class="module-context-toggle" aria-expanded="false" aria-controls="${escapeHtml(ctxId)}" title="${escapeHtml(titleText)}">${escapeHtml(buttonLabel)}</button>
-      ${showFileName ? `<span class="module-context-file">${escapeHtml(baseName)}</span>` : ''}
-      ${symText ? `<span class="module-context-syms" title="${escapeHtml(syms.join(', '))}">${escapeHtml(symText)}${escapeHtml(more)}</span>` : ''}
-    </div>
-    <div class="module-context-body" id="${escapeHtml(ctxId)}" hidden></div>
-  `;
-  const body = ctx.querySelector('.module-context-body');
-  const toggle = ctx.querySelector('.module-context-toggle');
-  const headerRow = ctx.querySelector('.module-context-header');
-  // Only the top "before" panel gets the link; "after" sits below the body so a second link would be easy to miss.
-  if (callSiteReturn && headerRow && slot === 'before') {
-    headerRow.appendChild(createCallSiteBackButton(callSiteReturn));
-  }
-
-  const ensureModuleContextBodyPopulated = () => {
-    if (!body) return;
-    if (body.childElementCount > 0) return;
-    const rows = buildRangeDisplayRows(
-      ranges,
-      sourceLines,
-      diffLinesByFile[fn.file] || [],
-      new Set(fileMeta.moduleExcludedLineNumbers || [])
-    );
-    const lines = document.createElement('div');
-    lines.className = 'module-context-lines';
-    renderDiffRows(lines, fn.file, rows, prContext, expandedKey);
-    body.appendChild(lines);
-  };
-
-  const isInitiallyExpanded = moduleContextExpandedKeys.has(expandedKey);
-  toggle?.setAttribute('aria-expanded', isInitiallyExpanded ? 'true' : 'false');
-  if (body) body.hidden = !isInitiallyExpanded;
-  if (isInitiallyExpanded) ensureModuleContextBodyPopulated();
-
-  toggle?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const expanded = toggle.getAttribute('aria-expanded') === 'true';
-    const next = !expanded;
-    toggle.setAttribute('aria-expanded', next ? 'true' : 'false');
-    if (body) body.hidden = !next;
-    if (next) ensureModuleContextBodyPopulated();
-    if (next) moduleContextExpandedKeys.add(expandedKey);
-    else moduleContextExpandedKeys.delete(expandedKey);
-  });
-
-  if (where === 'start') container.insertBefore(ctx, container.firstChild);
-  else container.appendChild(ctx);
+  const rows = buildRangeDisplayRows(
+    ranges,
+    sourceLines,
+    diffLinesByFile[fn.file] || [],
+    new Set(fileMeta.moduleExcludedLineNumbers || [])
+  );
+  if (!rows.length) return;
+  const wrap = document.createElement('div');
+  wrap.className = `module-context-inline module-context-inline--${slot}`;
+  const expandedKey = `${pathPrefix}::${fn.file}::module-inline-${slot}::${fn.id}`;
+  renderDiffRows(wrap, fn.file, rows, prContext, expandedKey);
+  container.appendChild(wrap);
 }
 
 /**
@@ -1389,6 +1642,7 @@ function mountModuleContextSection(
  * @param {Record<string, { type: string, oldLineNumber: number | null, newLineNumber: number | null, content: string }[]>} diffLinesByFile
  * @param {Set<string>} filesWithModuleContext - file paths that have module-scope changes
  * @param {Map<string, { moduleChangedRanges?: { start: number, end: number }[], moduleChangedSymbols?: string[] }>} moduleMetaByFile
+ * @param {Map<string, string>} moduleContextOwnerByFile - file path -> function id that alone shows module-level strips (empty map ok)
  * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string, calleeTreeNodeKey: string } | null} [callSiteReturn]
  * @param {Map<string, string>} canonicalKeyByFunctionId - first DFS tree key per function (matches code cards)
  * @param {Set<string>} flowFnIds - all function ids in the selected flow (for call-site name scan)
@@ -1402,6 +1656,7 @@ function renderFunctionBody(
   diffLinesByFile,
   filesWithModuleContext,
   moduleMetaByFile,
+  moduleContextOwnerByFile,
   calleesByCaller,
   flowFnIds,
   indent,
@@ -1411,46 +1666,40 @@ function renderFunctionBody(
   collapsedMode = false,
   canonicalKeyByFunctionId = new Map()
 ) {
-  const fileBlock = container.closest('[data-file]') || container;
-  const fileSectionEl = fileBlock.closest('.file-section');
+  const { cut: classLineCut, classMeta: enclosingClassMeta } = getEnclosingClassContextForMethod(
+    payload,
+    fn,
+    collapsedMode
+  );
 
   const fileMeta = moduleMetaByFile.get(fn.file);
-  const rangesBefore =
-    filesWithModuleContext.has(fn.file) && fileMeta?.moduleChangedRanges?.length
+  const moduleStripHostId = moduleContextOwnerByFile.get(fn.file);
+  const showModuleStrips =
+    filesWithModuleContext.has(fn.file) &&
+    Boolean(fileMeta?.moduleChangedRanges?.length) &&
+    moduleStripHostId !== undefined &&
+    moduleStripHostId === fn.id;
+  let rangesBefore =
+    showModuleStrips && fileMeta?.moduleChangedRanges?.length
       ? moduleRangesBeforeFunction(fileMeta.moduleChangedRanges, fn.startLine)
       : [];
+  if (classLineCut) {
+    rangesBefore = subtractIntervalFromModuleRanges(
+      rangesBefore,
+      classLineCut.start,
+      classLineCut.end
+    );
+  }
   const rangesAfter =
-    filesWithModuleContext.has(fn.file) && fileMeta?.moduleChangedRanges?.length
+    showModuleStrips && fileMeta?.moduleChangedRanges?.length
       ? moduleRangesAfterFunction(fileMeta.moduleChangedRanges, fn.endLine)
       : [];
 
-  // Show file name when this file has no module panels in this block (panels include the file name).
-  const hasModulePanelHere = rangesBefore.length > 0 || rangesAfter.length > 0;
-  const hasFileHeader = fileBlock.querySelector?.('.file-name-header, [data-module-context-section]');
-  if (
-    !hasFileHeader &&
-    !fileSectionEl?.querySelector('.file-header') &&
-    !hasModulePanelHere &&
-    !filesWithModuleContext.has(fn.file) &&
-    fileBlock.dataset?.file === fn.file
-  ) {
-    const fileHeader = document.createElement('div');
-    fileHeader.className = 'file-name-header';
-    const baseName = fn.file.replace(/^.*\//, '');
-    const label = document.createElement('span');
-    label.className = 'file-name-header-label';
-    label.textContent = baseName;
-    fileHeader.appendChild(label);
-    if (callSiteReturn) {
-      fileHeader.appendChild(createCallSiteBackButton(callSiteReturn));
-    }
-    fileBlock.prepend(fileHeader);
-  }
+  mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
 
   if (rangesBefore.length && fileMeta) {
-    mountModuleContextSection(
+    mountModuleContextInline(
       container,
-      'start',
       fileMeta,
       rangesBefore,
       fn,
@@ -1458,10 +1707,20 @@ function renderFunctionBody(
       diffLinesByFile,
       pathPrefix,
       prContext,
-      'before',
-      'Module changes',
-      'Edits outside any function from the start of the file up to this function',
-      callSiteReturn
+      'before'
+    );
+  }
+
+  if (enclosingClassMeta && fn.kind === 'method' && !collapsedMode) {
+    mountEnclosingClassDefinitionInBody(
+      container,
+      payload,
+      enclosingClassMeta,
+      fn,
+      sourceLinesByFile,
+      diffLinesByFile,
+      prContext,
+      pathPrefix
     );
   }
 
@@ -1471,14 +1730,13 @@ function renderFunctionBody(
   if (collapsedMode) {
     const body = document.createElement('div');
     body.className = 'function-body';
-    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigSource = fn.snippet || (fn.kind === 'class' ? `class ${fn.name}:` : `def ${fn.name}(`);
     const sigHtml = highlightPython(sigSource);
     body.innerHTML = `<pre class="code-line"><code class="language-python">${sigHtml}</code></pre>`;
     container.appendChild(body);
     if (rangesAfter.length && fileMeta) {
-      mountModuleContextSection(
+      mountModuleContextInline(
         container,
-        'end',
         fileMeta,
         rangesAfter,
         fn,
@@ -1486,13 +1744,9 @@ function renderFunctionBody(
         diffLinesByFile,
         pathPrefix,
         prContext,
-        'after',
-        'Module changes',
-        'Edits outside any function from after this function through the end of the file',
-        callSiteReturn
+        'after'
       );
     }
-    mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
     return;
   }
 
@@ -1501,14 +1755,13 @@ function renderFunctionBody(
   if (!sourceLines.length && !(diffLinesByFile[fn.file] || []).length) {
     const body = document.createElement('div');
     body.className = 'function-body';
-    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigSource = fn.snippet || (fn.kind === 'class' ? `class ${fn.name}:` : `def ${fn.name}(`);
     const sigHtml = highlightPython(sigSource);
     body.innerHTML = `<pre class="code-line"><code class="language-python">${sigHtml}</code></pre>`;
     container.appendChild(body);
     if (rangesAfter.length && fileMeta) {
-      mountModuleContextSection(
+      mountModuleContextInline(
         container,
-        'end',
         fileMeta,
         rangesAfter,
         fn,
@@ -1516,13 +1769,9 @@ function renderFunctionBody(
         diffLinesByFile,
         pathPrefix,
         prContext,
-        'after',
-        'Module changes',
-        'Edits outside any function from after this function through the end of the file',
-        callSiteReturn
+        'after'
       );
     }
-    mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
     return;
   }
 
@@ -1530,14 +1779,13 @@ function renderFunctionBody(
   if (fnDiffLines.length === 0) {
     const body = document.createElement('div');
     body.className = 'function-body';
-    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigSource = fn.snippet || (fn.kind === 'class' ? `class ${fn.name}:` : `def ${fn.name}(`);
     const sigHtml = highlightPython(sigSource);
     body.innerHTML = `<pre class="code-line"><code class="language-python">${sigHtml}</code></pre>`;
     container.appendChild(body);
     if (rangesAfter.length && fileMeta) {
-      mountModuleContextSection(
+      mountModuleContextInline(
         container,
-        'end',
         fileMeta,
         rangesAfter,
         fn,
@@ -1545,13 +1793,9 @@ function renderFunctionBody(
         diffLinesByFile,
         pathPrefix,
         prContext,
-        'after',
-        'Module changes',
-        'Edits outside any function from after this function through the end of the file',
-        callSiteReturn
+        'after'
       );
     }
-    mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
     return;
   }
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
@@ -1607,9 +1851,8 @@ function renderFunctionBody(
   }
 
   if (rangesAfter.length && fileMeta) {
-    mountModuleContextSection(
+    mountModuleContextInline(
       container,
-      'end',
       fileMeta,
       rangesAfter,
       fn,
@@ -1617,14 +1860,183 @@ function renderFunctionBody(
       diffLinesByFile,
       pathPrefix,
       prContext,
-      'after',
-      'Module changes',
-      'Edits outside any function from after this function through the end of the file',
-      callSiteReturn
+      'after'
     );
   }
+}
 
-  mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
+/**
+ * Indent depth in the rhizome rail (matches flow-tree nesting).
+ * @param {string} treeNodeKey
+ */
+function treeNavDepth(treeNodeKey) {
+  if (!treeNodeKey) return 0;
+  let d = 0;
+  for (const seg of treeNodeKey.split('/')) {
+    if (seg.startsWith('e:')) d++;
+  }
+  return d;
+}
+
+/**
+ * @param {object} uiState
+ * @param {string} calleeTreeNodeKey
+ * @param {import('../flowSchema.js').FlowPayload} payload
+ */
+function callSiteReturnPayloadForCallee(uiState, calleeTreeNodeKey, payload) {
+  if (uiState.activeTreeNodeKey !== calleeTreeNodeKey) return null;
+  if (!uiState.callSiteCallerTreeNodeKey) return null;
+  if (uiState.callSiteReturnConsumedKeys.has(calleeTreeNodeKey)) return null;
+  const callerId = getCallerFromTreeNodeKey(calleeTreeNodeKey);
+  if (!callerId) return null;
+  const callerFn = payload.functionsById[callerId];
+  const callerName = getFunctionDisplayName(callerFn) || callerId;
+  return {
+    callerId,
+    parentTreeNodeKey: getParentTreeNodeKey(calleeTreeNodeKey),
+    callerName,
+    calleeTreeNodeKey
+  };
+}
+
+/**
+ * @param {HTMLElement} block
+ * @param {import('../flowSchema.js').FunctionMeta} fn
+ * @param {string} treeNodeKey
+ */
+function mountRhizomeFunctionBlock(
+  block,
+  fn,
+  treeNodeKey,
+  payload,
+  uiState,
+  sourceLinesByFile,
+  diffLinesByFile,
+  filesWithModuleContext,
+  moduleMetaByFile,
+  moduleContextOwnerByFile,
+  calleesByCaller,
+  flowFnIds,
+  prContext,
+  canonicalKeyByFunctionId,
+  collapsedMode
+) {
+  const changeType = fn.changeType || 'modified';
+  block.className =
+    'function-block' +
+    (uiState.activeTreeNodeKey === treeNodeKey ? ' active' : '') +
+    (uiState.readFunctionIds?.has(fn.id) ? ' read' : '') +
+    (uiState.hoveredTreeNodeKey === treeNodeKey ? ' hovered' : '') +
+    (collapsedMode ? ' collapsed' : '');
+  block.dataset.treeNodeKey = treeNodeKey;
+  block.dataset.functionId = fn.id;
+  block.dataset.file = fn.file || '';
+  block.dataset.changeType = changeType;
+
+  const header = document.createElement('div');
+  header.className = 'function-block-head file-name-header';
+  const fileLabel = fn.file || '';
+
+  header.innerHTML = `
+    <span class="file-name-header-label" title="${escapeHtml(fileLabel)}">${escapeHtml(fileLabel)}</span>
+    <span class="function-block-header-controls"></span>
+  `;
+  const controls = header.querySelector('.function-block-header-controls');
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'function-block-toggle-btn';
+  toggle.textContent = collapsedMode ? '▸' : '▾';
+  toggle.title = collapsedMode ? 'Expand body' : 'Collapse body';
+  toggle.setAttribute('aria-expanded', collapsedMode ? 'false' : 'true');
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setFunctionCollapsedState(fn.id, !collapsedMode);
+  });
+
+  const done = document.createElement('button');
+  done.type = 'button';
+  done.className = 'function-block-done-btn' + (uiState.readFunctionIds?.has(fn.id) ? ' checked' : '');
+  done.textContent = '✓';
+  done.title = uiState.readFunctionIds?.has(fn.id) ? 'Mark not done' : 'Mark done';
+  done.setAttribute('aria-label', done.title);
+  done.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setFunctionReadState(fn.id);
+  });
+
+  if (controls) {
+    controls.appendChild(toggle);
+    controls.appendChild(done);
+  }
+
+  const content = document.createElement('div');
+  content.className = 'function-block-content';
+
+  block.appendChild(header);
+
+  header.addEventListener('click', () => {
+    restoreCallSiteReturnTreeNode(treeNodeKey);
+    setActiveFunction(fn.id, treeNodeKey);
+  });
+
+  const callReturn = callSiteReturnPayloadForCallee(uiState, treeNodeKey, payload);
+  renderFunctionBody(
+    content,
+    payload,
+    uiState,
+    fn,
+    sourceLinesByFile,
+    diffLinesByFile,
+    filesWithModuleContext,
+    moduleMetaByFile,
+    moduleContextOwnerByFile,
+    calleesByCaller,
+    flowFnIds,
+    '',
+    treeNodeKey,
+    prContext,
+    callReturn,
+    collapsedMode,
+    canonicalKeyByFunctionId
+  );
+  block.appendChild(content);
+}
+
+/**
+ * Full-file diff (not split into rhizome function cards) for paths outside the current outline.
+ */
+function mountFullFileDiffPanel(
+  root,
+  filePath,
+  flowPayload,
+  sourceLinesByFile,
+  diffLinesByFile,
+  prContext
+) {
+  root.innerHTML = '';
+  root.className = 'code-files-root full-file-diff-root';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'full-file-diff-wrap';
+
+  const bar = document.createElement('div');
+  bar.className = 'full-file-diff-bar';
+  const title = document.createElement('div');
+  title.className = 'full-file-diff-bar-path';
+  title.textContent = filePath;
+  title.title = filePath;
+  bar.appendChild(title);
+
+  const body = document.createElement('div');
+  body.className = 'full-file-diff-body';
+  const sourceLines = sourceLinesByFile[filePath] || [];
+  let rows = diffLinesByFile[filePath] || [];
+  rows = includeChangedFunctionDefinitions(filePath, rows, flowPayload.functionsById, sourceLines);
+  renderDiffRows(body, filePath, rows, prContext, `full-file::${filePath}`);
+
+  wrap.appendChild(bar);
+  wrap.appendChild(body);
+  root.appendChild(wrap);
 }
 
 export function renderCodeView(container) {
@@ -1647,22 +2059,112 @@ export function renderCodeView(container) {
     return;
   }
 
+  const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId) || null;
+  const standaloneClass = uiState.selectedStandaloneClassId
+    ? flowPayload.functionsById[uiState.selectedStandaloneClassId]
+    : null;
+  if ((!selectedFlow?.rootId || !flowPayload.functionsById[selectedFlow.rootId]) && !standaloneClass) {
+    container.textContent = 'No rhizome to show.';
+    return;
+  }
+
+  const rhizomeViewKey = selectedFlow
+    ? `${prContext?.headSha ?? ''}::${selectedFlow.id}`
+    : `${prContext?.headSha ?? ''}::standalone-class::${standaloneClass?.id ?? ''}`;
+
   const sourceLinesByFile = {};
   const diffLinesByFile = {};
-  const changedFnStartLinesByFile = new Map();
-  const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId) || null;
-  const flowFnIds = selectedFlow ? getFlowFunctionIds(selectedFlow, flowPayload) : new Set();
   for (const file of flowPayload.files) {
     sourceLinesByFile[file.path] = file.sourceLines || [];
     diffLinesByFile[file.path] = buildDiffLines(file.hunks || []);
   }
-  for (const fn of Object.values(flowPayload.functionsById || {})) {
-    if (!fn?.file || !fn?.changed || fn.changeType === 'deleted') continue;
-    const start = Number(fn.startLine);
-    if (!Number.isFinite(start)) continue;
-    if (!changedFnStartLinesByFile.has(fn.file)) changedFnStartLinesByFile.set(fn.file, new Set());
-    changedFnStartLinesByFile.get(fn.file).add(start);
+
+  const flowFnIds = selectedFlow
+    ? getFlowFunctionIds(selectedFlow, flowPayload)
+    : new Set(standaloneClass ? [standaloneClass.id] : []);
+  const rhizomeOrder = selectedFlow
+    ? collectFlowOrder(selectedFlow.rootId, flowPayload)
+    : (standaloneClass
+        ? [{ treeNodeKey: `standalone-class:${standaloneClass.id}`, functionId: standaloneClass.id }]
+        : []);
+  const canonicalKeyByFunctionId = new Map();
+  for (const { treeNodeKey, functionId } of rhizomeOrder) {
+    if (!canonicalKeyByFunctionId.has(functionId)) canonicalKeyByFunctionId.set(functionId, treeNodeKey);
   }
+
+  const unionFlowFnIds = collectUnionFlowFunctionIds(flowPayload);
+  if (!selectedFlow?.rootId && standaloneClass?.id) {
+    unionFlowFnIds.add(standaloneClass.id);
+  }
+  const rhizomeFilePaths = rhizomeParticipatingFilePathNorms(flowPayload, unionFlowFnIds);
+  const selectedFlowFileNorms = rhizomeParticipatingFilePathNorms(flowPayload, flowFnIds);
+  const outsideRequested = uiState.codePaneOutsideDiffPath;
+  const normRequested = outsideRequested ? normalizeNavFilePath(outsideRequested) : '';
+  const fileMetaForOutside =
+    normRequested && flowPayload.files?.find((f) => normalizeNavFilePath(f.path) === normRequested);
+  // Full-file pane only when the path is not part of the *selected* flow outline (includes
+  // “never in any flow” and “in another flow but not this one”).
+  const effectiveOutside =
+    outsideRequested &&
+    fileMetaForOutside &&
+    !selectedFlowFileNorms.has(normalizeNavFilePath(fileMetaForOutside.path))
+      ? fileMetaForOutside.path
+      : null;
+
+  const paneResetKey = `${rhizomeViewKey}::${effectiveOutside ?? ''}`;
+  if (paneResetKey !== lastRhizomeCodeViewKey) {
+    lastRhizomeCodeViewKey = paneResetKey;
+    lastScrolledToActiveKey = null;
+    codePaneScrollTop = 0;
+    codePaneScrollLeft = 0;
+  }
+
+  const calleesByCaller = new Map();
+  for (const e of flowPayload.edges || []) {
+    if (!flowFnIds.has(e.callerId) || !flowFnIds.has(e.calleeId)) continue;
+    const list = calleesByCaller.get(e.callerId) || [];
+    list.push({ calleeId: e.calleeId, callIndex: e.callIndex });
+    calleesByCaller.set(e.callerId, list);
+  }
+
+  const moduleMetaByFile = new Map();
+  const filesWithModuleContext = new Set();
+  for (const file of flowPayload.files || []) {
+    if (file.moduleChangedRanges?.length) {
+      filesWithModuleContext.add(file.path);
+      moduleMetaByFile.set(file.path, {
+        moduleChangedRanges: file.moduleChangedRanges,
+        moduleChangedSymbols: file.moduleChangedSymbols || []
+      });
+    }
+  }
+
+  /** @type {Map<string, string>} */
+  const moduleContextOwnerByFile = new Map();
+  for (const filePath of filesWithModuleContext) {
+    const meta = moduleMetaByFile.get(filePath);
+    if (!meta?.moduleChangedRanges?.length) continue;
+    const lines = sourceLinesByFile[filePath] || [];
+    const candidates = Object.values(flowPayload.functionsById).filter(
+      (f) =>
+        f &&
+        f.file === filePath &&
+        ['function', 'method', 'class'].includes(f.kind || 'function') &&
+        f.changeType !== 'deleted'
+    );
+    if (!candidates.length) continue;
+    const winner = pickModuleContextHostFunctionId({
+      candidates,
+      moduleChangedRanges: meta.moduleChangedRanges,
+      moduleChangedSymbols: meta.moduleChangedSymbols || [],
+      sourceLines: lines,
+      payload: flowPayload,
+      flows: flowPayload.flows || [],
+      selectedFlow
+    });
+    if (winner) moduleContextOwnerByFile.set(filePath, winner);
+  }
+
   const contentShell = document.createElement('div');
   contentShell.className = 'code-pane-shell';
   const filesNav = document.createElement('aside');
@@ -1670,7 +2172,7 @@ export function renderCodeView(container) {
   filesNav.style.width = `${clampFilesNavWidth(filesNavWidthPx)}px`;
   const filesNavResizer = document.createElement('div');
   filesNavResizer.className = 'code-files-nav-resizer';
-  filesNavResizer.title = 'Drag to resize files panel';
+  filesNavResizer.title = 'Drag to resize outline panel';
   filesNavResizer.setAttribute('role', 'separator');
   filesNavResizer.setAttribute('aria-orientation', 'vertical');
   const contentScroller = document.createElement('div');
@@ -1678,17 +2180,32 @@ export function renderCodeView(container) {
   const filesPanelToggleBtn = document.createElement('button');
   filesPanelToggleBtn.type = 'button';
   filesPanelToggleBtn.className = 'code-files-nav-toggle-btn';
-  const filesRoot = document.createElement('div');
-  filesRoot.className = 'code-files-root';
+  const rhizomeRoot = document.createElement('div');
+  rhizomeRoot.className = 'code-files-root rhizome-code-root';
 
-  const activeFnFromSelection = flowPayload.functionsById[uiState.activeFunctionId];
-  const activeFile = uiState.selectedFileInFlow || activeFnFromSelection?.file || null;
-  const changedFiles = (flowPayload.files || []).map((f) => f.path).filter(Boolean).sort(filePathSort);
   const navTitle = document.createElement('div');
   navTitle.className = 'code-files-nav-title';
-  navTitle.textContent = `Files changed (${changedFiles.length})`;
+  const activeFnFromSelection = flowPayload.functionsById[uiState.activeFunctionId];
+  const allChangedFiles = (flowPayload.files || []).map((f) => f.path).filter(Boolean).sort(filePathSort);
+  const otherChangedCount = allChangedFiles.filter((p) => !rhizomeFilePaths.has(normalizeNavFilePath(p))).length;
+  const hasOutsideRhizome = otherChangedCount > 0;
+  const activeFile = uiState.selectedFileInFlow || activeFnFromSelection?.file || null;
+  const navTitleText = document.createElement('div');
+  navTitleText.className = 'code-files-nav-rhizome-title';
+  navTitleText.innerHTML = `<span class="code-files-nav-rhizome-kicker">Files</span>`;
+  const navTitleName = document.createElement('div');
+  navTitleName.className = 'code-files-nav-rhizome-name';
+  navTitleName.textContent = `${allChangedFiles.length} paths`;
+  navTitleName.title =
+    'Rhizome files: path touches at least one node in any flow in this PR (sort first). Muted: never in any flow—click for full file diff.';
+  const titleStack = document.createElement('div');
+  titleStack.className = 'code-files-nav-title-stack';
+  titleStack.appendChild(navTitleText);
+  titleStack.appendChild(navTitleName);
+  navTitle.appendChild(titleStack);
   navTitle.appendChild(filesPanelToggleBtn);
   filesNav.appendChild(navTitle);
+
   const filterWrap = document.createElement('div');
   filterWrap.className = 'code-files-nav-filter-wrap';
   filterWrap.innerHTML = `
@@ -1703,8 +2220,40 @@ export function renderCodeView(container) {
   const navTree = document.createElement('div');
   navTree.className = 'code-files-nav-tree';
 
+  function scrollToFile(filePath) {
+    setSelectedFileInFlow(filePath);
+    const norm = normalizeNavFilePath(filePath);
+    const inSomeRhizome = rhizomeFilePaths.has(norm);
+    const firstInSelectedFlow = rhizomeOrder.find(
+      ({ functionId }) => normalizeNavFilePath(flowPayload.functionsById[functionId]?.file || '') === norm
+    );
+    if (inSomeRhizome && firstInSelectedFlow) {
+      setCodePaneOutsideDiffPath(null);
+      const fn = flowPayload.functionsById[firstInSelectedFlow.functionId];
+      if (fn) {
+        restoreCallSiteReturnTreeNode(firstInSelectedFlow.treeNodeKey);
+        setActiveFunction(fn.id, firstInSelectedFlow.treeNodeKey);
+      }
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const scroller = document.querySelector('#code-pane .code-pane-content');
+          if (!scroller) return;
+          const hit = flowPayload.files?.find((f) => normalizeNavFilePath(f.path) === norm);
+          const canonical = hit?.path ?? filePath;
+          const target = scroller.querySelector(`.function-block[data-file="${CSS.escape(canonical)}"]`);
+          if (target) scrollToVerticalCenter(scroller, target, { behavior: 'smooth' });
+        });
+      });
+    } else {
+      const hit = flowPayload.files?.find((f) => normalizeNavFilePath(f.path) === norm);
+      setCodePaneOutsideDiffPath(hit?.path ?? filePath);
+    }
+  }
+
+  const filterInput = filterWrap.querySelector('.code-files-nav-filter-input');
+
   const rootNode = { folders: new Map(), files: [] };
-  for (const filePath of changedFiles) {
+  for (const filePath of allChangedFiles) {
     const parts = pathParts(filePath);
     if (parts.length === 0) continue;
     let node = rootNode;
@@ -1716,30 +2265,15 @@ export function renderCodeView(container) {
     node.files.push(filePath);
   }
 
-  function scrollToFile(filePath) {
-    setSelectedFileInFlow(filePath);
-    const section = contentScroller.querySelector(
-      `.file-section[data-file-anchor="${CSS.escape(filePath)}"]`
-    );
-    if (section && collapsedFilePaths.has(filePath)) {
-      collapsedFilePaths.delete(filePath);
-      setFileSectionCollapsed(section, false);
-    }
-    const target =
-      section ||
-      contentScroller.querySelector(`.function-block[data-file="${CSS.escape(filePath)}"]`);
-    if (target) {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => scrollToVerticalCenter(contentScroller, target));
-      });
-    }
-  }
-
   function hasVisibleDescendant(node, filterText) {
     if (!filterText) return true;
     if (node.files.some((filePath) => filePath.toLowerCase().includes(filterText))) return true;
     return [...node.folders.values()].some((child) => hasVisibleDescendant(child, filterText));
   }
+
+  /** Set in `rerenderNavTree` so file rows can reflect outside-diff vs rhizome selection without a full pane rebuild. */
+  let navOutsideDiffPath = null;
+  let navActiveMethodFile = null;
 
   function renderTree(parentEl, node, depth = 0, filterText = '', parentPath = '') {
     const folderEntries = [...node.folders.entries()].sort((a, b) => a[0].localeCompare(b[0]));
@@ -1775,15 +2309,49 @@ export function renderCodeView(container) {
       parentEl.appendChild(details);
     }
 
-    const files = [...node.files].sort(filePathSort);
+    const files = [...node.files].sort((a, b) => {
+      const aIn = rhizomeFilePaths.has(normalizeNavFilePath(a));
+      const bIn = rhizomeFilePaths.has(normalizeNavFilePath(b));
+      if (aIn !== bIn) return aIn ? -1 : 1;
+      return filePathSort(a, b);
+    });
     for (const filePath of files) {
       if (filterText && !filePath.toLowerCase().includes(filterText)) continue;
       const navItem = document.createElement('button');
       navItem.type = 'button';
-      navItem.className = 'code-files-nav-item';
-      if (activeFile && activeFile === filePath) navItem.classList.add('active');
+      const inRhizome = rhizomeFilePaths.has(normalizeNavFilePath(filePath));
+      navItem.className =
+        'code-files-nav-item' +
+        (!inRhizome && hasOutsideRhizome ? ' code-files-nav-item--outside-rhizome' : '');
+      const showingOutside = Boolean(navOutsideDiffPath);
+      const isShownFileRow =
+        showingOutside &&
+        navOutsideDiffPath &&
+        normalizeNavFilePath(navOutsideDiffPath) === normalizeNavFilePath(filePath);
+      const isRhizomeContextRow =
+        !showingOutside &&
+        inRhizome &&
+        activeFile &&
+        normalizeNavFilePath(activeFile) === normalizeNavFilePath(filePath);
+      if (isShownFileRow || isRhizomeContextRow) navItem.classList.add('active');
+      if (
+        inRhizome &&
+        navActiveMethodFile &&
+        normalizeNavFilePath(navActiveMethodFile) === normalizeNavFilePath(filePath) &&
+        showingOutside &&
+        normalizeNavFilePath(navOutsideDiffPath) !== normalizeNavFilePath(filePath)
+      ) {
+        navItem.classList.add('code-files-nav-item--rhizome-indicator');
+      }
       navItem.style.paddingLeft = `${depth * 14 + 30}px`;
-      navItem.title = filePath;
+      navItem.title = inRhizome
+        ? showingOutside &&
+          navActiveMethodFile &&
+          normalizeNavFilePath(navActiveMethodFile) === normalizeNavFilePath(filePath) &&
+          normalizeNavFilePath(navOutsideDiffPath) !== normalizeNavFilePath(filePath)
+          ? `${filePath} — selected function is in this file (showing another file)`
+          : `${filePath} — in this rhizome`
+        : `${filePath} — full file diff (not in this outline)`;
       navItem.innerHTML = `
         <span class="code-files-nav-file-icon" aria-hidden="true">
           <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M2.75 1h5.5c.464 0 .909.184 1.237.513l3 3c.329.328.513.773.513 1.237v7.5A1.75 1.75 0 0 1 11.25 15h-8.5A1.75 1.75 0 0 1 1 13.25v-10.5C1 1.784 1.784 1 2.75 1Zm5.5 1.5h-5.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25V6H9.75A1.75 1.75 0 0 1 8 4.25V2.5h.25Zm1.25.31V4.25c0 .138.112.25.25.25h1.44L9.5 2.81Z"></path><path d="M8 8.25a.75.75 0 0 1 .75.75v.75h.75a.75.75 0 0 1 0 1.5h-.75V12a.75.75 0 0 1-1.5 0v-.75H6.5a.75.75 0 0 1 0-1.5h.75V9A.75.75 0 0 1 8 8.25Z"></path></svg>
@@ -1795,12 +2363,15 @@ export function renderCodeView(container) {
     }
   }
 
-  const filterInput = filterWrap.querySelector('.code-files-nav-filter-input');
   function rerenderNavTree() {
     const filterText = (filterInput?.value || '').trim().toLowerCase();
+    const u = getState().uiState;
+    navOutsideDiffPath = u.codePaneOutsideDiffPath;
+    navActiveMethodFile = u.activeFunctionId ? flowPayload.functionsById[u.activeFunctionId]?.file : null;
     navTree.innerHTML = '';
     renderTree(navTree, rootNode, 0, filterText, '');
-    if (!navTree.childElementCount) {
+    if (!navTree.querySelector('.code-files-nav-item')) {
+      navTree.innerHTML = '';
       const empty = document.createElement('div');
       empty.className = 'code-files-nav-empty';
       empty.textContent = 'No matching files';
@@ -1811,51 +2382,6 @@ export function renderCodeView(container) {
   rerenderNavTree();
   filesNavFolderStateInitialized = true;
   filesNav.appendChild(navTree);
-
-  const fileSectionByPath = new Map();
-  for (const filePath of changedFiles) {
-    const section = document.createElement('div');
-    section.className = 'file-section';
-    section.dataset.fileAnchor = filePath;
-
-    const header = document.createElement('div');
-    header.className = 'file-header';
-    const collapseBtn = document.createElement('button');
-    collapseBtn.type = 'button';
-    collapseBtn.className = 'file-header-collapse-btn';
-    collapseBtn.setAttribute('aria-label', `Toggle ${filePath}`);
-    collapseBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      suppressAutoScrollUntil = Date.now() + AUTO_SCROLL_SUPPRESS_MS;
-      const beforeScrollTop = contentScroller.scrollTop;
-      const beforeTop = section.getBoundingClientRect().top;
-      const sectionTopInScroller = elementOffsetTopInScroller(contentScroller, section);
-      const collapsed = !collapsedFilePaths.has(filePath);
-      if (collapsed) collapsedFilePaths.add(filePath);
-      else collapsedFilePaths.delete(filePath);
-      setFileSectionCollapsed(section, collapsed);
-      requestAnimationFrame(() => {
-        // If collapsing while this header is sticky, keep this card as the anchored one
-        // by snapping viewport to the section start (prevents next header takeover).
-        if (collapsed && beforeScrollTop > sectionTopInScroller) {
-          contentScroller.scrollTop = sectionTopInScroller;
-          return;
-        }
-        const afterTop = section.getBoundingClientRect().top;
-        const delta = afterTop - beforeTop;
-        contentScroller.scrollTop = beforeScrollTop + delta;
-      });
-    });
-    const filePathEl = document.createElement('span');
-    filePathEl.className = 'file-header-path';
-    filePathEl.textContent = filePath;
-    header.appendChild(collapseBtn);
-    header.appendChild(filePathEl);
-    section.appendChild(header);
-
-    fileSectionByPath.set(filePath, section);
-    filesRoot.appendChild(section);
-  }
 
   filesNavResizer.addEventListener('mousedown', (event) => {
     event.preventDefault();
@@ -1912,84 +2438,134 @@ export function renderCodeView(container) {
   });
   applyFilesNavCollapsed(filesNavCollapsed);
 
-  for (const filePath of changedFiles) {
-    const section = fileSectionByPath.get(filePath);
-    if (!section) continue;
-    const rows = includeChangedFunctionDefinitions(
-      filePath,
-      diffLinesByFile[filePath] || [],
-      flowPayload.functionsById || {},
-      sourceLinesByFile[filePath] || []
+  if (effectiveOutside) {
+    mountFullFileDiffPanel(
+      rhizomeRoot,
+      effectiveOutside,
+      flowPayload,
+      sourceLinesByFile,
+      diffLinesByFile,
+      prContext
     );
-    const body = document.createElement('div');
-    body.className = 'file-content';
-    renderDiffRows(
-      body,
-      filePath,
-      rows,
-      prContext,
-      `file::${filePath}`,
-      changedFnStartLinesByFile.get(filePath) || null
-    );
-    section.appendChild(body);
-    setFileSectionCollapsed(section, collapsedFilePaths.has(filePath));
-
+  } else {
+    rhizomeRoot.className = 'code-files-root rhizome-code-root';
+    for (const { treeNodeKey, functionId } of rhizomeOrder) {
+      const fn = flowPayload.functionsById[functionId];
+      if (!fn) continue;
+      const collapsedMode = uiState.collapsedFunctionIds.has(fn.id);
+      const block = document.createElement('div');
+      mountRhizomeFunctionBlock(
+        block,
+        fn,
+        treeNodeKey,
+        flowPayload,
+        uiState,
+        sourceLinesByFile,
+        diffLinesByFile,
+        filesWithModuleContext,
+        moduleMetaByFile,
+        moduleContextOwnerByFile,
+        calleesByCaller,
+        flowFnIds,
+        prContext,
+        canonicalKeyByFunctionId,
+        collapsedMode
+      );
+      rhizomeRoot.appendChild(block);
+    }
   }
 
-  contentScroller.appendChild(filesRoot);
+  contentScroller.appendChild(rhizomeRoot);
   contentShell.appendChild(filesNav);
   contentShell.appendChild(filesNavResizer);
   contentShell.appendChild(contentScroller);
   container.appendChild(contentShell);
   contentScroller.scrollTop = codePaneScrollTop;
   contentScroller.scrollLeft = codePaneScrollLeft;
-  const activeFunction = uiState.activeFunctionId
-    ? flowPayload.functionsById[uiState.activeFunctionId]
-    : null;
-  const activeFunctionKey = activeFunction?.id ? `fn:${activeFunction.id}` : null;
-  const activeFileKey = !activeFunctionKey && activeFile ? `file:${activeFile}` : null;
-  const nextScrollKey = activeFunctionKey || activeFileKey;
+
+  const rawActiveKey =
+    uiState.activeTreeNodeKey ||
+    (uiState.activeFunctionId ? canonicalKeyByFunctionId.get(uiState.activeFunctionId) : null);
+  const scrollTargetKey =
+    rawActiveKey && !String(rawActiveKey).startsWith('flow:') ? rawActiveKey : null;
+  const nextScrollKey = scrollTargetKey ? `node:${scrollTargetKey}` : null;
   const autoScrollSuppressed = Date.now() < suppressAutoScrollUntil;
 
   contentScroller.querySelectorAll('.diff-line-function-target').forEach((el) => {
     el.classList.remove('diff-line-function-target');
   });
 
-  if (!autoScrollSuppressed && nextScrollKey && nextScrollKey !== lastScrolledToActiveKey) {
-    let target = null;
-    if (activeFunction?.file) {
-      const section = contentScroller.querySelector(
-        `.file-section[data-file-anchor="${CSS.escape(activeFunction.file)}"]`
-      );
-      if (!autoScrollSuppressed && section && collapsedFilePaths.has(activeFunction.file)) {
-        collapsedFilePaths.delete(activeFunction.file);
-        setFileSectionCollapsed(section, false);
-      }
-      const startLine = Number(activeFunction.startLine || 0);
-      target =
-        section?.querySelector?.(`.diff-line[data-flowdiff-new-line="${startLine}"]`) ||
-        section?.querySelector?.(`.diff-line[data-flowdiff-anchor-new="${startLine}"]`) ||
-        section?.querySelector?.(`.diff-line[data-flowdiff-old-line="${startLine}"]`) ||
-        section;
-      if (target?.classList?.contains('diff-line')) target.classList.add('diff-line-function-target');
-    } else if (activeFile) {
-      target = contentScroller.querySelector(
-        `.file-section[data-file-anchor="${CSS.escape(activeFile)}"]`
-      );
-    }
-    if (target) {
+  if (
+    !effectiveOutside &&
+    !autoScrollSuppressed &&
+    nextScrollKey &&
+    nextScrollKey !== lastScrolledToActiveKey
+  ) {
+    const block = contentScroller.querySelector(
+      `.function-block[data-tree-node-key="${CSS.escape(scrollTargetKey)}"]`
+    );
+    if (block) {
       lastScrolledToActiveKey = nextScrollKey;
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => scrollToVerticalCenter(contentScroller, target));
+        requestAnimationFrame(() => {
+          scrollToVerticalCenter(contentScroller, block, { behavior: 'auto' });
+          setInViewTreeNodeKey(scrollTargetKey);
+        });
       });
     }
   }
-  if (!nextScrollKey) lastScrolledToActiveKey = null;
+  if (!nextScrollKey || effectiveOutside) lastScrolledToActiveKey = null;
 
-  // Live in-view sync on every scroll caused frequent full re-renders that interrupted
-  // momentum scrolling. Keep code-pane scrolling uninterrupted.
   if (!contentScroller.dataset.scrollLinked) {
     contentScroller.dataset.scrollLinked = '1';
+    let scrollRaf = 0;
+    contentScroller.addEventListener(
+      'scroll',
+      () => {
+        if (scrollRaf) return;
+        scrollRaf = requestAnimationFrame(() => {
+          scrollRaf = 0;
+          updateInViewFromScroll(contentScroller);
+        });
+      },
+      { passive: true }
+    );
+    requestAnimationFrame(() => updateInViewFromScroll(contentScroller));
   }
+
+  const returnTarget = uiState.callSiteReturnScrollTarget;
+  if (returnTarget && applyCallSiteReturnScroll(contentScroller, returnTarget)) {
+    clearCallSiteReturnScrollTarget();
+  }
+
   reapplyCallSiteReturnHighlight(contentScroller);
+}
+
+/**
+ * Updates hover-only classes without rebuilding the pane (used when store notifies for pointer sync).
+ * @param {HTMLElement | null} codePane - `#code-pane`
+ */
+export function syncCodePanePointerStyles(codePane) {
+  const root = codePane?.querySelector?.('.code-pane-content');
+  if (!root) return;
+  const { uiState } = getState();
+  const hoverKey = uiState.hoveredTreeNodeKey;
+
+  for (const el of root.querySelectorAll('.function-block.hovered')) {
+    el.classList.remove('hovered');
+  }
+  if (hoverKey) {
+    root
+      .querySelector(`.function-block[data-tree-node-key="${CSS.escape(hoverKey)}"]`)
+      ?.classList.add('hovered');
+  }
+
+  for (const el of root.querySelectorAll('.call-site.hovered')) {
+    el.classList.remove('hovered');
+  }
+  if (hoverKey) {
+    for (const el of root.querySelectorAll('.call-site[data-tree-node-key]')) {
+      if (el.dataset.treeNodeKey === hoverKey) el.classList.add('hovered');
+    }
+  }
 }

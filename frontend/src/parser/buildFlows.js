@@ -11,6 +11,7 @@
  * as the caller. For other calls (`super().asdict()`, `obj.foo()`, bare `foo()`), if several
  * changed symbols share a short name we only keep callees in the **caller's file**; otherwise we
  * add no edge (avoids linking `super().asdict()` to every `asdict` in the PR).
+ * Bare `ClassName(` (instantiation) is not treated as a call: changed `class` metas are excluded.
  */
 
 import { buildVisibleLines } from './buildVisibleLines.js';
@@ -53,6 +54,11 @@ function getFunctionsByName(functionsById, name) {
     .map(([id]) => id);
 }
 
+/** `Foo(` typically instantiates a class, not a call to a function; skip changed `class` metas. */
+function excludeClassMetaNodes(functionsById, calleeIds) {
+  return calleeIds.filter((id) => functionsById[id]?.kind !== 'class');
+}
+
 /**
  * Many PRs touch the same method name on unrelated base classes (`asdict`, `dict`, …).
  * Without type info, only link same-name callees in the caller's file when there is ambiguity.
@@ -79,7 +85,7 @@ function resolveNameCollisions(caller, calleeIds, functionsById) {
  * @param {Record<string, import('../flowSchema.js').FunctionMeta>} functionsById
  * @param {{ files: { path: string, hunks: { lines: string[] }[] }[] }} parsed
  * @param {Record<string, string>} [fileContentsByPath={}]
- * @returns {{ flows: import('../flowSchema.js').Flow[], edges: import('../flowSchema.js').Edge[] }}
+ * @returns {{ flows: import('../flowSchema.js').Flow[], edges: import('../flowSchema.js').Edge[], standaloneClassIds: string[], classDefAboveMethod: Record<string, string> }}
  */
 export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
   const edges = [];
@@ -136,6 +142,7 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
           let calleeIds = getFunctionsByName(functionsById, calleeName).filter(
             (id) => id !== caller.id && functionsById[id]?.changed !== false
           );
+          calleeIds = excludeClassMetaNodes(functionsById, calleeIds);
           if (caller.className) {
             const narrowed = calleeIds.filter((id) => functionsById[id]?.className === caller.className);
             calleeIds = narrowed;
@@ -153,6 +160,7 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
           let calleeIds = getFunctionsByName(functionsById, calleeName).filter(
             (id) => id !== caller.id && functionsById[id]?.changed !== false
           );
+          calleeIds = excludeClassMetaNodes(functionsById, calleeIds);
           calleeIds = resolveNameCollisions(caller, calleeIds, functionsById);
           pushCalleeEdges(calleeIds);
         }
@@ -164,9 +172,9 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
     }
   }
 
-  // Add class-membership links for changed methods in the same class.
-  // We model these as synthetic edges from an anchor method to sibling methods so
-  // existing tree/code traversal can include class-related peers.
+  // Two-stage rhizome grouping:
+  // 1) call-connected components (primary)
+  // 2) class-membership components only for methods not in any call relation
   const edgeKeys = new Set(edges.map((e) => `${e.callerId}->${e.calleeId}`));
   const outgoingByCaller = new Map();
   for (const e of edges) {
@@ -181,34 +189,74 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
     outgoingByCaller.set(callerId, used);
     return n;
   }
-  const changedMethods = Object.entries(functionsById)
-    .filter(([, fn]) => fn?.kind === 'method' && fn?.className && fn?.changeType !== 'deleted');
+  const eligibleIds = Object.entries(functionsById)
+    .filter(([, fn]) => fn && fn.changeType !== 'deleted' && fn.kind !== 'class' && !isTestFunction(fn))
+    .map(([id]) => id);
+  const eligibleSet = new Set(eligibleIds);
+  const undirectedCall = new Map();
+  function link(a, b) {
+    if (!eligibleSet.has(a) || !eligibleSet.has(b)) return;
+    if (!undirectedCall.has(a)) undirectedCall.set(a, new Set());
+    if (!undirectedCall.has(b)) undirectedCall.set(b, new Set());
+    undirectedCall.get(a).add(b);
+    undirectedCall.get(b).add(a);
+  }
+  const callParticipants = new Set();
+  for (const e of edges) {
+    if (e.relationType !== 'call') continue;
+    link(e.callerId, e.calleeId);
+    if (eligibleSet.has(e.callerId)) callParticipants.add(e.callerId);
+    if (eligibleSet.has(e.calleeId)) callParticipants.add(e.calleeId);
+  }
+
+  const callComponents = [];
+  const seen = new Set();
+  for (const id of callParticipants) {
+    if (seen.has(id)) continue;
+    const comp = new Set([id]);
+    seen.add(id);
+    const stack = [id];
+    while (stack.length) {
+      const cur = stack.pop();
+      const neigh = undirectedCall.get(cur) || new Set();
+      for (const nxt of neigh) {
+        if (seen.has(nxt)) continue;
+        seen.add(nxt);
+        comp.add(nxt);
+        stack.push(nxt);
+      }
+    }
+    callComponents.push(comp);
+  }
+
+  const assigned = new Set();
+  for (const comp of callComponents) {
+    for (const id of comp) assigned.add(id);
+  }
+
+  // Secondary grouping by class-membership, only for methods with no call relations.
   const classBuckets = new Map(); // `${file}::${className}` -> [{id, fn}]
-  for (const [id, fn] of changedMethods) {
+  for (const [id, fn] of Object.entries(functionsById)) {
+    if (!eligibleSet.has(id)) continue;
+    if (assigned.has(id)) continue;
+    if (fn?.kind !== 'method' || !fn?.className) continue;
     const k = `${fn.file}::${fn.className}`;
     const list = classBuckets.get(k) || [];
     list.push({ id, fn });
     classBuckets.set(k, list);
   }
+
+  const classOnlyComponents = [];
+  const classMembershipMethodIds = new Set();
   for (const list of classBuckets.values()) {
     if (list.length < 2) continue;
     list.sort((a, b) => a.fn.startLine - b.fn.startLine);
+    const comp = new Set(list.map((x) => x.id));
+    for (const mid of comp) classMembershipMethodIds.add(mid);
+    classOnlyComponents.push(comp);
     const anchorId = list[0].id;
-    const memberIdSet = new Set(list.map((x) => x.id));
-    const methodsInAnyCallRelation = new Set(
-      edges
-        .filter(
-          (e) =>
-            e.relationType === 'call' &&
-            (memberIdSet.has(e.callerId) || memberIdSet.has(e.calleeId))
-        )
-        .flatMap((e) => [e.callerId, e.calleeId])
-    );
     for (let i = 1; i < list.length; i++) {
       const calleeId = list[i].id;
-      // If a method already participates in any call relation in this class component,
-      // do not add an extra synthetic class edge for it (prevents duplicate rhizome rows).
-      if (methodsInAnyCallRelation.has(calleeId)) continue;
       const key = `${anchorId}->${calleeId}`;
       if (edgeKeys.has(key)) continue;
       edgeKeys.add(key);
@@ -219,43 +267,16 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
         relationType: 'class'
       });
     }
+    for (const id of comp) assigned.add(id);
   }
 
-  // Build undirected connectivity for rhizome grouping:
-  // connected by either direct call relationship or class-membership links above.
-  const eligibleIds = Object.entries(functionsById)
-    .filter(([, fn]) => fn && fn.changeType !== 'deleted' && !isTestFunction(fn))
-    .map(([id]) => id);
-  const eligibleSet = new Set(eligibleIds);
-  const undirected = new Map();
-  function link(a, b) {
-    if (!eligibleSet.has(a) || !eligibleSet.has(b)) return;
-    if (!undirected.has(a)) undirected.set(a, new Set());
-    if (!undirected.has(b)) undirected.set(b, new Set());
-    undirected.get(a).add(b);
-    undirected.get(b).add(a);
-  }
-  for (const e of edges) link(e.callerId, e.calleeId);
-
-  const components = [];
-  const seen = new Set();
+  const singletonComponents = [];
   for (const id of eligibleIds) {
-    if (seen.has(id)) continue;
-    const comp = new Set([id]);
-    seen.add(id);
-    const stack = [id];
-    while (stack.length) {
-      const cur = stack.pop();
-      const neigh = undirected.get(cur) || new Set();
-      for (const nxt of neigh) {
-        if (seen.has(nxt)) continue;
-        seen.add(nxt);
-        comp.add(nxt);
-        stack.push(nxt);
-      }
-    }
-    components.push(comp);
+    if (assigned.has(id)) continue;
+    singletonComponents.push(new Set([id]));
+    assigned.add(id);
   }
+  const components = [...callComponents, ...classOnlyComponents, ...singletonComponents];
 
   const adjacency = new Map(); // callerId -> calleeIds[]
   for (const e of edges) {
@@ -327,5 +348,46 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
     })
     .map(({ _size, ...rest }) => rest);
 
-  return { flows, edges };
+  // Where to show a changed class definition in the code pane: above a method (not in the rhizome tree).
+  // — Class-membership rhizome: class diff only above the first method in that group (by source line).
+  // — Call-only: class diff only above the first method (by source line) for that class.
+  // — No changed methods: standaloneClassIds (tree section below rhizomes).
+  const classDefAboveMethod = {};
+  const standaloneClassIds = [];
+  const classNodes = Object.values(functionsById).filter(
+    (fn) => fn?.kind === 'class' && fn.changeType !== 'deleted'
+  );
+  for (const cls of classNodes) {
+    const methodIds = Object.entries(functionsById)
+      .filter(
+        ([, fn]) =>
+          fn?.kind === 'method' &&
+          fn?.className === cls.className &&
+          fn?.file === cls.file &&
+          fn.changeType !== 'deleted'
+      )
+      .map(([id]) => id);
+    if (methodIds.length === 0) {
+      standaloneClassIds.push(cls.id);
+      continue;
+    }
+
+    const members = methodIds.filter((id) => classMembershipMethodIds.has(id));
+    const hasMembership = members.length >= 2;
+    const idSort = (a, b) => {
+      const fa = functionsById[a];
+      const fb = functionsById[b];
+      if ((fa?.startLine || 0) !== (fb?.startLine || 0)) return (fa?.startLine || 0) - (fb?.startLine || 0);
+      return a.localeCompare(b);
+    };
+    if (hasMembership) {
+      const sortedMembers = [...members].sort(idSort);
+      if (sortedMembers[0]) classDefAboveMethod[sortedMembers[0]] = cls.id;
+    } else {
+      const sorted = [...methodIds].sort(idSort);
+      classDefAboveMethod[sorted[0]] = cls.id;
+    }
+  }
+
+  return { flows, edges, standaloneClassIds, classDefAboveMethod };
 }

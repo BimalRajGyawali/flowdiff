@@ -12,13 +12,16 @@ let flowPayload = { ...emptyFlowPayload };
 /** @type {{ owner: string, repo: string, number: string, headSha: string } | null } */
 let prContext = null;
 
-/** @type {{ selectedFlowId: string | null, selectedFileInFlow: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, callSiteCallerTreeNodeKey: string | null, callSiteReturnScrollTarget: { callerTreeNodeKey: string, scrollLine: number, lineKind: 'new' | 'anchor' | 'old', calleeId: string, calleeOrdinalOnLine: number } | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, completedFlowIds: Set<string>, callSiteReturnConsumedKeys: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
+/** @type {{ selectedFlowId: string | null, selectedStandaloneClassId: string | null, selectedFileInFlow: string | null, codePaneOutsideDiffPath: string | null, expandedIds: Set<string>, expandedTreeNodeIds: Set<string>, flowTreeExpandedIds: Set<string>, flowTreeSectionCollapsedIds: Set<string>, activeFunctionId: string | null, activeTreeNodeKey: string | null, callSiteCallerTreeNodeKey: string | null, callSiteReturnScrollTarget: { callerTreeNodeKey: string, scrollLine: number, lineKind: 'new' | 'anchor' | 'old', calleeId: string, calleeOrdinalOnLine: number } | null, hoveredTreeNodeKey: string | null, inViewTreeNodeKey: string | null, readFunctionIds: Set<string>, completedFlowIds: Set<string>, callSiteReturnConsumedKeys: Set<string>, collapsedFunctionIds: Set<string>, multiFlowFunctionIds?: Set<string> }} */
 let uiState = {
   selectedFlowId: null,
+  selectedStandaloneClassId: null,
   selectedFileInFlow: null,
+  codePaneOutsideDiffPath: null,
   expandedIds: new Set(),
   expandedTreeNodeIds: new Set(),
   flowTreeExpandedIds: new Set(),
+  flowTreeSectionCollapsedIds: new Set(),
   activeFunctionId: null,
   activeTreeNodeKey: null,
   callSiteCallerTreeNodeKey: null,
@@ -104,10 +107,13 @@ export function setFlowPayload(payload) {
 
   uiState = {
     selectedFlowId: firstFlow?.id ?? null,
+    selectedStandaloneClassId: null,
     selectedFileInFlow: firstFlow?.rootId ? (payload.functionsById[firstFlow.rootId]?.file ?? null) : null,
+    codePaneOutsideDiffPath: null,
     expandedIds: firstFlow?.rootId ? new Set([firstFlow.rootId]) : new Set(),
     expandedTreeNodeIds: initialTree,
     flowTreeExpandedIds: new Set(initialTree),
+    flowTreeSectionCollapsedIds: new Set(),
     activeFunctionId: null,
     activeTreeNodeKey: null,
     callSiteCallerTreeNodeKey: null,
@@ -128,16 +134,23 @@ export function setFlowPayload(payload) {
   notify();
 }
 
-export function setSelectedFlow(flowId, rootId) {
+/**
+ * @param {string | null} flowId
+ * @param {string | null} rootId
+ * @param {{ selectRhizomeAfter?: boolean }} [opts] - when true, highlight the whole rhizome (`flow:…`) instead of no tree selection
+ */
+export function setSelectedFlow(flowId, rootId, opts = {}) {
   // Persist current flow tree expansion state for the previously selected flow.
   if (uiState.selectedFlowId) {
     flowTreeExpansionByFlowId.set(uiState.selectedFlowId, {
       expandedTreeNodeIds: new Set(uiState.expandedTreeNodeIds),
-      flowTreeExpandedIds: new Set(uiState.flowTreeExpandedIds)
+      flowTreeExpandedIds: new Set(uiState.flowTreeExpandedIds),
+      sectionCollapsed: uiState.flowTreeSectionCollapsedIds.has(uiState.selectedFlowId)
     });
   }
 
   uiState.selectedFlowId = flowId;
+  uiState.selectedStandaloneClassId = null;
   uiState.selectedFileInFlow = rootId ? (flowPayload.functionsById[rootId]?.file ?? null) : null;
   uiState.expandedIds = rootId ? new Set([rootId]) : new Set();
 
@@ -146,6 +159,8 @@ export function setSelectedFlow(flowId, rootId) {
   if (cached) {
     uiState.expandedTreeNodeIds = new Set(cached.expandedTreeNodeIds);
     uiState.flowTreeExpandedIds = new Set(cached.flowTreeExpandedIds);
+    if (cached.sectionCollapsed) uiState.flowTreeSectionCollapsedIds.add(flowId);
+    else uiState.flowTreeSectionCollapsedIds.delete(flowId);
   } else {
     // No cached state for this flow yet: expand its full tree by default.
     const fullTree = getFlowTreeKeysAtDepth(Infinity);
@@ -157,22 +172,80 @@ export function setSelectedFlow(flowId, rootId) {
     for (const id of mf) {
       if (flowFnIds.has(id) && id !== rootId) uiState.collapsedFunctionIds.add(id);
     }
+    uiState.flowTreeSectionCollapsedIds.delete(flowId);
   }
 
   if (rootId) uiState.collapsedFunctionIds.delete(rootId);
 
   uiState.activeFunctionId = null;
-  uiState.activeTreeNodeKey = null;
+  uiState.activeTreeNodeKey =
+    opts.selectRhizomeAfter && flowId ? `flow:${flowId}` : null;
   uiState.callSiteCallerTreeNodeKey = null;
   uiState.callSiteReturnScrollTarget = null;
   uiState.hoveredTreeNodeKey = null;
   uiState.inViewTreeNodeKey = null;
+  uiState.codePaneOutsideDiffPath = null;
   uiState.callSiteReturnConsumedKeys.clear();
+  notify();
+}
+
+/**
+ * Select the current rhizome as a whole (no single method active). Syncs code pane outline.
+ * @param {string} flowId
+ */
+export function selectRhizomeFlow(flowId) {
+  const flow = flowPayload.flows?.find((f) => f.id === flowId);
+  if (!flow?.rootId) return;
+  uiState.selectedStandaloneClassId = null;
+  uiState.codePaneOutsideDiffPath = null;
+  if (uiState.selectedFlowId !== flowId) {
+    setSelectedFlow(flowId, flow.rootId, { selectRhizomeAfter: true });
+    return;
+  }
+  uiState.activeFunctionId = null;
+  uiState.activeTreeNodeKey = `flow:${flowId}`;
+  const rootFn = flowPayload.functionsById[flow.rootId];
+  uiState.selectedFileInFlow = rootFn?.file ?? null;
+  uiState.callSiteCallerTreeNodeKey = null;
+  uiState.callSiteReturnScrollTarget = null;
+  uiState.callSiteReturnConsumedKeys.clear();
+  notify();
+}
+
+/** Collapse or expand the function tree body under a rhizome header in the flow tree pane. */
+export function toggleFlowTreeSectionCollapsed(flowId) {
+  if (uiState.flowTreeSectionCollapsedIds.has(flowId)) {
+    uiState.flowTreeSectionCollapsedIds.delete(flowId);
+  } else {
+    uiState.flowTreeSectionCollapsedIds.add(flowId);
+  }
+  const cur = flowTreeExpansionByFlowId.get(flowId);
+  if (cur) cur.sectionCollapsed = uiState.flowTreeSectionCollapsedIds.has(flowId);
+  notify();
+}
+
+export function setSelectedStandaloneClass(classId) {
+  uiState.selectedFlowId = null;
+  uiState.selectedStandaloneClassId = classId || null;
+  uiState.selectedFileInFlow = classId ? (flowPayload.functionsById[classId]?.file ?? null) : null;
+  uiState.activeFunctionId = classId || null;
+  uiState.activeTreeNodeKey = classId ? `standalone-class:${classId}` : null;
+  uiState.callSiteCallerTreeNodeKey = null;
+  uiState.callSiteReturnScrollTarget = null;
+  uiState.hoveredTreeNodeKey = null;
+  uiState.inViewTreeNodeKey = null;
+  uiState.codePaneOutsideDiffPath = null;
   notify();
 }
 
 export function setSelectedFileInFlow(filePath) {
   uiState.selectedFileInFlow = filePath;
+  notify();
+}
+
+/** When set, the code pane shows a plain file diff for this path (not in the current rhizome outline). */
+export function setCodePaneOutsideDiffPath(filePath) {
+  uiState.codePaneOutsideDiffPath = filePath || null;
   notify();
 }
 
@@ -376,6 +449,8 @@ export function collapseFlowTree() {
 }
 
 export function setActiveFunction(functionId, treeNodeKey = null) {
+  uiState.selectedStandaloneClassId = null;
+  uiState.codePaneOutsideDiffPath = null;
   uiState.activeFunctionId = functionId;
   uiState.activeTreeNodeKey = treeNodeKey;
   syncSelectedFileInFlowFromFunction(functionId);
@@ -399,6 +474,8 @@ export function setActiveFunctionFromInlineCallSite(
   inlineCallerTreeNodeKey,
   returnScrollTarget = null
 ) {
+  uiState.selectedStandaloneClassId = null;
+  uiState.codePaneOutsideDiffPath = null;
   uiState.activeFunctionId = calleeId;
   uiState.activeTreeNodeKey = calleeTreeNodeKey;
   syncSelectedFileInFlowFromFunction(calleeId);
@@ -436,6 +513,7 @@ export function clearCallSiteReturnScrollTarget() {
  */
 export function returnFromCallSiteToCaller(calleeTreeNodeKey, callerId, parentTreeNodeKey) {
   if (calleeTreeNodeKey) uiState.callSiteReturnConsumedKeys.add(calleeTreeNodeKey);
+  uiState.codePaneOutsideDiffPath = null;
   uiState.activeFunctionId = callerId;
   uiState.activeTreeNodeKey = parentTreeNodeKey;
   syncSelectedFileInFlowFromFunction(callerId);
@@ -583,12 +661,15 @@ export function initStore() {
   prContext = null;
   uiState = {
     selectedFlowId: null,
+    selectedStandaloneClassId: null,
     selectedFileInFlow: null,
+    codePaneOutsideDiffPath: null,
     flowListFilter: '',
     flowListSort: 'name',
     expandedIds: new Set(),
     expandedTreeNodeIds: new Set(),
     flowTreeExpandedIds: new Set(),
+    flowTreeSectionCollapsedIds: new Set(),
     activeFunctionId: null,
     activeTreeNodeKey: null,
     callSiteCallerTreeNodeKey: null,

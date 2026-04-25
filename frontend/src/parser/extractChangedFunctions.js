@@ -14,6 +14,49 @@ import { computePythonFunctionEndLine, listAllPythonFunctionMetas } from './pyth
 import { getQualifiedClassPrefix, getEnclosingClassHeaderLines } from './pythonClassContext.js';
 
 const PY_DEF_LINE_REGEX = /^(\s*)(?:async\s+)?def\s+(\w+)\b/;
+const PY_CLASS_LINE_REGEX = /^(\s*)class\s+(\w+)\b/;
+
+/**
+ * @param {string[]} sourceLines
+ * @returns {{ name: string, startLine: number, endLine: number, indent: number, snippet: string, qualifiedName: string }[]}
+ */
+function listAllPythonClassMetas(sourceLines) {
+  const out = [];
+  const stack = [];
+  const fileEnd = sourceLines.length;
+  for (let i = 0; i < sourceLines.length; i++) {
+    const line = sourceLines[i] ?? '';
+    const m = line.match(PY_CLASS_LINE_REGEX);
+    if (!m) continue;
+    const indent = m[1].length;
+    while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
+    const name = m[2];
+    const qualifiedName = stack.length
+      ? `${stack.map((x) => x.name).join('.')}.${name}`
+      : name;
+    const lineNum = i + 1;
+    let endLine = fileEnd;
+    for (let ln = lineNum + 1; ln <= fileEnd; ln++) {
+      const t = sourceLines[ln - 1] ?? '';
+      if (!t.trim()) continue;
+      const ind = (t.match(/^(\s*)/)?.[1] ?? '').length;
+      if (ind <= indent) {
+        endLine = ln - 1;
+        break;
+      }
+    }
+    out.push({
+      name,
+      startLine: lineNum,
+      endLine,
+      indent,
+      snippet: line.trimEnd(),
+      qualifiedName
+    });
+    stack.push({ name, indent });
+  }
+  return out;
+}
 
 function collectDeletedFunctionMetas(pf, survivingFunctionNames = new Set()) {
   const deletedFns = [];
@@ -139,6 +182,7 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
     /** @type {import('../flowSchema.js').FunctionMeta[]} */
     const changedFnsInFile = [];
     const survivingFunctionNames = new Set(defs.map((d) => d.name));
+    const classMetas = listAllPythonClassMetas(sourceLines);
 
     // Decorators immediately above a `def` belong to the function, not module context.
     // This includes multi-line decorators where continuation lines are indented further.
@@ -260,6 +304,31 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
         functionsById[deletedFn.id] = deletedFn;
         changedFnsInFile.push(deletedFn);
       }
+    }
+
+    for (const cls of classMetas) {
+      const classLine = visibleLines.find((line) => line.lineNumber === cls.startLine);
+      if (!classLine) continue;
+      const classChanged = classLine.added || classLine.touchedByDeletion;
+      if (!classChanged) continue;
+      const hasDeletedTouch = !!classLine.touchedByDeletion && !classLine.added;
+      const changeType = classLine.added && !hasDeletedTouch ? 'added' : 'modified';
+      const id = `${pf.path}:class:${cls.qualifiedName}`;
+      if (functionsById[id]) continue;
+      const clsMeta = {
+        id,
+        name: cls.qualifiedName,
+        file: pf.path,
+        startLine: cls.startLine,
+        endLine: cls.endLine,
+        snippet: cls.snippet || `class ${cls.qualifiedName}:`,
+        changed: true,
+        changeType,
+        kind: 'class',
+        className: cls.qualifiedName
+      };
+      functionsById[id] = clsMeta;
+      changedFnsInFile.push(clsMeta);
     }
 
     // Compute module-scope changed ranges.

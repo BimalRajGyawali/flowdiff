@@ -45,8 +45,12 @@ function writeCachedRawData(cacheKey, rawData) {
 function analyzeRawPullRequestData(diffText, fileContentsByPath) {
   const parsed = parseDiff(diffText);
   const { functionsById, files } = extractChangedFunctions(parsed, fileContentsByPath);
-  const { flows, edges } = buildFlows(functionsById, parsed, fileContentsByPath);
-  return { files, functionsById, flows, edges };
+  const { flows, edges, standaloneClassIds, classDefAboveMethod } = buildFlows(
+    functionsById,
+    parsed,
+    fileContentsByPath
+  );
+  return { files, functionsById, flows, edges, standaloneClassIds, classDefAboveMethod };
 }
 
 function formatFlowTree(rootId, payload, lines, visited, depth = 0, pathFromRoot = new Set()) {

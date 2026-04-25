@@ -281,8 +281,9 @@ body {
   top: 0;
   z-index: 2;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px 8px;
   background: #f6f8fa;
   color: #57606a;
@@ -290,6 +291,31 @@ body {
   font-weight: 600;
   letter-spacing: 0.01em;
   border-bottom: 1px solid #d8dee4;
+}
+
+.code-files-nav-title-stack {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.code-files-nav-rhizome-kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #6e7781;
+  text-transform: uppercase;
+}
+
+.code-files-nav-rhizome-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #24292f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .code-files-nav-toggle-btn {
@@ -333,7 +359,7 @@ body {
 
 .code-files-nav-filter-wrap {
   position: sticky;
-  top: 37px;
+  top: 56px;
   z-index: 2;
   display: flex;
   align-items: center;
@@ -463,6 +489,82 @@ body {
   font-weight: 600;
 }
 
+/* Rhizome paths sort first; paths outside the outline stay visually quieter */
+.code-files-nav-item--outside-rhizome .code-files-nav-name {
+  color: #6e7781;
+  font-weight: 400;
+}
+
+.code-files-nav-item--outside-rhizome .code-files-nav-file-icon {
+  color: #8c959f;
+}
+
+/* Rhizome file row while a full-file diff is open elsewhere: shows where the selected function lives */
+.code-files-nav-item--rhizome-indicator:not(.active) {
+  background: rgba(221, 244, 255, 0.55);
+}
+
+.code-files-nav-item--rhizome-indicator:not(.active):hover {
+  background: rgba(187, 218, 255, 0.65);
+}
+
+.full-file-diff-root {
+  min-height: 100%;
+}
+
+.full-file-diff-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.full-file-diff-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid #d8dee4;
+  background: #ffffff;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.full-file-diff-bar-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: #24292f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.full-file-diff-body {
+  padding: 0 0 16px;
+}
+
+.code-files-nav-item.code-files-nav-fn-item {
+  height: auto;
+  min-height: 34px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  align-items: flex-start;
+}
+
+.code-files-nav-fn-file {
+  font-size: 11px;
+  font-weight: 400;
+  color: #6e7781;
+  line-height: 1.2;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .code-files-nav-name {
   flex: 1;
   overflow: hidden;
@@ -587,7 +689,7 @@ body {
 
 .flow-tree-pane {
   flex: 0 0 28%;
-  padding: 0;
+  padding: 0 0 0 8px;
   background: #f8fafc;
 }
 
@@ -602,7 +704,7 @@ body {
 }
 
 .flow-tree-pane-title {
-  padding: 13px 16px 11px;
+  padding: 13px 16px 11px 20px;
   font-size: 11px;
   letter-spacing: 0.1em;
   font-weight: 600;
@@ -612,41 +714,76 @@ body {
 }
 
 .flow-tree-flow-section {
-  padding: 4px 0 8px;
-  margin: 0 0 8px;
+  padding: 6px 0 10px;
+  margin: 0 0 10px;
 }
 
+/* Row above the root function: expand/collapse only (no label) */
 .flow-tree-flow-header {
-  width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  border: none;
-  background: transparent;
-  text-align: left;
-  padding: 10px 16px 7px;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color 140ms ease, color 140ms ease;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px 4px 12px;
+  margin: 0;
 }
 
-.flow-tree-flow-caret {
-  width: 12px;
-  color: #94a3b8;
+.flow-tree-flow-section-caret {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
   display: inline-flex;
+  align-items: center;
   justify-content: center;
+}
+
+.flow-tree-flow-section-caret:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.flow-tree-flow-header--active .flow-tree-flow-section-caret {
+  color: #0969da;
+  background: #ddf4ff;
+}
+
+.flow-tree-flow-section-caret-spacer {
+  width: 26px;
+  height: 26px;
   flex-shrink: 0;
 }
 
-.flow-tree-flow-header:hover {
-  background: #f1f5f9;
+.flow-tree-flow-diffstats {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  letter-spacing: 0.01em;
+  user-select: none;
 }
 
-.flow-tree-flow-header.active {
-  background: #eaf1fb;
-  color: #1e293b;
+.flow-tree-flow-diffstats-add {
+  color: #1a7f37;
+}
+
+.flow-tree-flow-diffstats-del {
+  color: #cf222e;
+}
+
+.flow-tree-flow-body {
+  padding: 0;
 }
 
 .flow-tree-flow-dot {
@@ -677,7 +814,7 @@ body {
 .flow-tree-flow-separator {
   height: 1px;
   background: #e4e8ef;
-  margin: 6px 0 10px;
+  margin: 8px 0 12px;
 }
 
 .flow-tree-toolbar {
@@ -842,6 +979,32 @@ body {
   color: #1e293b;
 }
 
+/* "C" in a circle: this rhizome method opens with its changed class def above the def in the code view */
+.flow-tree-class-def-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: #0550ae;
+  background: #ddf4ff;
+  border: 1px solid #54aeff;
+  box-shadow: 0 0 0 1px rgba(5, 80, 174, 0.06);
+  flex-shrink: 0;
+  vertical-align: middle;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+.flow-tree-node.read .flow-tree-class-def-badge {
+  opacity: 0.7;
+}
+
 .flow-tree-call-marker {
   display: inline-flex;
   width: 10px;
@@ -860,6 +1023,24 @@ body {
 
 .flow-tree-call-marker-deleted {
   background: #cf222e;
+}
+
+/* One change hint when the call column is empty (e.g. root row): same palette as .flow-tree-call-marker */
+.flow-tree-change-hint {
+  display: inline-flex;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.12);
+}
+
+.flow-tree-change-hint--added {
+  background: #2da44e;
+}
+
+.flow-tree-change-hint--modified {
+  background: #b7791f;
 }
 
 .flow-tree-node.active .flow-tree-label {
@@ -935,6 +1116,13 @@ body {
   margin-left: 0;
   padding-left: 0;
   border-left: none;
+}
+
+/* Class-membership only (no call edges from this parent): list methods at the same step as
+   a flat group — no L-shaped “nested call” lines, so indentation matches “no function calls” */
+.flow-tree-branch--class-siblings > .flow-tree-item::before,
+.flow-tree-branch--class-siblings > .flow-tree-item > .flow-tree-node::before {
+  display: none;
 }
 
 /* Vertical connector between sibling nodes within a branch */
@@ -1418,15 +1606,26 @@ body {
   overflow: hidden;
 }
 
+.function-block-file-hint {
+  font-size: 11px;
+  color: #6e7781;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  padding: 0 16px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .function-block:first-child {
   margin-top: 0;
 }
 
-/* Active function highlighting – strong blue to stand out clearly */
+/* Active function highlighting – minimal left accent (Flowz-style). */
 .function-block.active {
-  background: #e0f2ff;
-  border-color: #1d4ed8;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.55);
+  background: #f6f8fa;
+  border-color: #d0d7de;
+  border-left: 3px solid #1d4ed8;
+  box-shadow: none;
 }
 
 .function-block.read {
@@ -1562,92 +1761,28 @@ body {
   margin-left: auto;
 }
 
-/* Module diff panels: “before” tucks under block top padding; “after” sits below the function body */
-.module-context {
+/* Enclosing class lines: same method card, continuous with the def below (no inner frame) */
+.class-definition-above {
   margin: 0;
   padding: 0;
-  background: transparent;
-}
-
-.module-context--before {
-  margin: -12px 0 0 0;
-}
-
-.module-context--after {
-  margin: 16px 0 0 0;
-}
-
-.module-context-header {
-  font-size: 12px;
-  color: #24292f;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  padding: 12px 16px 10px;
-  background: #f6f8fa;
-  border-bottom: 1px solid #d0d7de;
-}
-
-.module-context-header .function-block-callsite-back {
-  flex-shrink: 0;
-  margin-left: auto;
-}
-
-.module-context-file {
-  font-size: 11px;
-  color: #57606a;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 55%;
-}
-
-.module-context-toggle {
   border: none;
   background: transparent;
+  border-radius: 0;
+}
+
+/* Module-level edits (imports, globals, …) on the host card: same pane as the function diff */
+.module-context-inline {
+  margin: 0;
   padding: 0;
-  font: inherit;
-  color: #0969da;
-  cursor: pointer;
-  border-radius: 2px;
+  border: none;
+  background: transparent;
+  border-radius: 0;
 }
 
-.module-context-toggle:hover {
-  text-decoration: underline;
-}
-
-.module-context-toggle:focus {
-  outline: none;
-  text-decoration: underline;
-}
-
-.module-context-toggle:focus-visible {
-  outline: 1px solid #0969da;
-  outline-offset: 2px;
-}
-
-.module-context.flash .module-context-header {
-  border-bottom-color: rgba(9, 105, 218, 0.45);
-}
-
-.module-context-body {
-  padding: 8px 16px;
-}
-
-.module-context-lines {
-  margin-top: 0;
-}
-
-.module-context-syms {
-  font-size: 11px;
-  color: #57606a;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 60%;
+.module-context-inline--after {
+  border-top: 1px solid #d0d7de;
+  margin-top: 4px;
+  padding-top: 4px;
 }
 
 .function-body {
@@ -1698,7 +1833,7 @@ body {
 .code-pane .diff-line,
 .code-pane .file-name-header,
 .code-pane .function-block-callsite-bar,
-.code-pane .module-context,
+.code-pane .module-context-inline,
 .code-pane .function-block,
 .code-pane .inline-callee {
   transition: opacity 200ms ease-out, filter 200ms ease-out;

@@ -3,7 +3,7 @@
  * Test-only roots are omitted (see buildFlows); this list is production flows only.
  */
 
-import { getState, setSelectedFlow, setFlowCompletedState } from '../state/store.js';
+import { getState, selectRhizomeFlow, setFlowCompletedState } from '../state/store.js';
 
 /**
  * Compute flow metadata: depth, node count, files.
@@ -146,7 +146,7 @@ export function renderFlowList(container) {
     item.appendChild(completeLabel);
     item.appendChild(body);
 
-    item.addEventListener('click', () => setSelectedFlow(flow.id, flow.rootId));
+    item.addEventListener('click', () => selectRhizomeFlow(flow.id));
     parent.appendChild(item);
   }
 

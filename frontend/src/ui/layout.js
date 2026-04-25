@@ -2,9 +2,9 @@
  * Renders the 2-pane layout shell and mounts code view and flow tree.
  */
 
-import { renderCodeView } from './codeView.js';
-import { renderFlowTree } from './flowTree.js';
-import { subscribe } from '../state/store.js';
+import { renderCodeView, syncCodePanePointerStyles } from './codeView.js';
+import { renderFlowTree, patchFlowTreePointerUi } from './flowTree.js';
+import { getState, subscribe } from '../state/store.js';
 
 const codePane = document.getElementById('code-pane');
 const flowTreePane = document.getElementById('flow-tree-pane');
@@ -13,7 +13,91 @@ let flowPaneCollapsed = false;
 let savedCodePaneFlex = '';
 let savedFlowPaneFlex = '';
 
+/** @param {Set<string> | undefined} s */
+function serializeSet(s) {
+  if (!(s instanceof Set) || s.size === 0) return '';
+  return [...s].sort().join('\u0001');
+}
+
+function buildCodeStructuralSig() {
+  const { flowPayload, uiState, prContext } = getState();
+  return [
+    prContext?.headSha ?? '',
+    String(flowPayload.files?.length ?? 0),
+    uiState.selectedFlowId ?? '',
+    uiState.selectedStandaloneClassId ?? '',
+    serializeSet(uiState.readFunctionIds),
+    serializeSet(uiState.collapsedFunctionIds),
+    uiState.activeFunctionId ?? '',
+    uiState.activeTreeNodeKey ?? '',
+    uiState.callSiteCallerTreeNodeKey ?? '',
+    serializeSet(uiState.callSiteReturnConsumedKeys),
+    String(Object.keys(flowPayload.functionsById || {}).length),
+    String((flowPayload.edges || []).length),
+    String(Object.keys(flowPayload.classDefAboveMethod || {}).length),
+    uiState.codePaneOutsideDiffPath ?? ''
+  ].join('|');
+}
+
+function buildTreeStructuralSig() {
+  const { flowPayload, uiState, prContext } = getState();
+  return [
+    prContext?.headSha ?? '',
+    uiState.selectedFlowId ?? '',
+    uiState.selectedStandaloneClassId ?? '',
+    serializeSet(uiState.flowTreeExpandedIds),
+    serializeSet(uiState.readFunctionIds),
+    serializeSet(uiState.completedFlowIds),
+    serializeSet(uiState.multiFlowFunctionIds),
+    String((flowPayload.flows || []).length),
+    String(Object.keys(flowPayload.functionsById || {}).length),
+    String((flowPayload.edges || []).length),
+    String(Object.keys(flowPayload.classDefAboveMethod || {}).length)
+  ].join('|');
+}
+
+let prevCodeStructuralSig = null;
+let prevTreeStructuralSig = null;
+let prevHoveredTreeNodeKey = null;
+let prevInViewTreeNodeKey = null;
+
 function render() {
+  const { uiState } = getState();
+  const hover = uiState.hoveredTreeNodeKey;
+  const inView = uiState.inViewTreeNodeKey;
+  const codeSig = buildCodeStructuralSig();
+  const treeSig = buildTreeStructuralSig();
+
+  const pointerOnly =
+    prevCodeStructuralSig != null &&
+    prevTreeStructuralSig != null &&
+    codeSig === prevCodeStructuralSig &&
+    treeSig === prevTreeStructuralSig &&
+    (hover !== prevHoveredTreeNodeKey || inView !== prevInViewTreeNodeKey);
+
+  if (pointerOnly) {
+    if (hover !== prevHoveredTreeNodeKey) syncCodePanePointerStyles(codePane);
+    patchFlowTreePointerUi(flowTreePane);
+    prevHoveredTreeNodeKey = hover;
+    prevInViewTreeNodeKey = inView;
+    return;
+  }
+
+  const treeLayoutOnly =
+    prevCodeStructuralSig != null && codeSig === prevCodeStructuralSig && treeSig !== prevTreeStructuralSig;
+
+  if (treeLayoutOnly) {
+    prevTreeStructuralSig = treeSig;
+    prevHoveredTreeNodeKey = hover;
+    prevInViewTreeNodeKey = inView;
+    renderFlowTree(flowTreePane);
+    return;
+  }
+
+  prevCodeStructuralSig = codeSig;
+  prevTreeStructuralSig = treeSig;
+  prevHoveredTreeNodeKey = hover;
+  prevInViewTreeNodeKey = inView;
   renderCodeView(codePane);
   renderFlowTree(flowTreePane);
 }
