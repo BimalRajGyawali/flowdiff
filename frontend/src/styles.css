@@ -542,6 +542,26 @@ body {
   white-space: nowrap;
 }
 
+.full-file-diff-reset-view-btn {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.full-file-diff-reset-view-btn:hover {
+  background: #f3f4f6;
+}
+
 .full-file-diff-body {
   padding: 0 0 16px;
 }
@@ -1661,7 +1681,7 @@ body {
 
 .diff-code-gap-meta {
   background: linear-gradient(180deg, #eef7ff 0%, #e4f2ff 100%);
-  color: #57606a;
+  color: #9aa4af;
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -1671,7 +1691,66 @@ body {
 .diff-code-gap-meta code {
   color: inherit;
   display: inline-block;
+  opacity: 0.72;
+  font-size: 11px;
+  letter-spacing: 0.01em;
 }
+
+/* In rhizome function cards keep expander rows visually quiet so code stays primary. */
+.diff-line-ctx-gap-expander-minimal .diff-num-gap-controls,
+.diff-line-ctx-gap-expander-minimal .diff-num.diff-num-ctx,
+.diff-line-ctx-gap-expander-minimal .diff-sign.diff-sign-ctx {
+  background: #f8fafc;
+}
+
+/* Minimal expander: give controls enough horizontal room in the gutter area. */
+.diff-line-ctx-gap-expander-minimal .diff-num-gap-controls {
+  width: 84px;
+  min-width: 84px;
+  padding: 0 4px;
+}
+
+/* Hide extra gutter/sign columns for minimal rows so controls are not clipped. */
+.diff-line-ctx-gap-expander-minimal .diff-num.diff-num-ctx:not(.diff-num-gap-controls) {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.diff-line-ctx-gap-expander-minimal .diff-sign.diff-sign-ctx {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.diff-line-ctx-gap-expander-minimal .diff-code-gap-meta {
+  background: #f8fafc;
+  color: #9aa4af;
+  padding-left: 0;
+  justify-content: center;
+}
+
+.diff-line-ctx-gap-expander-minimal .diff-code-gap-meta code {
+  display: inline-block;
+  opacity: 0.62;
+  font-size: 10px;
+  margin-left: 6px;
+}
+
+.diff-line-ctx-gap-expander-minimal .diff-ctx-gap-btn {
+  color: #8c959f;
+}
+
+.diff-line-ctx-gap-expander-minimal .diff-ctx-gap-btn:hover {
+  background: rgba(140, 149, 159, 0.16);
+}
+
+.diff-code-gap-meta-minimal-inline .diff-ctx-gap-controls-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 
 .diff-ctx-gap-body {
   width: 100%;
@@ -1701,11 +1780,11 @@ body {
 .function-block {
   margin-top: 16px;
   margin-bottom: 0;
-  padding: 12px 0 0;
+  padding: 0;
   border: 1px solid #d0d7de;
   border-radius: 8px;
   background: #f6f8fa;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .function-block-file-hint {
@@ -1804,6 +1883,26 @@ body {
   color: #ffffff;
 }
 
+.function-block-reset-view-btn {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.function-block-reset-view-btn:hover {
+  background: #f3f4f6;
+}
+
 .function-block.hovered {
   border-color: #afb8c1;
 }
@@ -1861,6 +1960,33 @@ body {
 .file-name-header .function-block-callsite-back {
   flex-shrink: 0;
   margin-left: auto;
+}
+
+/* Rhizome method headers: same visual language as full-file diff bar, sticky in code pane. */
+.rhizome-file-sticky-header {
+  margin: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid #d8dee4;
+  background: #ffffff;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  color: #24292f;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+
+.rhizome-file-sticky-header .function-block-header-controls {
+  flex-shrink: 0;
+}
+
+.rhizome-file-sticky-header .full-file-diff-bar-path {
+  font-size: 12px;
+  font-weight: 500;
+  color: #24292f;
 }
 
 /* Enclosing class lines: same method card, continuous with the def below (no inner frame) */

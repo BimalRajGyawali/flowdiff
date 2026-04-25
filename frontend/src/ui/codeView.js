@@ -48,6 +48,25 @@ let callSiteReturnHighlightTimer = 0;
 /** Progressive reveal state for file ranges omitted from diff hunks (GitHub-style expand). */
 let ctxGapRevealByKey = new Map();
 
+function clearCtxGapRevealStateByPrefix(prefix) {
+  if (!prefix) return false;
+  let changed = false;
+  for (const key of [...ctxGapRevealByKey.keys()]) {
+    if (!key.startsWith(prefix)) continue;
+    ctxGapRevealByKey.delete(key);
+    changed = true;
+  }
+  return changed;
+}
+
+function hasCtxGapRevealStateByPrefix(prefix) {
+  if (!prefix) return false;
+  for (const key of ctxGapRevealByKey.keys()) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
 function clearCallSiteReturnHighlightTimer() {
   if (callSiteReturnHighlightTimer) {
     window.clearTimeout(callSiteReturnHighlightTimer);
@@ -451,6 +470,7 @@ const CTX_COLLAPSE_TAIL_LINES = 3;
 const CTX_GAP_INITIAL_EDGE_LINES = 3;
 const CTX_GAP_REVEAL_CHUNK_LINES = 20;
 const CTX_GAP_EXPANDER_HEIGHT_PX = 34;
+const CTX_GAP_EXPANDER_HEIGHT_MINIMAL_PX = 26;
 
 function clampToInt(n, min, max) {
   const v = Number.isFinite(Number(n)) ? Number(n) : min;
@@ -482,6 +502,13 @@ function setGapIcon(button, direction) {
   button.innerHTML = up
     ? `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 2.5 3.5 7h9L8 2.5Z"/><rect x="7.25" y="7" width="1.5" height="6.5" rx=".75" fill="currentColor"/></svg>`
     : `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><rect x="7.25" y="2.5" width="1.5" height="6.5" rx=".75" fill="currentColor"/><path fill="currentColor" d="m8 13.5 4.5-4.5h-9L8 13.5Z"/></svg>`;
+}
+
+function setGapCaretIcon(button, direction) {
+  const up = direction === 'up';
+  button.innerHTML = up
+    ? `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 3.5 3.5 8h9L8 3.5Z"/></svg>`
+    : `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path fill="currentColor" d="m8 12.5 4.5-4.5h-9L8 12.5Z"/></svg>`;
 }
 
 /**
@@ -994,8 +1021,12 @@ function renderDiffRows(
   collapseScopeKey = null,
   preserveNewLines = null,
   sourceLines = null,
-  gapRange = null
+  gapRange = null,
+  gapInitialEdgeLines = CTX_GAP_INITIAL_EDGE_LINES,
+  gapPositionOverride = null,
+  showCountLabel = true
 ) {
+  const isPureRangeContext = Array.isArray(rows) && rows.length === 0;
   const withGaps =
     Array.isArray(sourceLines) && sourceLines.length > 0
       ? injectProgressiveContextGaps(rows, sourceLines, {
@@ -1010,11 +1041,13 @@ function renderDiffRows(
       const gapEnd = Number(rowData.endLine);
       if (!Number.isFinite(gapStart) || !Number.isFinite(gapEnd) || gapEnd < gapStart) continue;
       const lineCount = gapEnd - gapStart + 1;
-      const position = rowData.position || 'middle';
+      let position = rowData.position || 'middle';
+      if (isPureRangeContext && gapPositionOverride === 'before') position = 'end';
+      if (isPureRangeContext && gapPositionOverride === 'after') position = 'start';
       const scope = collapseScopeKey || filePath || 'file';
       const stateKey = `${scope}::ctx-gap::${gapStart}-${gapEnd}`;
       const saved = ctxGapRevealByKey.get(stateKey) || {};
-      const defaultEdge = Math.min(CTX_GAP_INITIAL_EDGE_LINES, lineCount);
+      const defaultEdge = Math.min(Math.max(0, Number(gapInitialEdgeLines) || 0), lineCount);
       let head = clampToInt(saved.head ?? defaultEdge, 0, lineCount);
       let tail = clampToInt(saved.tail ?? defaultEdge, 0, lineCount);
       if (head + tail > lineCount) {
@@ -1026,9 +1059,8 @@ function renderDiffRows(
         }
       }
       const hiddenCount = Math.max(0, lineCount - head - tail);
-      const hiddenStartLine = gapStart + head;
-      const hiddenEndLine = gapEnd - tail;
-      const expanderHeightPx = CTX_GAP_EXPANDER_HEIGHT_PX;
+      const hasExpanded = head !== defaultEdge || tail !== defaultEdge;
+      const expanderHeightPx = CTX_GAP_EXPANDER_HEIGHT_MINIMAL_PX;
 
       const wrap = document.createElement('div');
       wrap.className = 'diff-ctx-gap';
@@ -1056,12 +1088,21 @@ function renderDiffRows(
 
         const expanderRow = document.createElement('div');
         expanderRow.className = 'diff-line diff-line-ctx-gap-expander';
+        expanderRow.classList.add('diff-line-ctx-gap-expander-minimal');
         expanderRow.style.minHeight = `${expanderHeightPx}px`;
         const gutterA = document.createElement('span');
         gutterA.className = 'diff-num diff-num-ctx diff-num-gap-controls';
-        const gutterAStack = document.createElement('div');
-        gutterAStack.className = 'diff-ctx-gap-gutter';
-        gutterAStack.style.minHeight = `${Math.max(20, expanderHeightPx - 4)}px`;
+        const inlineControls = document.createElement('span');
+        inlineControls.className = 'diff-ctx-gap-controls-inline';
+        const resetView = document.createElement('button');
+        resetView.type = 'button';
+        resetView.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--reset';
+        resetView.textContent = '↺';
+        resetView.title = 'Reset to original view';
+        resetView.setAttribute('aria-label', resetView.title);
+        resetView.addEventListener('click', () => {
+          persistAndRerender(defaultEdge, defaultEdge);
+        });
         const gutterB = document.createElement('span');
         gutterB.className = 'diff-num diff-num-ctx';
         gutterB.textContent = '';
@@ -1077,7 +1118,7 @@ function renderDiffRows(
           const showAbove = document.createElement('button');
           showAbove.type = 'button';
           showAbove.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
-          setGapIcon(showAbove, 'up');
+          setGapCaretIcon(showAbove, 'up');
           showAbove.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount)} above`;
           showAbove.setAttribute('aria-label', showAbove.title);
           showAbove.addEventListener('click', () => {
@@ -1090,7 +1131,7 @@ function renderDiffRows(
           const showBelow = document.createElement('button');
           showBelow.type = 'button';
           showBelow.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
-          setGapIcon(showBelow, 'down');
+          setGapCaretIcon(showBelow, 'down');
           showBelow.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount)} below`;
           showBelow.setAttribute('aria-label', showBelow.title);
           showBelow.addEventListener('click', () => {
@@ -1110,15 +1151,21 @@ function renderDiffRows(
           });
 
           // GitHub-like vertical gutter controls: down (top), all (middle), up (bottom).
-          if (canShowBelow) gutterAStack.appendChild(showBelow);
-          if (hiddenCount > CTX_GAP_REVEAL_CHUNK_LINES) gutterAStack.appendChild(showAll);
-          if (canShowAbove) gutterAStack.appendChild(showAbove);
+          const canExpandBothWays = canShowAbove && canShowBelow;
+          if (canExpandBothWays) {
+            inlineControls.appendChild(showAbove);
+            if (hiddenCount > CTX_GAP_REVEAL_CHUNK_LINES) inlineControls.appendChild(showAll);
+            inlineControls.appendChild(showBelow);
+          } else if (canShowAbove) {
+            inlineControls.appendChild(showAbove);
+          } else if (canShowBelow) {
+            inlineControls.appendChild(showBelow);
+          }
         }
-        gutterA.appendChild(gutterAStack);
-        metaCode.textContent =
-          hiddenCount > 0
-            ? `@@ lines ${hiddenStartLine}-${hiddenEndLine} (${hiddenCount} ${hiddenCount === 1 ? 'line' : 'lines'}) @@`
-            : `@@ expanded lines ${gapStart}-${gapEnd} @@`;
+        if (hasExpanded) inlineControls.appendChild(resetView);
+        meta.classList.add('diff-code-gap-meta-minimal', 'diff-code-gap-meta-minimal-inline');
+        metaCode.textContent = '';
+        gutterA.appendChild(inlineControls);
         meta.appendChild(metaCode);
         expanderRow.appendChild(gutterA);
         expanderRow.appendChild(gutterB);
@@ -1135,24 +1182,119 @@ function renderDiffRows(
       continue;
     }
     if (rowData.type === 'ctx-collapse') {
-      const wrap = document.createElement('div');
-      wrap.className = 'diff-ctx-collapse';
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'diff-ctx-collapse-btn';
-      const body = document.createElement('div');
-      body.className = 'diff-ctx-collapse-body';
-      for (const hr of rowData.hiddenRows) {
-        appendPlainDiffRow(body, hr);
+      const hiddenRows = rowData.hiddenRows || [];
+      const hiddenCount = Number(rowData.lineCount || hiddenRows.length || 0);
+      const startLine = Number(rowData.startLine || hiddenRows[0]?.newLineNumber || 0);
+      const endLine = Number(rowData.endLine || hiddenRows[hiddenRows.length - 1]?.newLineNumber || 0);
+      const scope = collapseScopeKey || filePath || 'file';
+      const stateKey = `${scope}::ctx-collapse::${startLine}-${endLine}`;
+      const saved = ctxGapRevealByKey.get(stateKey) || {};
+      let head = clampToInt(saved.head ?? 0, 0, hiddenCount);
+      let tail = clampToInt(saved.tail ?? 0, 0, hiddenCount);
+      if (head + tail > hiddenCount) {
+        if (head >= hiddenCount) {
+          head = hiddenCount;
+          tail = 0;
+        } else {
+          tail = Math.max(0, hiddenCount - head);
+        }
       }
-      const persistenceKey =
-        collapseScopeKey != null && collapseScopeKey !== ''
-          ? `${collapseScopeKey}::ctx::${rowData.startLine}-${rowData.endLine}-${rowData.lineCount}`
-          : null;
-      setupCtxCollapseToggle(btn, body, rowData, persistenceKey);
-      wrap.appendChild(btn);
-      wrap.appendChild(body);
-      container.appendChild(wrap);
+      const remain = Math.max(0, hiddenCount - head - tail);
+      const hasExpanded = head > 0 || tail > 0;
+
+      function persistAndRerender(nextHead, nextTail) {
+        ctxGapRevealByKey.set(stateKey, {
+          head: clampToInt(nextHead, 0, hiddenCount),
+          tail: clampToInt(nextTail, 0, hiddenCount)
+        });
+        const codePane = document.getElementById('code-pane');
+        if (codePane) renderCodeView(codePane);
+      }
+
+      const revealHeadRows = hiddenRows.slice(0, head);
+      const revealTailRows = hiddenRows.slice(Math.max(head, hiddenRows.length - tail));
+      for (const hr of revealHeadRows) {
+        appendPlainDiffRow(container, hr);
+      }
+
+      if (remain > 0) {
+        const expanderHeightPx = CTX_GAP_EXPANDER_HEIGHT_MINIMAL_PX;
+        const expanderRow = document.createElement('div');
+        expanderRow.className = 'diff-line diff-line-ctx-gap-expander';
+        expanderRow.classList.add('diff-line-ctx-gap-expander-minimal');
+        expanderRow.style.minHeight = `${expanderHeightPx}px`;
+        const gutterA = document.createElement('span');
+        gutterA.className = 'diff-num diff-num-ctx diff-num-gap-controls';
+        const inlineControls = document.createElement('span');
+        inlineControls.className = 'diff-ctx-gap-controls-inline';
+        const resetView = document.createElement('button');
+        resetView.type = 'button';
+        resetView.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--reset';
+        resetView.textContent = '↺';
+        resetView.title = 'Reset to original view';
+        resetView.setAttribute('aria-label', resetView.title);
+        resetView.addEventListener('click', () => {
+          persistAndRerender(0, 0);
+        });
+        const gutterB = document.createElement('span');
+        gutterB.className = 'diff-num diff-num-ctx';
+        const sign = document.createElement('span');
+        sign.className = 'diff-sign diff-sign-ctx';
+        const meta = document.createElement('pre');
+        meta.className = 'diff-code diff-code-ctx diff-code-gap-meta';
+        const metaCode = document.createElement('code');
+        metaCode.className = 'language-python';
+
+        const showAbove = document.createElement('button');
+        showAbove.type = 'button';
+        showAbove.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
+        setGapCaretIcon(showAbove, 'up');
+        showAbove.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} above`;
+        showAbove.setAttribute('aria-label', showAbove.title);
+        showAbove.addEventListener('click', () => {
+          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
+          persistAndRerender(head, tail + n);
+        });
+
+        const showBelow = document.createElement('button');
+        showBelow.type = 'button';
+        showBelow.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
+        setGapCaretIcon(showBelow, 'down');
+        showBelow.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} below`;
+        showBelow.setAttribute('aria-label', showBelow.title);
+        showBelow.addEventListener('click', () => {
+          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
+          persistAndRerender(head + n, tail);
+        });
+
+        const showAll = document.createElement('button');
+        showAll.type = 'button';
+        showAll.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--all';
+        showAll.textContent = '⋯';
+        showAll.title = `Show all ${remain} lines`;
+        showAll.setAttribute('aria-label', showAll.title);
+        showAll.addEventListener('click', () => {
+          persistAndRerender(hiddenCount, 0);
+        });
+
+        inlineControls.appendChild(showAbove);
+        if (remain > CTX_GAP_REVEAL_CHUNK_LINES) inlineControls.appendChild(showAll);
+        inlineControls.appendChild(showBelow);
+        if (hasExpanded) inlineControls.appendChild(resetView);
+        meta.classList.add('diff-code-gap-meta-minimal', 'diff-code-gap-meta-minimal-inline');
+        metaCode.textContent = '';
+        gutterA.appendChild(inlineControls);
+        meta.appendChild(metaCode);
+        expanderRow.appendChild(gutterA);
+        expanderRow.appendChild(gutterB);
+        expanderRow.appendChild(sign);
+        expanderRow.appendChild(meta);
+        container.appendChild(expanderRow);
+      }
+
+      for (const hr of revealTailRows) {
+        appendPlainDiffRow(container, hr);
+      }
       continue;
     }
     appendPlainDiffRow(container, rowData);
@@ -1888,11 +2030,25 @@ function mountEnclosingClassDefinitionInBody(
   if (!rows.length) {
     return { start: rStart, end: rEnd };
   }
+  // In rhizome method context, keep only changed rows and let progressive gaps handle unchanged spans.
+  const rowsForRender = rows.filter((r) => r.type !== 'ctx');
 
   const wrap = document.createElement('div');
   wrap.className = 'class-definition-above';
   const expandedKey = `${pathPrefix}::enclosing-class::${classMeta.id}`;
-  renderDiffRows(wrap, methodFn.file, rows, prContext, expandedKey);
+  renderDiffRows(
+    wrap,
+    methodFn.file,
+    rowsForRender,
+    prContext,
+    expandedKey,
+    null,
+    sourceLines,
+    { startLine: rStart, endLine: rEnd },
+    0,
+    null,
+    false
+  );
   container.appendChild(wrap);
   return { start: rStart, end: rEnd };
 }
@@ -1910,7 +2066,8 @@ function mountModuleContextInline(
   diffLinesByFile,
   pathPrefix,
   prContext,
-  slot
+  slot,
+  showCountLabel = true
 ) {
   if (!ranges?.length) return;
   const sourceLines = sourceLinesByFile[fn.file] || [];
@@ -1921,10 +2078,78 @@ function mountModuleContextInline(
     new Set(fileMeta.moduleExcludedLineNumbers || [])
   );
   if (!rows.length) return;
+  // For rhizome contexts, render changed rows and let gaps provide progressive expansion.
+  const rowsForRender = showCountLabel ? rows : rows.filter((r) => r.type !== 'ctx');
   const wrap = document.createElement('div');
   wrap.className = `module-context-inline module-context-inline--${slot}`;
   const expandedKey = `${pathPrefix}::${fn.file}::module-inline-${slot}::${fn.id}`;
-  renderDiffRows(wrap, fn.file, rows, prContext, expandedKey);
+  const moduleStart = Math.min(...ranges.map((r) => Number(r.start)).filter((n) => Number.isFinite(n)));
+  const moduleEnd = Math.max(...ranges.map((r) => Number(r.end)).filter((n) => Number.isFinite(n)));
+  const rangeStart =
+    slot === 'before'
+      ? moduleStart
+      : Number(fn.endLine) + 1;
+  const rangeEnd =
+    slot === 'before'
+      ? Number(fn.startLine) - 1
+      : moduleEnd;
+  renderDiffRows(
+    wrap,
+    fn.file,
+    rowsForRender,
+    prContext,
+    expandedKey,
+    null,
+    sourceLines,
+    Number.isFinite(rangeStart) && Number.isFinite(rangeEnd) && rangeStart <= rangeEnd
+      ? { startLine: rangeStart, endLine: rangeEnd }
+      : null,
+    showCountLabel ? CTX_GAP_INITIAL_EDGE_LINES : 0,
+    null,
+    showCountLabel
+  );
+  container.appendChild(wrap);
+}
+
+/**
+ * Mounts expandable file context around a function: everything above its start line
+ * and below its end line in the same file. Uses the same progressive expander rows.
+ * @param {'before' | 'after'} slot
+ */
+function mountFileContextAroundFunction(
+  container,
+  fn,
+  sourceLinesByFile,
+  pathPrefix,
+  prContext,
+  slot
+) {
+  const sourceLines = sourceLinesByFile[fn.file] || [];
+  if (!sourceLines.length) return;
+  const fileEnd = sourceLines.length;
+  const range =
+    slot === 'before'
+      ? { startLine: 1, endLine: Math.max(0, Number(fn.startLine) - 1) }
+      : { startLine: Number(fn.endLine) + 1, endLine: fileEnd };
+  if (!Number.isFinite(range.startLine) || !Number.isFinite(range.endLine)) return;
+  if (range.startLine > range.endLine) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = `function-file-context-inline function-file-context-inline--${slot}`;
+  const key = `${pathPrefix}::${fn.id}::file-context-${slot}`;
+  renderDiffRows(
+    wrap,
+    fn.file,
+    [],
+    prContext,
+    key,
+    null,
+    sourceLines,
+    range,
+    0,
+    slot,
+    false
+  );
   container.appendChild(wrap);
 }
 
@@ -1990,6 +2215,17 @@ function renderFunctionBody(
 
   mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
 
+  if (!collapsedMode) {
+    mountFileContextAroundFunction(
+      container,
+      fn,
+      sourceLinesByFile,
+      pathPrefix,
+      prContext,
+      'before'
+    );
+  }
+
   if (rangesBefore.length && fileMeta) {
     mountModuleContextInline(
       container,
@@ -2000,7 +2236,8 @@ function renderFunctionBody(
       diffLinesByFile,
       pathPrefix,
       prContext,
-      'before'
+      'before',
+      false
     );
   }
 
@@ -2037,7 +2274,8 @@ function renderFunctionBody(
         diffLinesByFile,
         pathPrefix,
         prContext,
-        'after'
+        'after',
+        false
       );
     }
     return;
@@ -2062,7 +2300,8 @@ function renderFunctionBody(
         diffLinesByFile,
         pathPrefix,
         prContext,
-        'after'
+        'after',
+        false
       );
     }
     return;
@@ -2086,7 +2325,8 @@ function renderFunctionBody(
         diffLinesByFile,
         pathPrefix,
         prContext,
-        'after'
+        'after',
+        false
       );
     }
     return;
@@ -2101,16 +2341,42 @@ function renderFunctionBody(
 
   for (const rowData of rowsToRender) {
     if (rowData.type === 'ctx-collapse') {
-      const wrap = document.createElement('div');
-      wrap.className = 'diff-ctx-collapse';
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'diff-ctx-collapse-btn';
-      const body = document.createElement('div');
-      body.className = 'diff-ctx-collapse-body';
-      for (const hr of rowData.hiddenRows) {
+      const hiddenRows = rowData.hiddenRows || [];
+      const hiddenCount = Number(rowData.lineCount || hiddenRows.length || 0);
+      const startLine = Number(rowData.startLine || hiddenRows[0]?.newLineNumber || fn.startLine);
+      const endLine = Number(
+        rowData.endLine || hiddenRows[hiddenRows.length - 1]?.newLineNumber || fn.endLine
+      );
+      const scope = `${pathPrefix}::${fn.id}`;
+      const stateKey = `${scope}::ctx-gap::${startLine}-${endLine}`;
+      const saved = ctxGapRevealByKey.get(stateKey) || {};
+      let head = clampToInt(saved.head ?? 0, 0, hiddenCount);
+      let tail = clampToInt(saved.tail ?? 0, 0, hiddenCount);
+      if (head + tail > hiddenCount) {
+        if (head >= hiddenCount) {
+          head = hiddenCount;
+          tail = 0;
+        } else {
+          tail = Math.max(0, hiddenCount - head);
+        }
+      }
+      const remain = Math.max(0, hiddenCount - head - tail);
+      const hasExpanded = head > 0 || tail > 0;
+
+      function persistAndRerender(nextHead, nextTail) {
+        ctxGapRevealByKey.set(stateKey, {
+          head: clampToInt(nextHead, 0, hiddenCount),
+          tail: clampToInt(nextTail, 0, hiddenCount)
+        });
+        const codePane = document.getElementById('code-pane');
+        if (codePane) renderCodeView(codePane);
+      }
+
+      const revealHeadRows = hiddenRows.slice(0, head);
+      const revealTailRows = hiddenRows.slice(Math.max(head, hiddenRows.length - tail));
+      for (const hr of revealHeadRows) {
         appendFunctionBodyDiffLine(
-          body,
+          container,
           hr,
           indent,
           pathPrefix,
@@ -2122,11 +2388,99 @@ function renderFunctionBody(
           canonicalKeyByFunctionId
         );
       }
-      const persistenceKey = `${pathPrefix}::${fn.id}::ctx::${rowData.startLine}-${rowData.endLine}-${rowData.lineCount}`;
-      setupCtxCollapseToggle(btn, body, rowData, persistenceKey);
-      wrap.appendChild(btn);
-      wrap.appendChild(body);
-      container.appendChild(wrap);
+
+      if (remain > 0) {
+        const hiddenStartLine = startLine + head;
+        const hiddenEndLine = endLine - tail;
+        const expanderHeightPx = CTX_GAP_EXPANDER_HEIGHT_MINIMAL_PX;
+        const expanderRow = document.createElement('div');
+        expanderRow.className = 'diff-line diff-line-ctx-gap-expander';
+        expanderRow.classList.add('diff-line-ctx-gap-expander-minimal');
+        expanderRow.style.minHeight = `${expanderHeightPx}px`;
+        const gutterA = document.createElement('span');
+        gutterA.className = 'diff-num diff-num-ctx diff-num-gap-controls';
+        const gutterB = document.createElement('span');
+        gutterB.className = 'diff-num diff-num-ctx';
+        const sign = document.createElement('span');
+        sign.className = 'diff-sign diff-sign-ctx';
+        const meta = document.createElement('pre');
+        meta.className = 'diff-code diff-code-ctx diff-code-gap-meta';
+        const metaCode = document.createElement('code');
+        metaCode.className = 'language-python';
+
+        const showAbove = document.createElement('button');
+        showAbove.type = 'button';
+        showAbove.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
+        setGapCaretIcon(showAbove, 'up');
+        showAbove.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} above`;
+        showAbove.setAttribute('aria-label', showAbove.title);
+        showAbove.addEventListener('click', () => {
+          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
+          persistAndRerender(head, tail + n);
+        });
+
+        const showBelow = document.createElement('button');
+        showBelow.type = 'button';
+        showBelow.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
+        setGapCaretIcon(showBelow, 'down');
+        showBelow.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} below`;
+        showBelow.setAttribute('aria-label', showBelow.title);
+        showBelow.addEventListener('click', () => {
+          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
+          persistAndRerender(head + n, tail);
+        });
+
+        const showAll = document.createElement('button');
+        showAll.type = 'button';
+        showAll.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--all';
+        showAll.textContent = '⋯';
+        showAll.title = `Show all ${remain} lines`;
+        showAll.setAttribute('aria-label', showAll.title);
+        showAll.addEventListener('click', () => {
+          persistAndRerender(hiddenCount, 0);
+        });
+
+        const inlineControls = document.createElement('span');
+        inlineControls.className = 'diff-ctx-gap-controls-inline';
+        const resetView = document.createElement('button');
+        resetView.type = 'button';
+        resetView.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--reset';
+        resetView.textContent = '↺';
+        resetView.title = 'Reset to original view';
+        resetView.setAttribute('aria-label', resetView.title);
+        resetView.addEventListener('click', () => {
+          persistAndRerender(0, 0);
+        });
+        inlineControls.appendChild(showAbove);
+        if (remain > CTX_GAP_REVEAL_CHUNK_LINES) inlineControls.appendChild(showAll);
+        inlineControls.appendChild(showBelow);
+        if (hasExpanded) inlineControls.appendChild(resetView);
+        // Rhizome cards: keep this control very minimal — one-line controls + compact count.
+        meta.classList.add('diff-code-gap-meta-minimal', 'diff-code-gap-meta-minimal-inline');
+        metaCode.textContent = '';
+        gutterA.appendChild(inlineControls);
+        meta.appendChild(metaCode);
+        expanderRow.appendChild(gutterA);
+        expanderRow.appendChild(gutterB);
+        expanderRow.appendChild(sign);
+        expanderRow.appendChild(meta);
+        container.appendChild(expanderRow);
+      }
+
+      for (const hr of revealTailRows) {
+        appendFunctionBodyDiffLine(
+          container,
+          hr,
+          indent,
+          pathPrefix,
+          fn,
+          payload,
+          uiState,
+          pathFunctionIds,
+          calleesForFind,
+          canonicalKeyByFunctionId
+        );
+      }
       continue;
     }
     appendFunctionBodyDiffLine(
@@ -2151,6 +2505,17 @@ function renderFunctionBody(
       fn,
       sourceLinesByFile,
       diffLinesByFile,
+      pathPrefix,
+      prContext,
+      'after'
+    );
+  }
+
+  if (!collapsedMode) {
+    mountFileContextAroundFunction(
+      container,
+      fn,
+      sourceLinesByFile,
       pathPrefix,
       prContext,
       'after'
@@ -2227,11 +2592,11 @@ function mountRhizomeFunctionBlock(
   block.dataset.changeType = changeType;
 
   const header = document.createElement('div');
-  header.className = 'function-block-head file-name-header';
+  header.className = 'function-block-head file-name-header full-file-diff-bar rhizome-file-sticky-header';
   const fileLabel = fn.file || '';
 
   header.innerHTML = `
-    <span class="file-name-header-label" title="${escapeHtml(fileLabel)}">${escapeHtml(fileLabel)}</span>
+    <span class="file-name-header-label full-file-diff-bar-path" title="${escapeHtml(fileLabel)}">${escapeHtml(fileLabel)}</span>
     <span class="function-block-header-controls"></span>
   `;
   const controls = header.querySelector('.function-block-header-controls');
@@ -2257,8 +2622,27 @@ function mountRhizomeFunctionBlock(
     setFunctionReadState(fn.id);
   });
 
+  const resetView = document.createElement('button');
+  resetView.type = 'button';
+  resetView.className = 'function-block-reset-view-btn';
+  resetView.textContent = '↺';
+  resetView.title = 'Reset surrounding view';
+  resetView.setAttribute('aria-label', resetView.title);
+  resetView.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const scopePrefix = `${treeNodeKey}::${fn.id}::`;
+    const changed = clearCtxGapRevealStateByPrefix(scopePrefix);
+    if (changed) {
+      const codePane = document.getElementById('code-pane');
+      if (codePane) renderCodeView(codePane);
+    }
+  });
+
   if (controls) {
+    const scopePrefix = `${treeNodeKey}::${fn.id}::`;
+    const canResetView = hasCtxGapRevealStateByPrefix(scopePrefix);
     controls.appendChild(toggle);
+    if (canResetView) controls.appendChild(resetView);
     controls.appendChild(done);
   }
 
@@ -2319,6 +2703,23 @@ function mountFullFileDiffPanel(
   title.textContent = filePath;
   title.title = filePath;
   bar.appendChild(title);
+
+  const scopePrefix = `full-file::${filePath}::`;
+  if (hasCtxGapRevealStateByPrefix(scopePrefix)) {
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'full-file-diff-reset-view-btn';
+    resetBtn.textContent = '↺';
+    resetBtn.title = 'Reset surrounding view';
+    resetBtn.setAttribute('aria-label', resetBtn.title);
+    resetBtn.addEventListener('click', () => {
+      const changed = clearCtxGapRevealStateByPrefix(scopePrefix);
+      if (!changed) return;
+      const codePane = document.getElementById('code-pane');
+      if (codePane) renderCodeView(codePane);
+    });
+    bar.appendChild(resetBtn);
+  }
 
   const body = document.createElement('div');
   body.className = 'full-file-diff-body';
