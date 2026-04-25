@@ -188,10 +188,10 @@ export async function fetchAndAnalyze(prUrl) {
       fetchDiff(owner, repo, number)
     ]);
     const parsed = parseDiff(diffText);
-    const pythonPaths = parsed.files
+    const changedPaths = parsed.files
       .map((file) => file.path)
-      .filter((path) => path.endsWith('.py'));
-    const uniquePaths = [...new Set(pythonPaths)];
+      .filter(Boolean);
+    const uniquePaths = [...new Set(changedPaths)];
     const fileContentEntries = await Promise.all(
       uniquePaths.map(async (path) => [path, await fetchFileContent(owner, repo, path, meta.head.sha)])
     );

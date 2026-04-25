@@ -1603,6 +1603,89 @@ body {
   background: rgba(175, 184, 193, 0.2);
 }
 
+.diff-ctx-gap {
+  width: 100%;
+  margin: 0;
+  border-top: none;
+  border-bottom: none;
+  background: transparent;
+}
+
+.diff-ctx-gap-gutter {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.diff-ctx-gap-btn {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: #57606a;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.diff-ctx-gap-btn:hover {
+  background: rgba(140, 149, 159, 0.2);
+}
+
+.diff-ctx-gap-btn svg {
+  display: block;
+}
+
+.diff-num-gap-controls {
+  background: linear-gradient(180deg, #cfe8ff 0%, #c4e2ff 100%);
+  padding: 0;
+}
+
+.diff-line-ctx-gap-expander .diff-num.diff-num-ctx {
+  background: linear-gradient(180deg, #d6ecff 0%, #cae6ff 100%);
+}
+
+.diff-line-ctx-gap-expander .diff-sign.diff-sign-ctx {
+  background: linear-gradient(180deg, #d6ecff 0%, #cae6ff 100%);
+}
+
+.diff-code-gap-meta {
+  background: linear-gradient(180deg, #eef7ff 0%, #e4f2ff 100%);
+  color: #57606a;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding-left: 10px;
+}
+
+.diff-code-gap-meta code {
+  color: inherit;
+  display: inline-block;
+}
+
+.diff-ctx-gap-body {
+  width: 100%;
+}
+
+.diff-ctx-gap-separator {
+  padding: 0 6px;
+  color: #57606a;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
 .file-content {
   margin: 0;
   font-family: ui-monospace, monospace;

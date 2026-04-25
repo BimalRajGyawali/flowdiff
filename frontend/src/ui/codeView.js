@@ -45,6 +45,8 @@ let lastRhizomeCodeViewKey = '';
  */
 let callSiteReturnHighlightSpec = null;
 let callSiteReturnHighlightTimer = 0;
+/** Progressive reveal state for file ranges omitted from diff hunks (GitHub-style expand). */
+let ctxGapRevealByKey = new Map();
 
 function clearCallSiteReturnHighlightTimer() {
   if (callSiteReturnHighlightTimer) {
@@ -446,6 +448,87 @@ const CTX_COLLAPSE_MIN_RUN = 10;
 /** Lines of context kept visible above / below a collapsed block. */
 const CTX_COLLAPSE_HEAD_LINES = 3;
 const CTX_COLLAPSE_TAIL_LINES = 3;
+const CTX_GAP_INITIAL_EDGE_LINES = 3;
+const CTX_GAP_REVEAL_CHUNK_LINES = 20;
+const CTX_GAP_EXPANDER_HEIGHT_PX = 34;
+
+function clampToInt(n, min, max) {
+  const v = Number.isFinite(Number(n)) ? Number(n) : min;
+  return Math.max(min, Math.min(max, v));
+}
+
+function rowDisplayAnchorLine(row) {
+  if (!row) return null;
+  if (row.type === 'del') {
+    const anchor = row.anchorNewLineNumber ?? row.newLineNumber;
+    return anchor != null && Number.isFinite(Number(anchor)) ? Number(anchor) : null;
+  }
+  const n = row.newLineNumber ?? row.anchorNewLineNumber;
+  return n != null && Number.isFinite(Number(n)) ? Number(n) : null;
+}
+
+function buildCtxRowFromSourceLine(sourceLines, lineNumber) {
+  return {
+    type: 'ctx',
+    oldLineNumber: '',
+    newLineNumber: lineNumber,
+    anchorNewLineNumber: lineNumber,
+    content: sourceLines[lineNumber - 1] ?? ''
+  };
+}
+
+function setGapIcon(button, direction) {
+  const up = direction === 'up';
+  button.innerHTML = up
+    ? `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 2.5 3.5 7h9L8 2.5Z"/><rect x="7.25" y="7" width="1.5" height="6.5" rx=".75" fill="currentColor"/></svg>`
+    : `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><rect x="7.25" y="2.5" width="1.5" height="6.5" rx=".75" fill="currentColor"/><path fill="currentColor" d="m8 13.5 4.5-4.5h-9L8 13.5Z"/></svg>`;
+}
+
+/**
+ * Inserts `ctx-gap` rows for source lines omitted from patch hunks so the user can reveal them progressively.
+ * @param {any[]} rows
+ * @param {string[]} sourceLines
+ * @param {{ startLine?: number, endLine?: number }} [opts]
+ * @returns {any[]}
+ */
+function injectProgressiveContextGaps(rows, sourceLines, opts = {}) {
+  if (!Array.isArray(rows) || !Array.isArray(sourceLines) || sourceLines.length === 0) return rows;
+  const startLine = clampToInt(opts.startLine ?? 1, 1, sourceLines.length);
+  const endLine = clampToInt(opts.endLine ?? sourceLines.length, startLine, sourceLines.length);
+  if (startLine > endLine) return rows;
+
+  const out = [];
+  let prevLine = startLine - 1;
+  for (const row of rows) {
+    const line = rowDisplayAnchorLine(row);
+    if (line != null && line >= startLine && line <= endLine && line > prevLine + 1) {
+      out.push({
+        type: 'ctx-gap',
+        startLine: prevLine + 1,
+        endLine: line - 1,
+        position:
+          prevLine + 1 <= startLine
+            ? 'start'
+            : line - 1 >= endLine
+              ? 'end'
+              : 'middle'
+      });
+    }
+    out.push(row);
+    if (line != null && line >= startLine && line <= endLine) {
+      prevLine = Math.max(prevLine, line);
+    }
+  }
+  if (prevLine < endLine) {
+    out.push({
+      type: 'ctx-gap',
+      startLine: prevLine + 1,
+      endLine,
+      position: prevLine + 1 <= startLine ? 'start' : 'end'
+    });
+  }
+  return out;
+}
 
 /**
  * Split long runs of context rows: show head/tail, collapse the middle behind a toggle.
@@ -909,10 +992,148 @@ function renderDiffRows(
   rows,
   prContext,
   collapseScopeKey = null,
-  preserveNewLines = null
+  preserveNewLines = null,
+  sourceLines = null,
+  gapRange = null
 ) {
-  const toRender = expandContextCollapseRows(rows, preserveNewLines);
+  const withGaps =
+    Array.isArray(sourceLines) && sourceLines.length > 0
+      ? injectProgressiveContextGaps(rows, sourceLines, {
+          startLine: gapRange?.startLine,
+          endLine: gapRange?.endLine
+        })
+      : rows;
+  const toRender = expandContextCollapseRows(withGaps, preserveNewLines);
   for (const rowData of toRender) {
+    if (rowData.type === 'ctx-gap') {
+      const gapStart = Number(rowData.startLine);
+      const gapEnd = Number(rowData.endLine);
+      if (!Number.isFinite(gapStart) || !Number.isFinite(gapEnd) || gapEnd < gapStart) continue;
+      const lineCount = gapEnd - gapStart + 1;
+      const position = rowData.position || 'middle';
+      const scope = collapseScopeKey || filePath || 'file';
+      const stateKey = `${scope}::ctx-gap::${gapStart}-${gapEnd}`;
+      const saved = ctxGapRevealByKey.get(stateKey) || {};
+      const defaultEdge = Math.min(CTX_GAP_INITIAL_EDGE_LINES, lineCount);
+      let head = clampToInt(saved.head ?? defaultEdge, 0, lineCount);
+      let tail = clampToInt(saved.tail ?? defaultEdge, 0, lineCount);
+      if (head + tail > lineCount) {
+        if (head >= lineCount) {
+          head = lineCount;
+          tail = 0;
+        } else {
+          tail = Math.max(0, lineCount - head);
+        }
+      }
+      const hiddenCount = Math.max(0, lineCount - head - tail);
+      const hiddenStartLine = gapStart + head;
+      const hiddenEndLine = gapEnd - tail;
+      const expanderHeightPx = CTX_GAP_EXPANDER_HEIGHT_PX;
+
+      const wrap = document.createElement('div');
+      wrap.className = 'diff-ctx-gap';
+      wrap.dataset.position = position;
+
+      function persistAndRerender(nextHead, nextTail) {
+        ctxGapRevealByKey.set(stateKey, {
+          head: clampToInt(nextHead, 0, lineCount),
+          tail: clampToInt(nextTail, 0, lineCount)
+        });
+        const codePane = document.getElementById('code-pane');
+        if (codePane) renderCodeView(codePane);
+      }
+
+      const body = document.createElement('div');
+      body.className = 'diff-ctx-gap-body';
+      if (head + tail >= lineCount) {
+        for (let ln = gapStart; ln <= gapEnd; ln++) {
+          appendPlainDiffRow(body, buildCtxRowFromSourceLine(sourceLines || [], ln));
+        }
+      } else {
+        for (let ln = gapStart; ln < gapStart + head; ln++) {
+          appendPlainDiffRow(body, buildCtxRowFromSourceLine(sourceLines || [], ln));
+        }
+
+        const expanderRow = document.createElement('div');
+        expanderRow.className = 'diff-line diff-line-ctx-gap-expander';
+        expanderRow.style.minHeight = `${expanderHeightPx}px`;
+        const gutterA = document.createElement('span');
+        gutterA.className = 'diff-num diff-num-ctx diff-num-gap-controls';
+        const gutterAStack = document.createElement('div');
+        gutterAStack.className = 'diff-ctx-gap-gutter';
+        gutterAStack.style.minHeight = `${Math.max(20, expanderHeightPx - 4)}px`;
+        const gutterB = document.createElement('span');
+        gutterB.className = 'diff-num diff-num-ctx';
+        gutterB.textContent = '';
+        const sign = document.createElement('span');
+        sign.className = 'diff-sign diff-sign-ctx';
+        sign.textContent = '';
+        const meta = document.createElement('pre');
+        meta.className = 'diff-code diff-code-ctx diff-code-gap-meta';
+        const metaCode = document.createElement('code');
+        metaCode.className = 'language-python';
+
+        if (hiddenCount > 0) {
+          const showAbove = document.createElement('button');
+          showAbove.type = 'button';
+          showAbove.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
+          setGapIcon(showAbove, 'up');
+          showAbove.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount)} above`;
+          showAbove.setAttribute('aria-label', showAbove.title);
+          showAbove.addEventListener('click', () => {
+            const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount);
+            // "Above" should reveal from the bottom boundary upward.
+            persistAndRerender(head, tail + n);
+          });
+          const canShowAbove = position === 'middle' || position === 'end';
+
+          const showBelow = document.createElement('button');
+          showBelow.type = 'button';
+          showBelow.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
+          setGapIcon(showBelow, 'down');
+          showBelow.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount)} below`;
+          showBelow.setAttribute('aria-label', showBelow.title);
+          showBelow.addEventListener('click', () => {
+            const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount);
+            // "Below" should reveal from the top boundary downward.
+            persistAndRerender(head + n, tail);
+          });
+          const canShowBelow = position === 'middle' || position === 'start';
+          const showAll = document.createElement('button');
+          showAll.type = 'button';
+          showAll.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--all';
+          showAll.textContent = '⋯';
+          showAll.title = `Show all ${hiddenCount} lines`;
+          showAll.setAttribute('aria-label', showAll.title);
+          showAll.addEventListener('click', () => {
+            persistAndRerender(lineCount, 0);
+          });
+
+          // GitHub-like vertical gutter controls: down (top), all (middle), up (bottom).
+          if (canShowBelow) gutterAStack.appendChild(showBelow);
+          if (hiddenCount > CTX_GAP_REVEAL_CHUNK_LINES) gutterAStack.appendChild(showAll);
+          if (canShowAbove) gutterAStack.appendChild(showAbove);
+        }
+        gutterA.appendChild(gutterAStack);
+        metaCode.textContent =
+          hiddenCount > 0
+            ? `@@ lines ${hiddenStartLine}-${hiddenEndLine} (${hiddenCount} ${hiddenCount === 1 ? 'line' : 'lines'}) @@`
+            : `@@ expanded lines ${gapStart}-${gapEnd} @@`;
+        meta.appendChild(metaCode);
+        expanderRow.appendChild(gutterA);
+        expanderRow.appendChild(gutterB);
+        expanderRow.appendChild(sign);
+        expanderRow.appendChild(meta);
+        body.appendChild(expanderRow);
+
+        for (let ln = gapEnd - tail + 1; ln <= gapEnd; ln++) {
+          appendPlainDiffRow(body, buildCtxRowFromSourceLine(sourceLines || [], ln));
+        }
+      }
+      wrap.appendChild(body);
+      container.appendChild(wrap);
+      continue;
+    }
     if (rowData.type === 'ctx-collapse') {
       const wrap = document.createElement('div');
       wrap.className = 'diff-ctx-collapse';
@@ -2104,7 +2325,16 @@ function mountFullFileDiffPanel(
   const sourceLines = sourceLinesByFile[filePath] || [];
   let rows = diffLinesByFile[filePath] || [];
   rows = includeChangedFunctionDefinitions(filePath, rows, flowPayload.functionsById, sourceLines);
-  renderDiffRows(body, filePath, rows, prContext, `full-file::${filePath}`);
+  renderDiffRows(
+    body,
+    filePath,
+    rows,
+    prContext,
+    `full-file::${filePath}`,
+    null,
+    sourceLines,
+    { startLine: 1, endLine: sourceLines.length }
+  );
 
   wrap.appendChild(bar);
   wrap.appendChild(body);
@@ -2190,6 +2420,7 @@ export function renderCodeView(container) {
     lastScrolledToActiveKey = null;
     codePaneScrollTop = 0;
     codePaneScrollLeft = 0;
+    ctxGapRevealByKey = new Map();
   }
 
   const calleesByCaller = new Map();
