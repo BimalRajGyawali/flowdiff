@@ -9,13 +9,30 @@ import {
   restoreCallSiteReturnTreeNode,
   setSelectedFlow,
   setSelectedStandaloneClass,
-  toggleFlowTreeSectionCollapsed
+  toggleExpandedTreeNode
 } from '../state/store.js';
 import { getFunctionDisplayName } from '../parser/functionDisplayName.js';
 
 // Tracks the first tree-node key where each function ID appears in the current flow tree.
 /** @type {Map<string, string>} */
 const firstTreeNodeKeyByFunctionId = new Map();
+const FLOW_TREE_BASE_INDENT_PX = 6;
+const FLOW_TREE_STEP_INDENT_PX = 6;
+const FLOW_TREE_DEEP_STEP_INDENT_PX = 1;
+const FLOW_TREE_COMPACT_DEPTH_THRESHOLD = 2;
+
+/**
+ * Compressed indent scale: normal spacing for early levels, tighter spacing for deeper levels.
+ * Keeps call graphs readable without pushing nodes too far right.
+ * @param {number} depth
+ * @returns {number}
+ */
+function flowTreeIndentPx(depth) {
+  const d = Math.max(0, Number(depth) || 0);
+  const shallow = Math.min(d, FLOW_TREE_COMPACT_DEPTH_THRESHOLD);
+  const deep = Math.max(0, d - FLOW_TREE_COMPACT_DEPTH_THRESHOLD);
+  return FLOW_TREE_BASE_INDENT_PX + shallow * FLOW_TREE_STEP_INDENT_PX + deep * FLOW_TREE_DEEP_STEP_INDENT_PX;
+}
 
 /** @param {string | null | undefined} treeNodeKey */
 function parentTreeNodeKey(treeNodeKey) {
@@ -358,48 +375,24 @@ export function renderFlowTree(container) {
     tree.className = 'flow-tree';
     const pathFromRoot = new Set([root.id]);
     const pathKeysById = new Map([[root.id, rootKey]]);
-    renderNode(tree, flowPayload, root, false, rootKey, pathFromRoot, pathKeysById, flow.id, flow.rootId, true, 0);
+    renderNode(tree, flowPayload, root, false, rootKey, pathFromRoot, pathKeysById, flow.id, flow.rootId, false, 0);
 
     const flowSelectKey = `flow:${flow.id}`;
     const rhizomeHeaderActive = uiState.activeTreeNodeKey === flowSelectKey;
-    const sectionCollapsed = uiState.flowTreeSectionCollapsedIds?.has(flow.id);
     const header = document.createElement('div');
     header.className =
       'flow-tree-flow-header' + (rhizomeHeaderActive ? ' flow-tree-flow-header--active' : '');
-    if (hasExpandableFlowTree) {
-      const caret = document.createElement('button');
-      caret.type = 'button';
-      caret.className = 'flow-tree-flow-section-caret' + (sectionCollapsed ? ' is-collapsed' : '');
-      caret.setAttribute('aria-expanded', sectionCollapsed ? 'false' : 'true');
-      caret.setAttribute('aria-label', sectionCollapsed ? 'Expand tree' : 'Collapse tree');
-      caret.textContent = sectionCollapsed ? '▸' : '▾';
-      caret.title = 'Collapse or expand';
-      caret.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleFlowTreeSectionCollapsed(flow.id);
-      });
-      header.appendChild(caret);
-    } else {
-      const spacer = document.createElement('span');
-      spacer.className = 'flow-tree-flow-section-caret-spacer';
-      spacer.setAttribute('aria-hidden', 'true');
-      header.appendChild(spacer);
-    }
+    const spacer = document.createElement('span');
+    spacer.className = 'flow-tree-flow-section-caret-spacer';
+    spacer.setAttribute('aria-hidden', 'true');
+    header.appendChild(spacer);
     const stats = document.createElement('div');
     stats.className = 'flow-tree-flow-diffstats';
     stats.innerHTML = `<span class="flow-tree-flow-diffstats-add">+${diffStats.added}</span><span class="flow-tree-flow-diffstats-del">-${diffStats.deleted}</span>`;
     header.appendChild(stats);
     section.appendChild(header);
 
-    if (hasExpandableFlowTree) {
-      const bodyWrap = document.createElement('div');
-      bodyWrap.className = 'flow-tree-flow-body';
-      bodyWrap.hidden = sectionCollapsed;
-      bodyWrap.appendChild(tree);
-      section.appendChild(bodyWrap);
-    } else {
-      section.appendChild(tree);
-    }
+    section.appendChild(tree);
     wrapper.appendChild(section);
 
     if (idx < flowPayload.flows.length - 1) {
@@ -491,12 +484,12 @@ function renderNode(
 
   const item = document.createElement('div');
   item.className = 'flow-tree-item' + (isLast ? ' flow-tree-item-last' : '');
-  item.style.setProperty('--tree-indent', `${16 + callDepth * 18}px`);
+  item.style.setProperty('--tree-indent', `${flowTreeIndentPx(callDepth)}px`);
 
   const isInView = uiState.inViewTreeNodeKey === treeNodeKey;
   const isCallHover = uiState.hoveredTreeNodeKey === treeNodeKey;
   const isRead = uiState.readFunctionIds?.has?.(fn.id);
-  const isMultiFlow = uiState.multiFlowFunctionIds?.has?.(fn.id);
+  const isFunctionMatchActive = uiState.activeFunctionId === fn.id && !isActive;
   const hasChildren = children.length > 0;
   const parentOfActive = parentTreeNodeKey(uiState.activeTreeNodeKey);
   const callerHighlightKey = uiState.callSiteCallerTreeNodeKey ?? parentOfActive;
@@ -506,18 +499,29 @@ function renderNode(
     'flow-tree-node' +
     (isCallerOfActive ? ' flow-tree-node-caller-of-active' : '') +
     (isActive ? ' active' : '') +
+    (isFunctionMatchActive ? ' function-match-active' : '') +
     (isInView ? ' in-view' : '') +
     (isCallHover ? ' call-hover-target' : '') +
     (isRead ? ' read' : '');
   const leadingIcon = flowTreeCallMarkerHtml(fn, callDepth, incomingRelation);
   const changeHint = leadingIcon ? '' : flowTreeChangeHintHtml(fn);
-  const sharedHint = isMultiFlow
-    ? `<span class="flow-tree-shared-hint" title="Also appears in other flows (collapsed in code view)">↗</span>`
-    : '';
   const labelHtml = flowTreeLabelHtml(fn, payload);
   row.classList.add(callDepth === 0 ? 'flow-tree-node-root' : 'flow-tree-node-child');
-  row.style.paddingLeft = `${16 + callDepth * 18}px`;
-  row.innerHTML = `<span class="flow-tree-icon">${leadingIcon}${changeHint}</span><span class="flow-tree-label">${labelHtml}${sharedHint}</span>`;
+  row.style.paddingLeft = `${flowTreeIndentPx(callDepth)}px`;
+  row.innerHTML = `<span class="flow-tree-icon">${leadingIcon}${changeHint}</span><span class="flow-tree-label">${labelHtml}</span>`;
+  if (!forceExpanded && hasChildren) {
+    const caret = document.createElement('button');
+    caret.type = 'button';
+    caret.className = 'flow-tree-node-caret';
+    caret.textContent = expanded ? '⌄' : '›';
+    caret.title = expanded ? 'Collapse subtree' : 'Expand subtree';
+    caret.setAttribute('aria-label', caret.title);
+    caret.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleExpandedTreeNode(treeNodeKey);
+    });
+    row.prepend(caret);
+  }
   row.dataset.functionId = fn.id;
   row.dataset.treeNodeKey = treeNodeKey;
 
@@ -533,11 +537,6 @@ function renderNode(
     setActiveFunction(fn.id, treeNodeKey);
   });
 
-  // Clicking the icon toggles expansion independently.
-  const iconEl = row.querySelector('.flow-tree-icon');
-  if (!forceExpanded && iconEl && hasChildren) {
-    iconEl.style.cursor = 'pointer';
-  }
   item.appendChild(row);
 
   if (hasChildren && expanded) {
@@ -569,16 +568,19 @@ function renderNode(
         const recInView = uiState.inViewTreeNodeKey === originalKey;
         const recCallHover = uiState.hoveredTreeNodeKey === originalKey;
         const recIsRead = uiState.readFunctionIds?.has?.(child.id);
+        const recIsActive = uiState.activeTreeNodeKey === originalKey;
+        const recFunctionMatchActive = uiState.activeFunctionId === child.id && !recIsActive;
         recRow.className =
           'flow-tree-node flow-tree-node-recursive' +
-          (uiState.activeTreeNodeKey === originalKey ? ' active' : '') +
+          (recIsActive ? ' active' : '') +
+          (recFunctionMatchActive ? ' function-match-active' : '') +
           (recInView ? ' in-view' : '') +
           (recCallHover ? ' call-hover-target' : '') +
           (recIsRead ? ' read' : '');
         recRow.classList.add('flow-tree-node-child');
         const recDepth = callDepth + (rel === 'call' ? 1 : 0);
-        recItem.style.setProperty('--tree-indent', `${16 + recDepth * 18}px`);
-        recRow.style.paddingLeft = `${16 + recDepth * 18}px`;
+        recItem.style.setProperty('--tree-indent', `${flowTreeIndentPx(recDepth)}px`);
+        recRow.style.paddingLeft = `${flowTreeIndentPx(recDepth)}px`;
         const recIcon = flowTreeCallMarkerHtml(child, recDepth, rel);
         const recChangeHint = recIcon ? '' : flowTreeChangeHintHtml(child);
         recRow.innerHTML = `<span class="flow-tree-icon">${recIcon}${recChangeHint}</span><span class="flow-tree-label">${flowTreeLabelHtml(child, payload)}</span>`;

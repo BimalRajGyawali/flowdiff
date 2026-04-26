@@ -173,8 +173,8 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
   }
 
   // Two-stage rhizome grouping:
-  // 1) call-connected components (primary)
-  // 2) class-membership components only for methods not in any call relation
+  // 1) call rhizomes rooted by forward-call entry points (shared descendants allowed)
+  // 2) class-membership rhizomes only for methods with no call participation
   const edgeKeys = new Set(edges.map((e) => `${e.callerId}->${e.calleeId}`));
   const outgoingByCaller = new Map();
   for (const e of edges) {
@@ -193,52 +193,73 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
     .filter(([, fn]) => fn && fn.changeType !== 'deleted' && fn.kind !== 'class' && !isTestFunction(fn))
     .map(([id]) => id);
   const eligibleSet = new Set(eligibleIds);
-  const undirectedCall = new Map();
-  function link(a, b) {
-    if (!eligibleSet.has(a) || !eligibleSet.has(b)) return;
-    if (!undirectedCall.has(a)) undirectedCall.set(a, new Set());
-    if (!undirectedCall.has(b)) undirectedCall.set(b, new Set());
-    undirectedCall.get(a).add(b);
-    undirectedCall.get(b).add(a);
+  function compareFnIds(a, b) {
+    const fa = functionsById[a];
+    const fb = functionsById[b];
+    if ((fa?.file || '') !== (fb?.file || '')) {
+      return String(fa?.file || '').localeCompare(String(fb?.file || ''));
+    }
+    if ((fa?.startLine || 0) !== (fb?.startLine || 0)) {
+      return (fa?.startLine || 0) - (fb?.startLine || 0);
+    }
+    if ((fa?.name || '') !== (fb?.name || '')) {
+      return String(fa?.name || '').localeCompare(String(fb?.name || ''));
+    }
+    return String(a).localeCompare(String(b));
   }
+  const callAdjacency = new Map();
   const callParticipants = new Set();
+  const callInDegree = new Map();
   for (const e of edges) {
     if (e.relationType !== 'call') continue;
-    link(e.callerId, e.calleeId);
+    if (!eligibleSet.has(e.callerId) || !eligibleSet.has(e.calleeId)) continue;
+    const outs = callAdjacency.get(e.callerId) || new Set();
+    outs.add(e.calleeId);
+    callAdjacency.set(e.callerId, outs);
     if (eligibleSet.has(e.callerId)) callParticipants.add(e.callerId);
     if (eligibleSet.has(e.calleeId)) callParticipants.add(e.calleeId);
+    callInDegree.set(e.calleeId, (callInDegree.get(e.calleeId) || 0) + 1);
+    if (!callInDegree.has(e.callerId)) callInDegree.set(e.callerId, callInDegree.get(e.callerId) || 0);
   }
-
-  const callComponents = [];
-  const seen = new Set();
-  for (const id of callParticipants) {
-    if (seen.has(id)) continue;
-    const comp = new Set([id]);
-    seen.add(id);
-    const stack = [id];
+  function callReachableFrom(rootId) {
+    const reached = new Set([rootId]);
+    const stack = [rootId];
     while (stack.length) {
       const cur = stack.pop();
-      const neigh = undirectedCall.get(cur) || new Set();
-      for (const nxt of neigh) {
-        if (seen.has(nxt)) continue;
-        seen.add(nxt);
-        comp.add(nxt);
+      const outs = callAdjacency.get(cur) || new Set();
+      for (const nxt of outs) {
+        if (reached.has(nxt)) continue;
+        reached.add(nxt);
         stack.push(nxt);
       }
     }
-    callComponents.push(comp);
+    return reached;
   }
-
-  const assigned = new Set();
-  for (const comp of callComponents) {
-    for (const id of comp) assigned.add(id);
+  const sortedCallParticipants = [...callParticipants].sort(compareFnIds);
+  const callRoots = sortedCallParticipants
+    .filter((id) => (callInDegree.get(id) || 0) === 0)
+    .sort(compareFnIds);
+  /** @type {{ rootId: string, members: Set<string> }[]} */
+  const callRhizomes = [];
+  const coveredByAnyCallRhizome = new Set();
+  for (const rootId of callRoots) {
+    const members = callReachableFrom(rootId);
+    callRhizomes.push({ rootId, members });
+    for (const id of members) coveredByAnyCallRhizome.add(id);
+  }
+  // Cycles can have no in-degree-zero root. Seed one deterministic call rhizome per remaining cycle.
+  for (const id of sortedCallParticipants) {
+    if (coveredByAnyCallRhizome.has(id)) continue;
+    const members = callReachableFrom(id);
+    callRhizomes.push({ rootId: id, members });
+    for (const mid of members) coveredByAnyCallRhizome.add(mid);
   }
 
   // Secondary grouping by class-membership, only for methods with no call relations.
   const classBuckets = new Map(); // `${file}::${className}` -> [{id, fn}]
   for (const [id, fn] of Object.entries(functionsById)) {
     if (!eligibleSet.has(id)) continue;
-    if (assigned.has(id)) continue;
+    if (callParticipants.has(id)) continue;
     if (fn?.kind !== 'method' || !fn?.className) continue;
     const k = `${fn.file}::${fn.className}`;
     const list = classBuckets.get(k) || [];
@@ -267,79 +288,29 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
         relationType: 'class'
       });
     }
-    for (const id of comp) assigned.add(id);
   }
 
-  const singletonComponents = [];
+  const classAssigned = new Set();
+  for (const comp of classOnlyComponents) {
+    for (const id of comp) classAssigned.add(id);
+  }
+  const singletonRhizomes = [];
   for (const id of eligibleIds) {
-    if (assigned.has(id)) continue;
-    singletonComponents.push(new Set([id]));
-    assigned.add(id);
-  }
-  const components = [...callComponents, ...classOnlyComponents, ...singletonComponents];
-
-  const adjacency = new Map(); // callerId -> calleeIds[]
-  for (const e of edges) {
-    const list = adjacency.get(e.callerId) || [];
-    list.push(e.calleeId);
-    adjacency.set(e.callerId, list);
-  }
-  function reachableFrom(rootId, members) {
-    const reached = new Set([rootId]);
-    const stack = [rootId];
-    while (stack.length) {
-      const cur = stack.pop();
-      const outs = adjacency.get(cur) || [];
-      for (const nxt of outs) {
-        if (!members.has(nxt) || reached.has(nxt)) continue;
-        reached.add(nxt);
-        stack.push(nxt);
-      }
-    }
-    return reached;
+    if (callParticipants.has(id) || classAssigned.has(id)) continue;
+    singletonRhizomes.push({ rootId: id, members: new Set([id]) });
   }
 
-  const flows = components
-    .map((members) => {
-      const memberList = [...members];
-      const inDegree = new Map(memberList.map((id) => [id, 0]));
-      for (const e of edges) {
-        if (members.has(e.callerId) && members.has(e.calleeId)) {
-          inDegree.set(e.calleeId, (inDegree.get(e.calleeId) || 0) + 1);
-        }
-      }
-      const roots = memberList.filter((id) => (inDegree.get(id) || 0) === 0);
-      const candidateIds = roots.length ? roots : memberList;
-      candidateIds.sort((a, b) => {
-        const fa = functionsById[a];
-        const fb = functionsById[b];
-        if ((fa?.file || '') !== (fb?.file || '')) return String(fa?.file || '').localeCompare(String(fb?.file || ''));
-        if ((fa?.startLine || 0) !== (fb?.startLine || 0)) return (fa?.startLine || 0) - (fb?.startLine || 0);
-        return String(fa?.name || '').localeCompare(String(fb?.name || ''));
-      });
-      const rootId = candidateIds[0];
-
-      // Ensure every member is reachable from root in directed traversal used by UI.
-      const reached = reachableFrom(rootId, members);
-      for (const id of memberList) {
-        if (id === rootId || reached.has(id)) continue;
-        const k = `${rootId}->${id}`;
-        if (edgeKeys.has(k)) continue;
-        edgeKeys.add(k);
-        edges.push({
-          callerId: rootId,
-          calleeId: id,
-          callIndex: nextCallIndex(rootId),
-          relationType: 'class'
-        });
-      }
-
+  const flows = [...callRhizomes, ...classOnlyComponents.map((members) => {
+    const memberList = [...members].sort(compareFnIds);
+    return { rootId: memberList[0], members };
+  }), ...singletonRhizomes]
+    .map(({ rootId, members }) => {
       const root = functionsById[rootId];
       return {
         id: rootId,
         rootId,
         name: root ? getFunctionDisplayName(root) : rootId.split(':').pop(),
-        _size: memberList.length
+        _size: members.size
       };
     })
     .sort((a, b) => {

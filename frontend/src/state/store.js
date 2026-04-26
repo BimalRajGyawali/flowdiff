@@ -43,6 +43,24 @@ const flowTreeExpansionByFlowId = new Map();
 /** @type {(() => void)[]} */
 const subscribers = [];
 
+/**
+ * Expansion keys for one flow only (root + descendants).
+ * @param {string | null | undefined} flowId
+ * @param {Set<string>} keySet
+ * @returns {Set<string>}
+ */
+function flowScopedTreeKeys(flowId, keySet) {
+  const flow = flowPayload.flows?.find((f) => f.id === flowId);
+  const rootId = flow?.rootId;
+  if (!rootId) return new Set();
+  const rootKey = `root:${rootId}`;
+  const scoped = new Set();
+  for (const key of keySet || []) {
+    if (key === rootKey || key.startsWith(`${rootKey}/`)) scoped.add(key);
+  }
+  return scoped;
+}
+
 export function getState() {
   return { flowPayload, uiState, prContext };
 }
@@ -57,26 +75,29 @@ export function setFlowPayload(payload) {
   const firstFlow = payload.flows[0];
   const rootKey = firstFlow?.rootId ? `root:${firstFlow.rootId}` : null;
 
-  // Expand full tree by default for the initially selected flow.
-  let initialTree = new Set();
-  if (firstFlow?.rootId) {
-    const rootId = firstFlow.rootId;
-    const keysToExpand = new Set([`root:${rootId}`]);
+  // Expand full tree by default for all rhizomes on first render.
+  const initialTree = new Set();
+  function collectExpandedTreeKeys(rootId) {
+    if (!rootId) return;
+    const rootKey = `root:${rootId}`;
+    initialTree.add(rootKey);
     function visit(fnId, pathFromRoot, treeNodeKey) {
       const pathIncludingThis = new Set(pathFromRoot);
       pathIncludingThis.add(fnId);
       const childEdges = payload.edges
         .filter((e) => e.callerId === fnId)
         .sort((a, b) => a.callIndex - b.callIndex);
-      if (childEdges.length > 0) keysToExpand.add(treeNodeKey);
+      if (childEdges.length > 0) initialTree.add(treeNodeKey);
       for (const e of childEdges) {
         if (pathIncludingThis.has(e.calleeId)) continue;
         const childKey = `${treeNodeKey}/e:${e.callerId}:${e.callIndex}:${e.calleeId}`;
         visit(e.calleeId, pathIncludingThis, childKey);
       }
     }
-    visit(rootId, new Set(), `root:${rootId}`);
-    initialTree = keysToExpand;
+    visit(rootId, new Set(), rootKey);
+  }
+  for (const flow of payload.flows || []) {
+    collectExpandedTreeKeys(flow.rootId);
   }
 
   // Track functions that participate in more than one flow (used for shared-function hinting).
@@ -123,11 +144,7 @@ export function setFlowPayload(payload) {
     readFunctionIds: new Set(),
     completedFlowIds: new Set(),
     callSiteReturnConsumedKeys: new Set(),
-    // Code view: collapse bodies for functions that participate in more than one flow, except
-    // the initially selected flow’s root (still visible as the entrypoint).
-    collapsedFunctionIds: new Set(
-      [...multiFlowIds].filter((id) => id !== firstFlow?.rootId)
-    ),
+    collapsedFunctionIds: new Set(),
     multiFlowFunctionIds: new Set(multiFlowIds),
   };
   flowTreeExpansionByFlowId.clear();
@@ -142,9 +159,11 @@ export function setFlowPayload(payload) {
 export function setSelectedFlow(flowId, rootId, opts = {}) {
   // Persist current flow tree expansion state for the previously selected flow.
   if (uiState.selectedFlowId) {
+    const prevExpandedTreeNodeIds = flowScopedTreeKeys(uiState.selectedFlowId, uiState.expandedTreeNodeIds);
+    const prevFlowTreeExpandedIds = flowScopedTreeKeys(uiState.selectedFlowId, uiState.flowTreeExpandedIds);
     flowTreeExpansionByFlowId.set(uiState.selectedFlowId, {
-      expandedTreeNodeIds: new Set(uiState.expandedTreeNodeIds),
-      flowTreeExpandedIds: new Set(uiState.flowTreeExpandedIds),
+      expandedTreeNodeIds: prevExpandedTreeNodeIds,
+      flowTreeExpandedIds: prevFlowTreeExpandedIds,
       sectionCollapsed: uiState.flowTreeSectionCollapsedIds.has(uiState.selectedFlowId)
     });
   }
@@ -157,25 +176,20 @@ export function setSelectedFlow(flowId, rootId, opts = {}) {
   // Restore previous tree expansion for this flow if available; otherwise start at root only.
   const cached = flowTreeExpansionByFlowId.get(flowId);
   if (cached) {
-    uiState.expandedTreeNodeIds = new Set(cached.expandedTreeNodeIds);
-    uiState.flowTreeExpandedIds = new Set(cached.flowTreeExpandedIds);
+    // Keep expansion state for other rhizomes intact; merge this rhizome's cached state.
+    for (const key of flowScopedTreeKeys(flowId, cached.expandedTreeNodeIds)) uiState.expandedTreeNodeIds.add(key);
+    for (const key of flowScopedTreeKeys(flowId, cached.flowTreeExpandedIds)) uiState.flowTreeExpandedIds.add(key);
     if (cached.sectionCollapsed) uiState.flowTreeSectionCollapsedIds.add(flowId);
     else uiState.flowTreeSectionCollapsedIds.delete(flowId);
   } else {
-    // No cached state for this flow yet: expand its full tree by default.
+    // No cached state for this flow yet: expand this rhizome's tree by default.
     const fullTree = getFlowTreeKeysAtDepth(Infinity);
-    uiState.flowTreeExpandedIds = new Set(fullTree);
-    uiState.expandedTreeNodeIds = new Set(fullTree);
-    // First visit to this flow: collapse shared (multi-flow) functions in code view except root.
-    const flowFnIds = collectFunctionIdsInFlow(flowId, flowPayload);
-    const mf = uiState.multiFlowFunctionIds ?? new Set();
-    for (const id of mf) {
-      if (flowFnIds.has(id) && id !== rootId) uiState.collapsedFunctionIds.add(id);
+    for (const key of fullTree) {
+      uiState.flowTreeExpandedIds.add(key);
+      uiState.expandedTreeNodeIds.add(key);
     }
     uiState.flowTreeSectionCollapsedIds.delete(flowId);
   }
-
-  if (rootId) uiState.collapsedFunctionIds.delete(rootId);
 
   uiState.activeFunctionId = null;
   uiState.activeTreeNodeKey =

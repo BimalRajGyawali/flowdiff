@@ -2027,6 +2027,16 @@ function appendFunctionBodyDiffLine(
     });
   });
 
+  // Hovering a function/class definition line should also spotlight its node in the rhizome tree.
+  if (isSig && pathPrefix) {
+    row.addEventListener('mouseenter', () => {
+      setHoveredTreeNodeKey(pathPrefix);
+    });
+    row.addEventListener('mouseleave', () => {
+      setHoveredTreeNodeKey(null);
+    });
+  }
+
   container.appendChild(row);
 }
 
@@ -2694,9 +2704,12 @@ function mountRhizomeFunctionBlock(
   collapsedMode
 ) {
   const changeType = fn.changeType || 'modified';
+  const isExactActive = uiState.activeTreeNodeKey === treeNodeKey;
+  const isFunctionMatchActive = uiState.activeFunctionId === fn.id && !isExactActive;
   block.className =
     'function-block' +
-    (uiState.activeTreeNodeKey === treeNodeKey ? ' active' : '') +
+    (isExactActive ? ' active' : '') +
+    (isFunctionMatchActive ? ' function-match-active' : '') +
     (uiState.readFunctionIds?.has(fn.id) ? ' read' : '') +
     (uiState.hoveredTreeNodeKey === treeNodeKey ? ' hovered' : '') +
     (collapsedMode ? ' collapsed' : '');
@@ -3144,11 +3157,12 @@ export function renderCodeView(container) {
     });
     for (const filePath of files) {
       if (filterText && !filePath.toLowerCase().includes(filterText)) continue;
-      const navItem = document.createElement('button');
-      navItem.type = 'button';
       const inRhizome = rhizomeFilePaths.has(normalizeNavFilePath(filePath));
+      const navItem = document.createElement(inRhizome ? 'div' : 'button');
+      if (!inRhizome) navItem.type = 'button';
       navItem.className =
         'code-files-nav-item' +
+        (inRhizome ? ' code-files-nav-item--rhizome-readonly' : '') +
         (!inRhizome && hasOutsideRhizome ? ' code-files-nav-item--outside-rhizome' : '');
       const showingOutside = Boolean(navOutsideDiffPath);
       const isShownFileRow =
@@ -3161,23 +3175,9 @@ export function renderCodeView(container) {
         activeFile &&
         normalizeNavFilePath(activeFile) === normalizeNavFilePath(filePath);
       if (isShownFileRow || isRhizomeContextRow) navItem.classList.add('active');
-      if (
-        inRhizome &&
-        navActiveMethodFile &&
-        normalizeNavFilePath(navActiveMethodFile) === normalizeNavFilePath(filePath) &&
-        showingOutside &&
-        normalizeNavFilePath(navOutsideDiffPath) !== normalizeNavFilePath(filePath)
-      ) {
-        navItem.classList.add('code-files-nav-item--rhizome-indicator');
-      }
       navItem.style.paddingLeft = `${depth * 14 + 30}px`;
       navItem.title = inRhizome
-        ? showingOutside &&
-          navActiveMethodFile &&
-          normalizeNavFilePath(navActiveMethodFile) === normalizeNavFilePath(filePath) &&
-          normalizeNavFilePath(navOutsideDiffPath) !== normalizeNavFilePath(filePath)
-          ? `${filePath} — selected function is in this file (showing another file)`
-          : `${filePath} — in this rhizome`
+        ? `${filePath} — in this rhizome (view via rhizome tree)`
         : `${filePath} — full file diff (not in this outline)`;
       navItem.innerHTML = `
         <span class="code-files-nav-file-icon" aria-hidden="true">
@@ -3185,7 +3185,7 @@ export function renderCodeView(container) {
         </span>
         <span class="code-files-nav-name">${escapeHtml(toBaseName(filePath))}</span>
       `;
-      navItem.addEventListener('click', () => scrollToFile(filePath));
+      if (!inRhizome) navItem.addEventListener('click', () => scrollToFile(filePath));
       parentEl.appendChild(navItem);
     }
   }

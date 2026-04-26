@@ -274,6 +274,7 @@ body {
   background: #f6f8fa;
   padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  font-size: 13px;
 }
 
 .code-files-nav-title {
@@ -412,7 +413,7 @@ body {
   height: 34px;
   border-radius: 6px;
   color: #24292f;
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 400;
   cursor: pointer;
   list-style: none;
@@ -472,10 +473,11 @@ body {
   background: transparent;
   height: 34px;
   padding: 0 8px;
-  font-size: 15px;
+  font-size: 13px;
   color: #24292f;
   cursor: pointer;
   text-align: left;
+  position: relative;
 }
 
 .code-files-nav-item:hover {
@@ -486,17 +488,48 @@ body {
 .code-files-nav-item.active {
   background: #eaeef2;
   color: #24292f;
-  font-weight: 600;
+  font-weight: 400;
+}
+
+.code-files-nav-item--rhizome-readonly {
+  cursor: default;
+}
+
+.code-files-nav-item--rhizome-readonly:not(.active) {
+  color: #6e7781;
+}
+
+.code-files-nav-item--rhizome-readonly:hover:not(.active) {
+  background: transparent;
+}
+
+.code-files-nav-item--rhizome-readonly::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 2px;
+  background: rgba(9, 105, 218, 0.22);
+}
+
+.code-files-nav-item--rhizome-readonly .code-files-nav-file-icon {
+  color: #8c959f;
 }
 
 /* Rhizome paths sort first; paths outside the outline stay visually quieter */
 .code-files-nav-item--outside-rhizome .code-files-nav-name {
-  color: #6e7781;
+  color: #24292f;
   font-weight: 400;
 }
 
 .code-files-nav-item--outside-rhizome .code-files-nav-file-icon {
-  color: #8c959f;
+  color: #57606a;
+}
+
+.code-files-nav-item--outside-rhizome:hover:not(.active) {
+  background: #e3eefc;
 }
 
 /* Rhizome file row while a full-file diff is open elsewhere: shows where the selected function lives */
@@ -590,7 +623,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .code-files-nav-count {
@@ -743,14 +776,16 @@ body {
 }
 
 .flow-tree-flow-section {
-  padding: 3px 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 4px 0 10px;
   margin: 0;
 }
 
 /* Single-node rhizomes don't need as much vertical breathing room. */
 .flow-tree-flow-section--single-node {
-  padding: 3px 0;
-  margin: 0;
+  padding: 4px 0 10px;
 }
 
 /* Row above the root function: expand/collapse only (no label) */
@@ -799,6 +834,13 @@ body {
   width: 26px;
   height: 26px;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1;
 }
 
 .flow-tree-flow-diffstats {
@@ -906,13 +948,35 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 16px;
-  margin: 2px 0;
+  padding: 4px 8px;
+  margin: 0;
   margin-left: 0;
   cursor: pointer;
-  border-radius: 0;
+  border-radius: 4px;
   position: relative;
   transition: background 120ms ease, box-shadow 120ms ease, outline-color 120ms ease;
+}
+
+.flow-tree-node-caret {
+  width: 12px;
+  height: 14px;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin-right: 0;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 300;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.flow-tree-node-caret:hover {
+  color: #334155;
 }
 
 /* After you click a callee, dashed outline on its immediate caller (who-called-what) */
@@ -922,12 +986,17 @@ body {
 }
 
 .flow-tree-node:hover {
-  background: #f1f5f9;
+  background: #f3f4f6;
 }
 
 .flow-tree-node.active {
-  background: #e6efff;
-  box-shadow: none;
+  background: #dbeafe;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.4);
+}
+
+.flow-tree-node.function-match-active:not(.active) {
+  background: #edf4ff;
+  box-shadow: 0 0 0 1px rgba(147, 197, 253, 0.45);
 }
 
 /* Code view call-site hover → matching flow tree row */
@@ -954,30 +1023,27 @@ body {
 
 .flow-tree-icon {
   flex-shrink: 0;
-  min-width: 16px;
-  width: auto;
-  height: 15px;
+  width: 20px;
+  height: 20px;
   display: inline-flex;
   align-items: center;
-  justify-content: flex-start;
-  border-radius: 0;
-  border: none;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid transparent;
   text-align: center;
-  color: #9aa4b2;
-  font-size: 10px;
-  white-space: nowrap;
-  font-family: inherit;
+  color: #4b5563;
+  font-size: 12px;
 }
 
 .flow-tree-node.active .flow-tree-icon {
-  color: #6b7280;
-  border-color: transparent;
-  background: transparent;
+  color: #2563eb;
+  border-color: #2563eb;
+  background: #eff6ff;
 }
 
 .flow-tree-node:hover .flow-tree-icon {
-  border-color: transparent;
-  background: transparent;
+  border-color: #d0d7de;
+  background: #f9fafb;
 }
 
 .flow-tree-label {
@@ -989,9 +1055,9 @@ body {
   align-items: center;
   gap: 4px;
   white-space: nowrap;
-  font-size: 13px;
-  font-weight: 500;
-  color: #475569;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
 }
 
 /* Class methods: show "ClassName.method" with the class segment de-emphasized */
@@ -1004,18 +1070,22 @@ body {
 }
 
 .flow-tree-class-name {
-  color: #94a3b8;
-  font-weight: 400;
+  color: #6b7280;
+  font-weight: 500;
 }
 
 .flow-tree-method-dot {
-  color: #cbd5e1;
-  margin: 0;
+  color: #9ca3af;
+  margin: 0 1px;
 }
 
 .flow-tree-method-name {
   font-weight: 600;
-  color: #1e293b;
+  color: #111827;
+}
+
+.flow-tree-node.active .flow-tree-method-name {
+  color: #1d4ed8;
 }
 
 /* "C" in a circle: this rhizome method opens with its changed class def above the def in the code view */
@@ -1142,68 +1212,35 @@ body {
   font-weight: 400;
 }
 
-.flow-tree-shared-hint {
-  font-size: 9px;
-  color: #6b7280;
-  margin-left: 4px;
-  transform: translateY(-1px);
-}
-
 /* Tree branch lines - vertical connector for each level */
 .flow-tree-branch {
   position: relative;
+  margin-left: 12px;
+  padding-left: 14px;
+  border-left: 1px solid #d0d7de;
+}
+
+/* Horizontal connector from vertical line to each node */
+.flow-tree-branch > .flow-tree-item > .flow-tree-node::before {
+  content: '';
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  width: 14px;
+  height: 1px;
+  background: #d0d7de;
+  margin-top: -1px;
+}
+
+/* Class-membership-only rows use a flat list appearance (no connector lines). */
+.flow-tree-branch--class-siblings {
   margin-left: 0;
   padding-left: 0;
   border-left: none;
 }
 
-/* Class-membership only (no call edges from this parent): list methods at the same step as
-   a flat group — no L-shaped “nested call” lines, so indentation matches “no function calls” */
-.flow-tree-branch--class-siblings > .flow-tree-item::before,
 .flow-tree-branch--class-siblings > .flow-tree-item > .flow-tree-node::before {
   display: none;
-}
-
-/* Vertical connector between sibling nodes within a branch */
-.flow-tree-branch > .flow-tree-item::before {
-  content: '';
-  position: absolute;
-  left: calc(var(--tree-indent) - 10px);
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: #d5dce5;
-  pointer-events: none;
-}
-
-/* Last sibling stops at its own node center */
-.flow-tree-branch > .flow-tree-item:last-child::before {
-  bottom: 50%;
-}
-
-/* Horizontal connector from branch line to each node */
-.flow-tree-branch > .flow-tree-item > .flow-tree-node::before {
-  content: '';
-  position: absolute;
-  left: calc(var(--tree-indent) - 10px);
-  top: 50%;
-  width: 10px;
-  height: 1px;
-  background: #d5dce5;
-  margin-top: -1px;
-  pointer-events: none;
-}
-
-/* Top-level trunk: start connectors from the first (root) function row */
-.flow-tree > .flow-tree-item:first-child::before {
-  content: '';
-  position: absolute;
-  left: 6px;
-  top: 12px;
-  bottom: 0;
-  width: 1px;
-  background: #d5dce5;
-  pointer-events: none;
 }
 
 .flow-list-item {
@@ -1811,6 +1848,11 @@ body {
   border-color: #d0d7de;
   border-left: 3px solid #1d4ed8;
   box-shadow: none;
+}
+
+.function-block.function-match-active:not(.active) {
+  border-left: 3px solid #93c5fd;
+  border-color: #d0d7de;
 }
 
 .function-block.read {
