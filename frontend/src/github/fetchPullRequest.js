@@ -12,7 +12,7 @@ import { extractChangedFunctions } from '../parser/extractChangedFunctions.js';
 import { buildFlows } from '../parser/buildFlows.js';
 import { getFunctionDisplayName } from '../parser/functionDisplayName.js';
 
-const CACHE_VERSION = 'v15';
+const CACHE_VERSION = 'v16';
 
 function getCacheKey(owner, repo, number) {
   return `flowdiff:${CACHE_VERSION}:${owner}/${repo}#${number}`;
@@ -45,8 +45,12 @@ function writeCachedRawData(cacheKey, rawData) {
 function analyzeRawPullRequestData(diffText, fileContentsByPath) {
   const parsed = parseDiff(diffText);
   const { functionsById, files } = extractChangedFunctions(parsed, fileContentsByPath);
-  const { flows, edges } = buildFlows(functionsById, parsed, fileContentsByPath);
-  return { files, functionsById, flows, edges };
+  const { flows, edges, standaloneClassIds, classDefAboveMethod } = buildFlows(
+    functionsById,
+    parsed,
+    fileContentsByPath
+  );
+  return { files, functionsById, flows, edges, standaloneClassIds, classDefAboveMethod };
 }
 
 function formatFlowTree(rootId, payload, lines, visited, depth = 0, pathFromRoot = new Set()) {
@@ -184,10 +188,10 @@ export async function fetchAndAnalyze(prUrl) {
       fetchDiff(owner, repo, number)
     ]);
     const parsed = parseDiff(diffText);
-    const pythonPaths = parsed.files
+    const changedPaths = parsed.files
       .map((file) => file.path)
-      .filter((path) => path.endsWith('.py'));
-    const uniquePaths = [...new Set(pythonPaths)];
+      .filter(Boolean);
+    const uniquePaths = [...new Set(changedPaths)];
     const fileContentEntries = await Promise.all(
       uniquePaths.map(async (path) => [path, await fetchFileContent(owner, repo, path, meta.head.sha)])
     );

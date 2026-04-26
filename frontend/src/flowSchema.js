@@ -5,7 +5,7 @@
 
 /** @typedef {{ start: number, end: number }} LineRange */
 /** @typedef {{ path: string, hunks: { oldStart: number, oldLines: number, newStart: number, newLines: number, lines: string[] }[], changedRanges: LineRange[], moduleChangedRanges?: LineRange[], moduleChangedSymbols?: string[], moduleExcludedLineNumbers?: number[], sourceLines?: string[] }} File */
-/** @typedef {{ id: string, name: string, file: string, startLine: number, endLine: number, snippet: string, changed: boolean, changeType?: "added" | "modified" | "deleted", moduleDeps?: string[], kind?: "function" | "method", className?: string }} FunctionMeta */
+/** @typedef {{ id: string, name: string, file: string, startLine: number, endLine: number, snippet: string, changed: boolean, changeType?: "added" | "modified" | "deleted", moduleDeps?: string[], kind?: "function" | "method" | "class", className?: string }} FunctionMeta */
 /** @typedef {{ id: string, rootId: string, name?: string }} Flow */
 /** @typedef {{ callerId: string, calleeId: string, callIndex: number }} Edge */
 
@@ -15,6 +15,8 @@
  * @property {Record<string, FunctionMeta>} functionsById
  * @property {Flow[]} flows
  * @property {Edge[]} edges
+ * @property {string[]} [standaloneClassIds]
+ * @property {Record<string, string>} [classDefAboveMethod] methodId -> classId
  */
 
 /** @type {FlowPayload} */
@@ -22,5 +24,7 @@ export const emptyFlowPayload = {
   files: [],
   functionsById: {},
   flows: [],
-  edges: []
+  edges: [],
+  standaloneClassIds: [],
+  classDefAboveMethod: {}
 };

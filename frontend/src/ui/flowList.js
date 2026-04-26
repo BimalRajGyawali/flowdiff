@@ -3,7 +3,7 @@
  * Test-only roots are omitted (see buildFlows); this list is production flows only.
  */
 
-import { getState, setSelectedFlow, setFlowCompletedState } from '../state/store.js';
+import { getState, selectRhizomeFlow, setFlowCompletedState } from '../state/store.js';
 
 /**
  * Compute flow metadata: depth, node count, files.
@@ -46,7 +46,7 @@ export function renderFlowList(container) {
   container.innerHTML = '';
 
   if (!flowPayload.flows?.length) {
-    container.textContent = 'No flows.';
+    container.textContent = 'No rhizomes.';
     return;
   }
 
@@ -63,7 +63,7 @@ export function renderFlowList(container) {
   list.className = 'flow-list';
 
   if (flowsWithMeta.length === 0) {
-    list.textContent = 'No flows.';
+    list.textContent = 'No rhizomes.';
     container.appendChild(list);
     return;
   }
@@ -77,12 +77,12 @@ export function renderFlowList(container) {
 
     const completeLabel = document.createElement('label');
     completeLabel.className = 'flow-list-flow-complete-label';
-    completeLabel.title = 'Mark entire flow as complete';
+    completeLabel.title = 'Mark entire rhizome as complete';
     const completeCheck = document.createElement('input');
     completeCheck.type = 'checkbox';
     completeCheck.className = 'flow-list-flow-complete-check';
     completeCheck.checked = uiState.completedFlowIds?.has(flow.id) ?? false;
-    completeCheck.setAttribute('aria-label', 'Mark entire flow as complete');
+    completeCheck.setAttribute('aria-label', 'Mark entire rhizome as complete');
     completeCheck.addEventListener('click', (e) => e.stopPropagation());
     completeCheck.addEventListener('mousedown', (e) => e.stopPropagation());
     completeCheck.addEventListener('change', (e) => {
@@ -146,7 +146,7 @@ export function renderFlowList(container) {
     item.appendChild(completeLabel);
     item.appendChild(body);
 
-    item.addEventListener('click', () => setSelectedFlow(flow.id, flow.rootId));
+    item.addEventListener('click', () => selectRhizomeFlow(flow.id));
     parent.appendChild(item);
   }
 

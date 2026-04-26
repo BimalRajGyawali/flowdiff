@@ -1,15 +1,18 @@
 /**
- * Code view pane: shows all functions of the selected flow in flow-tree order.
- * No inline expansion; call-site and flow-tree clicks navigate (scroll to + highlight) the function block.
+ * Code view pane: one selected rhizome (flow) at a time — functions in DFS order, single scroll.
+ * Left rail lists those functions; the middle rhizome tree stays in sync via scroll + selection.
  */
 
 import {
   getState,
+  setActiveFunction,
   setActiveFunctionFromInlineCallSite,
   returnFromCallSiteToCaller,
   restoreCallSiteReturnTreeNode,
   clearCallSiteReturnScrollTarget,
   setInViewTreeNodeKey,
+  setSelectedFileInFlow,
+  setCodePaneOutsideDiffPath,
   setFunctionReadState,
   setFunctionCollapsedState,
   setHoveredTreeNodeKey
@@ -19,10 +22,22 @@ import { getFunctionDisplayName } from '../parser/functionDisplayName.js';
 
 let lastScrolledToActiveKey = null;
 let scrollRAF = null;
-let moduleContextExpandedKeys = new Set();
 /** Expanded "unchanged lines" collapse toggles; survives scroll-driven re-renders. */
 let ctxCollapseExpandedKeys = new Set();
-let moduleContextFlowId = null;
+let filesNavWidthPx = 260;
+const FILES_NAV_WIDTH_MIN = 190;
+const FILES_NAV_WIDTH_MAX = 520;
+let filesNavFolderOpenState = new Map();
+let filesNavFolderStateInitialized = false;
+let collapsedFilePaths = new Set();
+let filesNavCollapsed = false;
+let savedFilesNavWidthPx = filesNavWidthPx;
+let suppressAutoScrollUntil = 0;
+const AUTO_SCROLL_SUPPRESS_MS = 450;
+let codePaneScrollTop = 0;
+let codePaneScrollLeft = 0;
+/** When PR head or selected rhizome changes, reset scroll + scroll-to-active bookkeeping. */
+let lastRhizomeCodeViewKey = '';
 
 /**
  * Return-to-call-site highlight must survive `innerHTML` rebuilds (scroll / in-view updates re-render).
@@ -30,6 +45,27 @@ let moduleContextFlowId = null;
  */
 let callSiteReturnHighlightSpec = null;
 let callSiteReturnHighlightTimer = 0;
+/** Progressive reveal state for file ranges omitted from diff hunks (GitHub-style expand). */
+let ctxGapRevealByKey = new Map();
+
+function clearCtxGapRevealStateByPrefix(prefix) {
+  if (!prefix) return false;
+  let changed = false;
+  for (const key of [...ctxGapRevealByKey.keys()]) {
+    if (!key.startsWith(prefix)) continue;
+    ctxGapRevealByKey.delete(key);
+    changed = true;
+  }
+  return changed;
+}
+
+function hasCtxGapRevealStateByPrefix(prefix) {
+  if (!prefix) return false;
+  for (const key of ctxGapRevealByKey.keys()) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
 
 function clearCallSiteReturnHighlightTimer() {
   if (callSiteReturnHighlightTimer) {
@@ -123,6 +159,21 @@ function updateInViewFromScroll(container) {
     setInViewTreeNodeKey(null);
     return;
   }
+
+  // When several rhizome cards are visible in one file (e.g. class membership methods), do not
+  // let “closest to center” pick the wrong one — prefer the selected function if its block is on screen.
+  const { uiState } = getState();
+  const activeKey = uiState.activeTreeNodeKey;
+  if (activeKey) {
+    const activeBlock = container.querySelector(
+      `.function-block[data-tree-node-key="${CSS.escape(activeKey)}"]`
+    );
+    if (activeBlock && blockIntersectsScrollport(container, activeBlock)) {
+      setInViewTreeNodeKey(activeKey);
+      return;
+    }
+  }
+
   const cRect = container.getBoundingClientRect();
   const centerY = cRect.top + cRect.height / 2;
   let best = null;
@@ -145,6 +196,13 @@ function isElementInView(container, el) {
   const eRect = el.getBoundingClientRect();
   const padding = 40;
   return eRect.top >= cRect.top - padding && eRect.bottom <= cRect.bottom + padding;
+}
+
+/** True if any part of `el` is visible in `container`’s scrollport (for matching tree “in view” to the selected card). */
+function blockIntersectsScrollport(container, el) {
+  const cRect = container.getBoundingClientRect();
+  const eRect = el.getBoundingClientRect();
+  return eRect.bottom > cRect.top + 0.5 && eRect.top < cRect.bottom - 0.5;
 }
 
 /**
@@ -197,11 +255,15 @@ function applyCallSiteReturnScroll(container, t) {
   return true;
 }
 
-function scrollToVerticalCenter(container, el) {
+/**
+ * @param {{ behavior?: 'auto' | 'smooth' }} [opts] - use `auto` when scrolling to a selected function so the first in-view sync sees the target in the scrollport
+ */
+function scrollToVerticalCenter(container, el, opts = {}) {
   if (!el) return;
 
   // The code pane (`container`) is the vertical scroll container.
   const scroller = container;
+  const behavior = opts.behavior === 'smooth' ? 'smooth' : 'auto';
 
   // Compute element's offsetTop relative to the scroll container,
   // walking up through offsetParents until we reach the container.
@@ -217,10 +279,21 @@ function scrollToVerticalCenter(container, el) {
   const targetTop = Math.max(0, elCenter - scroller.clientHeight / 2);
 
   if (typeof scroller.scrollTo === 'function') {
-    scroller.scrollTo({ top: targetTop, behavior: 'smooth' });
+    scroller.scrollTo({ top: targetTop, behavior });
   } else {
     scroller.scrollTop = targetTop;
   }
+}
+
+function elementOffsetTopInScroller(scroller, el) {
+  let offsetTop = 0;
+  /** @type {HTMLElement | null} */
+  let node = /** @type {HTMLElement | null} */ (el);
+  while (node && node !== scroller && node.offsetParent) {
+    offsetTop += node.offsetTop;
+    node = /** @type {HTMLElement | null} */ (node.offsetParent);
+  }
+  return offsetTop;
 }
 
 function getFunctionIdFromTreeNodeKey(treeNodeKey) {
@@ -328,6 +401,85 @@ function highlightPython(code) {
   return window.Prism.highlight(code, window.Prism.languages.python, 'python');
 }
 
+function getPythonSignatureName(line) {
+  if (!line) return null;
+  const m = String(line).match(/^\s*(?:async\s+def|def)\s+([A-Za-z_]\w*)\s*\(/);
+  return m ? m[1] : null;
+}
+
+function isPythonCommentLine(line) {
+  return /^\s*#/.test(String(line ?? ''));
+}
+
+function countToken(text, token) {
+  let count = 0;
+  let idx = 0;
+  while (idx < text.length) {
+    const hit = text.indexOf(token, idx);
+    if (hit === -1) break;
+    count += 1;
+    idx = hit + token.length;
+  }
+  return count;
+}
+
+function markDocstringLineOnRow(rowData, state) {
+  if (!rowData || rowData.type === 'ctx-gap') return;
+  if (rowData.type === 'ctx-collapse') {
+    for (const hr of rowData.hiddenRows || []) markDocstringLineOnRow(hr, state);
+    return;
+  }
+  const line = String(rowData.content ?? '');
+  let isDocstringLine = !!state.inDocstring;
+  if (!state.inDocstring) {
+    const start = line.match(/^\s*(?:[rRuUbBfF]{0,2})?("""|''')/);
+    if (start) {
+      const quote = start[1];
+      isDocstringLine = true;
+      const occurrences = countToken(line, quote);
+      if (occurrences % 2 === 1) {
+        state.inDocstring = true;
+        state.quote = quote;
+      } else {
+        state.inDocstring = false;
+        state.quote = null;
+      }
+    }
+  } else {
+    const quote = state.quote || (line.includes('"""') ? '"""' : (line.includes("'''") ? "'''" : null));
+    if (quote) {
+      const occurrences = countToken(line, quote);
+      if (occurrences % 2 === 1) {
+        state.inDocstring = false;
+        state.quote = null;
+      }
+    }
+  }
+  rowData._isDocstringLine = isDocstringLine;
+}
+
+function markDocstringLines(rows) {
+  const state = { inDocstring: false, quote: null };
+  for (const rowData of rows || []) markDocstringLineOnRow(rowData, state);
+}
+
+function emphasizeSignatureNameInHtml(line, lineHtml) {
+  const fnName = getPythonSignatureName(line);
+  if (!fnName) return lineHtml;
+  const escaped = escapeHtml(fnName);
+  const tokenWrapped = `<span class="token function">${escaped}</span>`;
+  if (lineHtml.includes(tokenWrapped)) {
+    return lineHtml.replace(
+      tokenWrapped,
+      `<span class="token function flowdiff-signature-name">${escaped}</span>`
+    );
+  }
+  return lineHtml.replace(
+    new RegExp(`\\b${escapeRegex(escaped)}\\b`),
+    `<span class="flowdiff-signature-name">${escaped}</span>`
+  );
+}
+
 function getCommonPrefixLength(a, b) {
   const n = Math.min(a.length, b.length);
   let i = 0;
@@ -371,13 +523,129 @@ const CTX_COLLAPSE_MIN_RUN = 10;
 /** Lines of context kept visible above / below a collapsed block. */
 const CTX_COLLAPSE_HEAD_LINES = 3;
 const CTX_COLLAPSE_TAIL_LINES = 3;
+const CTX_GAP_INITIAL_EDGE_LINES = 3;
+const CTX_GAP_REVEAL_CHUNK_LINES = 20;
+const CTX_GAP_EXPANDER_HEIGHT_PX = 34;
+const CTX_GAP_EXPANDER_HEIGHT_MINIMAL_PX = 26;
+
+function clampToInt(n, min, max) {
+  const v = Number.isFinite(Number(n)) ? Number(n) : min;
+  return Math.max(min, Math.min(max, v));
+}
+
+function rowDisplayAnchorLine(row) {
+  if (!row) return null;
+  if (row.type === 'del') {
+    const anchor = row.anchorNewLineNumber ?? row.newLineNumber;
+    return anchor != null && Number.isFinite(Number(anchor)) ? Number(anchor) : null;
+  }
+  const n = row.newLineNumber ?? row.anchorNewLineNumber;
+  return n != null && Number.isFinite(Number(n)) ? Number(n) : null;
+}
+
+function buildCtxRowFromSourceLine(sourceLines, lineNumber) {
+  return {
+    type: 'ctx',
+    oldLineNumber: '',
+    newLineNumber: lineNumber,
+    anchorNewLineNumber: lineNumber,
+    content: sourceLines[lineNumber - 1] ?? ''
+  };
+}
+
+function setGapIcon(button, direction) {
+  const up = direction === 'up';
+  button.innerHTML = up
+    ? `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 2.5 3.5 7h9L8 2.5Z"/><rect x="7.25" y="7" width="1.5" height="6.5" rx=".75" fill="currentColor"/></svg>`
+    : `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><rect x="7.25" y="2.5" width="1.5" height="6.5" rx=".75" fill="currentColor"/><path fill="currentColor" d="m8 13.5 4.5-4.5h-9L8 13.5Z"/></svg>`;
+}
+
+function setGapCaretIcon(button, direction) {
+  const up = direction === 'up';
+  button.innerHTML = up
+    ? `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 3.5 3.5 8h9L8 3.5Z"/></svg>`
+    : `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path fill="currentColor" d="m8 12.5 4.5-4.5h-9L8 12.5Z"/></svg>`;
+}
+
+/**
+ * Inserts `ctx-gap` rows for source lines omitted from patch hunks so the user can reveal them progressively.
+ * @param {any[]} rows
+ * @param {string[]} sourceLines
+ * @param {{ startLine?: number, endLine?: number }} [opts]
+ * @returns {any[]}
+ */
+function injectProgressiveContextGaps(rows, sourceLines, opts = {}) {
+  if (!Array.isArray(rows) || !Array.isArray(sourceLines) || sourceLines.length === 0) return rows;
+  const startLine = clampToInt(opts.startLine ?? 1, 1, sourceLines.length);
+  const endLine = clampToInt(opts.endLine ?? sourceLines.length, startLine, sourceLines.length);
+  if (startLine > endLine) return rows;
+
+  const out = [];
+  let prevLine = startLine - 1;
+  for (const row of rows) {
+    const line = rowDisplayAnchorLine(row);
+    if (line != null && line >= startLine && line <= endLine && line > prevLine + 1) {
+      out.push({
+        type: 'ctx-gap',
+        startLine: prevLine + 1,
+        endLine: line - 1,
+        position:
+          prevLine + 1 <= startLine
+            ? 'start'
+            : line - 1 >= endLine
+              ? 'end'
+              : 'middle'
+      });
+    }
+    out.push(row);
+    if (line != null && line >= startLine && line <= endLine) {
+      prevLine = Math.max(prevLine, line);
+    }
+  }
+  if (prevLine < endLine) {
+    out.push({
+      type: 'ctx-gap',
+      startLine: prevLine + 1,
+      endLine,
+      position: prevLine + 1 <= startLine ? 'start' : 'end'
+    });
+  }
+  return out;
+}
 
 /**
  * Split long runs of context rows: show head/tail, collapse the middle behind a toggle.
  * @param {any[]} rows
  * @returns {any[]}
  */
-function expandContextCollapseRows(rows) {
+function expandContextCollapseRows(rows, preserveNewLines = null) {
+  const preserved = preserveNewLines instanceof Set ? preserveNewLines : null;
+
+  function flushContextRun(run, outRows) {
+    if (run.length < CTX_COLLAPSE_MIN_RUN) {
+      outRows.push(...run);
+      return;
+    }
+    const h = CTX_COLLAPSE_HEAD_LINES;
+    const t = CTX_COLLAPSE_TAIL_LINES;
+    if (run.length <= h + t) {
+      outRows.push(...run);
+      return;
+    }
+    const head = run.slice(0, h);
+    const tail = run.slice(-t);
+    const hidden = run.slice(h, run.length - t);
+    outRows.push(...head);
+    outRows.push({
+      type: 'ctx-collapse',
+      hiddenRows: hidden,
+      lineCount: hidden.length,
+      startLine: hidden[0]?.newLineNumber ?? hidden[0]?.oldLineNumber,
+      endLine: hidden[hidden.length - 1]?.newLineNumber ?? hidden[hidden.length - 1]?.oldLineNumber
+    });
+    outRows.push(...tail);
+  }
+
   const out = [];
   let i = 0;
   while (i < rows.length) {
@@ -390,26 +658,25 @@ function expandContextCollapseRows(rows) {
     let j = i;
     while (j < rows.length && rows[j].type === 'ctx') j++;
     const run = rows.slice(i, j);
-    if (run.length < CTX_COLLAPSE_MIN_RUN) {
-      out.push(...run);
+    if (!preserved || preserved.size === 0) {
+      flushContextRun(run, out);
     } else {
-      const h = CTX_COLLAPSE_HEAD_LINES;
-      const t = CTX_COLLAPSE_TAIL_LINES;
-      if (run.length <= h + t) {
-        out.push(...run);
-      } else {
-        const head = run.slice(0, h);
-        const tail = run.slice(-t);
-        const hidden = run.slice(h, run.length - t);
-        out.push(...head);
-        out.push({
-          type: 'ctx-collapse',
-          hiddenRows: hidden,
-          lineCount: hidden.length,
-          startLine: hidden[0]?.newLineNumber ?? hidden[0]?.oldLineNumber,
-          endLine: hidden[hidden.length - 1]?.newLineNumber ?? hidden[hidden.length - 1]?.oldLineNumber
-        });
-        out.push(...tail);
+      let segment = [];
+      for (const ctxRow of run) {
+        const n = ctxRow?.newLineNumber != null ? Number(ctxRow.newLineNumber) : null;
+        const keepVisible = n != null && preserved.has(n);
+        if (keepVisible) {
+          if (segment.length) {
+            flushContextRun(segment, out);
+            segment = [];
+          }
+          out.push(ctxRow);
+          continue;
+        }
+        segment.push(ctxRow);
+      }
+      if (segment.length) {
+        flushContextRun(segment, out);
       }
     }
     i = j;
@@ -765,22 +1032,34 @@ function buildRangeDisplayRows(ranges, sourceLines, diffLines, excludedLineNumbe
  */
 function appendPlainDiffRow(container, rowData) {
   const line = rowData.content;
-  const lineHtml =
+  const skipGenericCallParsing = !!rowData._isDocstringLine;
+  let lineHtml =
     rowData.type === 'add'
       ? hasMeaningfulIntraline(rowData.intraline)
         ? applyIntralineHighlight(line, rowData.intraline, 'intraline intraline-add')
-        : highlightPython(line)
+        : highlightPythonWithGenericCalls(line, [], { skipGenericCallParsing })
       : rowData.type === 'del'
         ? hasMeaningfulIntraline(rowData.intraline)
           ? applyIntralineHighlight(line, rowData.intraline, 'intraline intraline-del')
-          : highlightPython(line)
-        : highlightPython(line);
+          : highlightPythonWithGenericCalls(line, [], { skipGenericCallParsing })
+        : highlightPythonWithGenericCalls(line, [], { skipGenericCallParsing });
+  if (rowData.type === 'add') {
+    lineHtml = emphasizeSignatureNameInHtml(line, lineHtml);
+  }
 
   const oldNumHtml = rowData.oldLineNumber != null && rowData.oldLineNumber !== '' ? String(rowData.oldLineNumber) : '';
   const newNumHtml = rowData.newLineNumber != null ? String(rowData.newLineNumber) : '';
 
   const row = document.createElement('div');
   row.className = `diff-line diff-line-${rowData.type}`;
+  const isSig = !!getPythonSignatureName(line);
+  if (isSig && rowData.type === 'add') row.classList.add('diff-line-signature-change');
+  if (isPythonCommentLine(line)) row.classList.add('diff-line-comment');
+  if (rowData._isDocstringLine) row.classList.add('diff-line-docstring');
+  if (rowData.newLineNumber != null) row.dataset.flowdiffNewLine = String(rowData.newLineNumber);
+  if (rowData.anchorNewLineNumber != null) row.dataset.flowdiffAnchorNew = String(rowData.anchorNewLineNumber);
+  if (rowData.oldLineNumber != null && rowData.oldLineNumber !== '')
+    row.dataset.flowdiffOldLine = String(rowData.oldLineNumber);
   row.innerHTML = `
     <span class="diff-num diff-num-${rowData.type}">${oldNumHtml}</span>
     <span class="diff-num diff-num-${rowData.type}">${newNumHtml}</span>
@@ -793,28 +1072,289 @@ function appendPlainDiffRow(container, rowData) {
 /**
  * @param {string | null} [collapseScopeKey] - prefix for persisting expand state (e.g. module-context scope)
  */
-function renderDiffRows(container, filePath, rows, prContext, collapseScopeKey = null) {
-  const toRender = expandContextCollapseRows(rows);
+function renderDiffRows(
+  container,
+  filePath,
+  rows,
+  prContext,
+  collapseScopeKey = null,
+  preserveNewLines = null,
+  sourceLines = null,
+  gapRange = null,
+  gapInitialEdgeLines = CTX_GAP_INITIAL_EDGE_LINES,
+  gapPositionOverride = null,
+  showCountLabel = true
+) {
+  const isPureRangeContext = Array.isArray(rows) && rows.length === 0;
+  const withGaps =
+    Array.isArray(sourceLines) && sourceLines.length > 0
+      ? injectProgressiveContextGaps(rows, sourceLines, {
+          startLine: gapRange?.startLine,
+          endLine: gapRange?.endLine
+        })
+      : rows;
+  const toRender = expandContextCollapseRows(withGaps, preserveNewLines);
+  markDocstringLines(toRender);
   for (const rowData of toRender) {
-    if (rowData.type === 'ctx-collapse') {
-      const wrap = document.createElement('div');
-      wrap.className = 'diff-ctx-collapse';
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'diff-ctx-collapse-btn';
-      const body = document.createElement('div');
-      body.className = 'diff-ctx-collapse-body';
-      for (const hr of rowData.hiddenRows) {
-        appendPlainDiffRow(body, hr);
+    if (rowData.type === 'ctx-gap') {
+      const gapStart = Number(rowData.startLine);
+      const gapEnd = Number(rowData.endLine);
+      if (!Number.isFinite(gapStart) || !Number.isFinite(gapEnd) || gapEnd < gapStart) continue;
+      const lineCount = gapEnd - gapStart + 1;
+      let position = rowData.position || 'middle';
+      if (isPureRangeContext && gapPositionOverride === 'before') position = 'end';
+      if (isPureRangeContext && gapPositionOverride === 'after') position = 'start';
+      const scope = collapseScopeKey || filePath || 'file';
+      const stateKey = `${scope}::ctx-gap::${gapStart}-${gapEnd}`;
+      const saved = ctxGapRevealByKey.get(stateKey) || {};
+      const defaultEdge = Math.min(Math.max(0, Number(gapInitialEdgeLines) || 0), lineCount);
+      let head = clampToInt(saved.head ?? defaultEdge, 0, lineCount);
+      let tail = clampToInt(saved.tail ?? defaultEdge, 0, lineCount);
+      if (head + tail > lineCount) {
+        if (head >= lineCount) {
+          head = lineCount;
+          tail = 0;
+        } else {
+          tail = Math.max(0, lineCount - head);
+        }
       }
-      const persistenceKey =
-        collapseScopeKey != null && collapseScopeKey !== ''
-          ? `${collapseScopeKey}::ctx::${rowData.startLine}-${rowData.endLine}-${rowData.lineCount}`
-          : null;
-      setupCtxCollapseToggle(btn, body, rowData, persistenceKey);
-      wrap.appendChild(btn);
+      const hiddenCount = Math.max(0, lineCount - head - tail);
+      const hasExpanded = head !== defaultEdge || tail !== defaultEdge;
+      const expanderHeightPx = CTX_GAP_EXPANDER_HEIGHT_MINIMAL_PX;
+
+      const wrap = document.createElement('div');
+      wrap.className = 'diff-ctx-gap';
+      wrap.dataset.position = position;
+
+      function persistAndRerender(nextHead, nextTail) {
+        ctxGapRevealByKey.set(stateKey, {
+          head: clampToInt(nextHead, 0, lineCount),
+          tail: clampToInt(nextTail, 0, lineCount)
+        });
+        const codePane = document.getElementById('code-pane');
+        if (codePane) renderCodeView(codePane);
+      }
+
+      const body = document.createElement('div');
+      body.className = 'diff-ctx-gap-body';
+      if (head + tail >= lineCount) {
+        for (let ln = gapStart; ln <= gapEnd; ln++) {
+          appendPlainDiffRow(body, buildCtxRowFromSourceLine(sourceLines || [], ln));
+        }
+      } else {
+        for (let ln = gapStart; ln < gapStart + head; ln++) {
+          appendPlainDiffRow(body, buildCtxRowFromSourceLine(sourceLines || [], ln));
+        }
+
+        const expanderRow = document.createElement('div');
+        expanderRow.className = 'diff-line diff-line-ctx-gap-expander';
+        expanderRow.classList.add('diff-line-ctx-gap-expander-minimal');
+        expanderRow.style.minHeight = `${expanderHeightPx}px`;
+        const gutterA = document.createElement('span');
+        gutterA.className = 'diff-num diff-num-ctx diff-num-gap-controls';
+        const inlineControls = document.createElement('span');
+        inlineControls.className = 'diff-ctx-gap-controls-inline';
+        const resetView = document.createElement('button');
+        resetView.type = 'button';
+        resetView.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--reset';
+        resetView.textContent = '↺';
+        resetView.title = 'Reset to original view';
+        resetView.setAttribute('aria-label', resetView.title);
+        resetView.addEventListener('click', () => {
+          persistAndRerender(defaultEdge, defaultEdge);
+        });
+        const gutterB = document.createElement('span');
+        gutterB.className = 'diff-num diff-num-ctx';
+        gutterB.textContent = '';
+        const sign = document.createElement('span');
+        sign.className = 'diff-sign diff-sign-ctx';
+        sign.textContent = '';
+        const meta = document.createElement('pre');
+        meta.className = 'diff-code diff-code-ctx diff-code-gap-meta';
+        const metaCode = document.createElement('code');
+        metaCode.className = 'language-python';
+
+        if (hiddenCount > 0) {
+          const showAbove = document.createElement('button');
+          showAbove.type = 'button';
+          showAbove.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
+          setGapCaretIcon(showAbove, 'up');
+          showAbove.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount)} above`;
+          showAbove.setAttribute('aria-label', showAbove.title);
+          showAbove.addEventListener('click', () => {
+            const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount);
+            // "Above" should reveal from the bottom boundary upward.
+            persistAndRerender(head, tail + n);
+          });
+          const canShowAbove = position === 'middle' || position === 'end';
+
+          const showBelow = document.createElement('button');
+          showBelow.type = 'button';
+          showBelow.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
+          setGapCaretIcon(showBelow, 'down');
+          showBelow.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount)} below`;
+          showBelow.setAttribute('aria-label', showBelow.title);
+          showBelow.addEventListener('click', () => {
+            const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount);
+            // "Below" should reveal from the top boundary downward.
+            persistAndRerender(head + n, tail);
+          });
+          const canShowBelow = position === 'middle' || position === 'start';
+          const showAll = document.createElement('button');
+          showAll.type = 'button';
+          showAll.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--all';
+          showAll.textContent = '⋯';
+          showAll.title = `Show all ${hiddenCount} lines`;
+          showAll.setAttribute('aria-label', showAll.title);
+          showAll.addEventListener('click', () => {
+            persistAndRerender(lineCount, 0);
+          });
+
+          // GitHub-like vertical gutter controls: down (top), all (middle), up (bottom).
+          const canExpandBothWays = canShowAbove && canShowBelow;
+          if (canExpandBothWays) {
+            inlineControls.appendChild(showAbove);
+            if (hiddenCount > CTX_GAP_REVEAL_CHUNK_LINES) inlineControls.appendChild(showAll);
+            inlineControls.appendChild(showBelow);
+          } else if (canShowAbove) {
+            inlineControls.appendChild(showAbove);
+          } else if (canShowBelow) {
+            inlineControls.appendChild(showBelow);
+          }
+        }
+        if (hasExpanded) inlineControls.appendChild(resetView);
+        meta.classList.add('diff-code-gap-meta-minimal', 'diff-code-gap-meta-minimal-inline');
+        metaCode.textContent = '';
+        gutterA.appendChild(inlineControls);
+        meta.appendChild(metaCode);
+        expanderRow.appendChild(gutterA);
+        expanderRow.appendChild(gutterB);
+        expanderRow.appendChild(sign);
+        expanderRow.appendChild(meta);
+        body.appendChild(expanderRow);
+
+        for (let ln = gapEnd - tail + 1; ln <= gapEnd; ln++) {
+          appendPlainDiffRow(body, buildCtxRowFromSourceLine(sourceLines || [], ln));
+        }
+      }
       wrap.appendChild(body);
       container.appendChild(wrap);
+      continue;
+    }
+    if (rowData.type === 'ctx-collapse') {
+      const hiddenRows = rowData.hiddenRows || [];
+      const hiddenCount = Number(rowData.lineCount || hiddenRows.length || 0);
+      const startLine = Number(rowData.startLine || hiddenRows[0]?.newLineNumber || 0);
+      const endLine = Number(rowData.endLine || hiddenRows[hiddenRows.length - 1]?.newLineNumber || 0);
+      const scope = collapseScopeKey || filePath || 'file';
+      const stateKey = `${scope}::ctx-collapse::${startLine}-${endLine}`;
+      const saved = ctxGapRevealByKey.get(stateKey) || {};
+      let head = clampToInt(saved.head ?? 0, 0, hiddenCount);
+      let tail = clampToInt(saved.tail ?? 0, 0, hiddenCount);
+      if (head + tail > hiddenCount) {
+        if (head >= hiddenCount) {
+          head = hiddenCount;
+          tail = 0;
+        } else {
+          tail = Math.max(0, hiddenCount - head);
+        }
+      }
+      const remain = Math.max(0, hiddenCount - head - tail);
+      const hasExpanded = head > 0 || tail > 0;
+
+      function persistAndRerender(nextHead, nextTail) {
+        ctxGapRevealByKey.set(stateKey, {
+          head: clampToInt(nextHead, 0, hiddenCount),
+          tail: clampToInt(nextTail, 0, hiddenCount)
+        });
+        const codePane = document.getElementById('code-pane');
+        if (codePane) renderCodeView(codePane);
+      }
+
+      const revealHeadRows = hiddenRows.slice(0, head);
+      const revealTailRows = hiddenRows.slice(Math.max(head, hiddenRows.length - tail));
+      for (const hr of revealHeadRows) {
+        appendPlainDiffRow(container, hr);
+      }
+
+      if (remain > 0) {
+        const expanderHeightPx = CTX_GAP_EXPANDER_HEIGHT_MINIMAL_PX;
+        const expanderRow = document.createElement('div');
+        expanderRow.className = 'diff-line diff-line-ctx-gap-expander';
+        expanderRow.classList.add('diff-line-ctx-gap-expander-minimal');
+        expanderRow.style.minHeight = `${expanderHeightPx}px`;
+        const gutterA = document.createElement('span');
+        gutterA.className = 'diff-num diff-num-ctx diff-num-gap-controls';
+        const inlineControls = document.createElement('span');
+        inlineControls.className = 'diff-ctx-gap-controls-inline';
+        const resetView = document.createElement('button');
+        resetView.type = 'button';
+        resetView.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--reset';
+        resetView.textContent = '↺';
+        resetView.title = 'Reset to original view';
+        resetView.setAttribute('aria-label', resetView.title);
+        resetView.addEventListener('click', () => {
+          persistAndRerender(0, 0);
+        });
+        const gutterB = document.createElement('span');
+        gutterB.className = 'diff-num diff-num-ctx';
+        const sign = document.createElement('span');
+        sign.className = 'diff-sign diff-sign-ctx';
+        const meta = document.createElement('pre');
+        meta.className = 'diff-code diff-code-ctx diff-code-gap-meta';
+        const metaCode = document.createElement('code');
+        metaCode.className = 'language-python';
+
+        const showAbove = document.createElement('button');
+        showAbove.type = 'button';
+        showAbove.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
+        setGapCaretIcon(showAbove, 'up');
+        showAbove.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} above`;
+        showAbove.setAttribute('aria-label', showAbove.title);
+        showAbove.addEventListener('click', () => {
+          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
+          persistAndRerender(head, tail + n);
+        });
+
+        const showBelow = document.createElement('button');
+        showBelow.type = 'button';
+        showBelow.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
+        setGapCaretIcon(showBelow, 'down');
+        showBelow.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} below`;
+        showBelow.setAttribute('aria-label', showBelow.title);
+        showBelow.addEventListener('click', () => {
+          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
+          persistAndRerender(head + n, tail);
+        });
+
+        const showAll = document.createElement('button');
+        showAll.type = 'button';
+        showAll.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--all';
+        showAll.textContent = '⋯';
+        showAll.title = `Show all ${remain} lines`;
+        showAll.setAttribute('aria-label', showAll.title);
+        showAll.addEventListener('click', () => {
+          persistAndRerender(hiddenCount, 0);
+        });
+
+        inlineControls.appendChild(showAbove);
+        if (remain > CTX_GAP_REVEAL_CHUNK_LINES) inlineControls.appendChild(showAll);
+        inlineControls.appendChild(showBelow);
+        if (hasExpanded) inlineControls.appendChild(resetView);
+        meta.classList.add('diff-code-gap-meta-minimal', 'diff-code-gap-meta-minimal-inline');
+        metaCode.textContent = '';
+        gutterA.appendChild(inlineControls);
+        meta.appendChild(metaCode);
+        expanderRow.appendChild(gutterA);
+        expanderRow.appendChild(gutterB);
+        expanderRow.appendChild(sign);
+        expanderRow.appendChild(meta);
+        container.appendChild(expanderRow);
+      }
+
+      for (const hr of revealTailRows) {
+        appendPlainDiffRow(container, hr);
+      }
       continue;
     }
     appendPlainDiffRow(container, rowData);
@@ -837,6 +1377,149 @@ function getFlowFunctionIds(flow, payload) {
     }
   }
   return ids;
+}
+
+/** Every function/class id that participates in **any** flow (union across `payload.flows`). */
+function collectUnionFlowFunctionIds(payload) {
+  const ids = new Set();
+  for (const flow of payload.flows || []) {
+    if (!flow?.rootId || !payload.functionsById[flow.rootId]) continue;
+    for (const id of getFlowFunctionIds(flow, payload)) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * Ensure changed function definitions are visible in file diffs.
+ * If a changed function body appears but its `def` line is outside patch context,
+ * inject context rows from the definition down to first touched line; long runs are
+ * subsequently collapsed by existing context-collapse rendering.
+ * @param {string} filePath
+ * @param {any[]} rows
+ * @param {Record<string, import('../flowSchema.js').FunctionMeta>} functionsById
+ * @param {string[]} sourceLines
+ * @returns {any[]}
+ */
+function includeChangedFunctionDefinitions(filePath, rows, functionsById, sourceLines) {
+  if (!sourceLines?.length) return rows;
+  const fns = Object.values(functionsById)
+    .filter((fn) => fn?.file === filePath && fn?.changed && fn.changeType !== 'deleted')
+    .sort((a, b) => a.startLine - b.startLine);
+  if (fns.length === 0) return rows;
+
+  const out = [...rows];
+  const existingByNewLine = new Set(
+    out
+      .map((r) =>
+        r?.newLineNumber != null
+          ? Number(r.newLineNumber)
+          : r?.anchorNewLineNumber != null
+            ? Number(r.anchorNewLineNumber)
+            : null
+      )
+      .filter((n) => Number.isFinite(n))
+  );
+
+  for (const fn of fns) {
+    const fnStart = Number(fn.startLine);
+    const fnEnd = Number(fn.endLine);
+    if (!Number.isFinite(fnStart) || !Number.isFinite(fnEnd) || fnEnd < fnStart) continue;
+
+    const rowsInFn = out.filter((r) => {
+      const n = r?.newLineNumber != null
+        ? Number(r.newLineNumber)
+        : r?.anchorNewLineNumber != null
+          ? Number(r.anchorNewLineNumber)
+          : null;
+      return n != null && n >= fnStart && n <= fnEnd;
+    });
+    const hasTouchedInFn = rowsInFn.some((r) => r.type === 'add' || r.type === 'del');
+    if (!hasTouchedInFn) continue;
+    if (existingByNewLine.has(fnStart)) continue;
+
+    const firstTouched = Math.min(
+      ...rowsInFn
+        .filter((r) => r.type === 'add' || r.type === 'del')
+        .map((r) =>
+          r?.newLineNumber != null
+            ? Number(r.newLineNumber)
+            : r?.anchorNewLineNumber != null
+              ? Number(r.anchorNewLineNumber)
+              : fnStart
+        )
+    );
+    const injectEnd = Number.isFinite(firstTouched) ? Math.max(fnStart, firstTouched - 1) : fnStart;
+    for (let ln = fnStart; ln <= injectEnd; ln++) {
+      if (existingByNewLine.has(ln)) continue;
+      out.push({
+        type: 'ctx',
+        oldLineNumber: '',
+        newLineNumber: ln,
+        anchorNewLineNumber: ln,
+        content: sourceLines[ln - 1] ?? ''
+      });
+      existingByNewLine.add(ln);
+    }
+  }
+
+  const key = (r) =>
+    r.type === 'del'
+      ? Number(r.anchorNewLineNumber ?? r.newLineNumber ?? 0)
+      : Number(r.newLineNumber ?? r.anchorNewLineNumber ?? 0);
+  return out.sort((a, b) => key(a) - key(b));
+}
+
+function toBaseName(path) {
+  return String(path || '').replace(/^.*\//, '');
+}
+
+function pathParts(path) {
+  return String(path || '').split('/').filter(Boolean);
+}
+
+function filePathSort(a, b) {
+  return String(a).localeCompare(String(b));
+}
+
+/** Align function `file` fields with `flowPayload.files[].path` for nav / outside-diff checks. */
+function normalizeNavFilePath(p) {
+  let s = String(p || '').trim().replace(/\\/g, '/');
+  while (s.startsWith('./')) s = s.slice(2);
+  return s;
+}
+
+/**
+ * Normalized paths that “belong to the rhizome” in the file outline.
+ * Rule: if **any** changed unit that participates in **any** flow (any id in `unionFlowFnIds`)
+ * lives in a file, that path counts as a rhizome file for sorting / muting (not tied to the
+ * currently selected flow).
+ * @param {import('../flowSchema.js').FlowPayload} payload
+ * @param {Set<string>} unionFlowFnIds
+ * @returns {Set<string>}
+ */
+function rhizomeParticipatingFilePathNorms(payload, unionFlowFnIds) {
+  const paths = new Set();
+  for (const fnId of unionFlowFnIds) {
+    const p = payload.functionsById[fnId]?.file;
+    if (p) paths.add(normalizeNavFilePath(p));
+  }
+  return paths;
+}
+
+function clampFilesNavWidth(widthPx) {
+  return Math.max(FILES_NAV_WIDTH_MIN, Math.min(FILES_NAV_WIDTH_MAX, widthPx));
+}
+
+function setFileSectionCollapsed(section, isCollapsed) {
+  const body = section.querySelector('.file-content');
+  const toggle = section.querySelector('.file-header-collapse-btn');
+  if (body) body.hidden = isCollapsed;
+  section.classList.toggle('file-section-collapsed', isCollapsed);
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+    toggle.textContent = isCollapsed ? '▸' : '▾';
+    toggle.title = isCollapsed ? 'Expand file' : 'Collapse file';
+  }
 }
 
 /**
@@ -869,6 +1552,234 @@ function collectFlowOrder(rootId, payload) {
 
   visit(rootId, rootKey, new Set());
   return list;
+}
+
+/**
+ * Keep nested Python defs inside parent cards only.
+ * Hard guard: if a function/method node's span is fully contained by an ancestor
+ * class/function/method span from its tree-node path in the same file, suppress it as a separate card.
+ * Keeps the node in the rhizome tree, but avoids duplicate code cards.
+ * @param {{ treeNodeKey: string, functionId: string }[]} order
+ * @param {import('../flowSchema.js').FlowPayload} payload
+ * @returns {{ treeNodeKey: string, functionId: string }[]}
+ */
+function filterNestedFunctionCards(order, payload) {
+  /**
+   * Sequence of function ids along this tree path, in order from root to current node.
+   * root:RID => [RID]
+   * root:RID/e:RID:0:C1/e:C1:2:C2 => [RID, C1, C2]
+   * @param {string} treeNodeKey
+   * @returns {string[]}
+   */
+  function functionPathIdsFromTreeNodeKey(treeNodeKey) {
+    if (!treeNodeKey) return [];
+    const ids = [];
+    for (const seg of String(treeNodeKey).split('/')) {
+      if (seg.startsWith('root:')) {
+        ids.push(seg.slice(5));
+        continue;
+      }
+      if (seg.startsWith('e:')) {
+        const p = seg.split(':');
+        if (p.length >= 4) ids.push(p[3]);
+      }
+    }
+    return ids;
+  }
+
+  const kept = [];
+  for (const item of order) {
+    const fn = payload.functionsById[item.functionId];
+    if (!fn) continue;
+    const fnStart = Number(fn.startLine);
+    const fnEnd = Number(fn.endLine);
+    if (!Number.isFinite(fnStart) || !Number.isFinite(fnEnd) || fnEnd < fnStart) {
+      kept.push(item);
+      continue;
+    }
+    // Keep class cards as top-level structural cards; nested methods/functions render in-body.
+    const fnKind = fn.kind || 'function';
+    if (fnKind === 'class') {
+      kept.push(item);
+      continue;
+    }
+    const pathIds = functionPathIdsFromTreeNodeKey(item.treeNodeKey);
+    const ancestorIds = pathIds.slice(0, -1);
+    const nestedUnderAncestor = ancestorIds.some((ancestorId) => {
+      const parentFn = payload.functionsById[ancestorId];
+      if (!parentFn || parentFn.file !== fn.file) return false;
+      const parentStart = Number(parentFn.startLine);
+      const parentEnd = Number(parentFn.endLine);
+      if (!Number.isFinite(parentStart) || !Number.isFinite(parentEnd) || parentEnd < parentStart) {
+        return false;
+      }
+      const parentKind = parentFn.kind || 'function';
+      if (!['class', 'function', 'method'].includes(parentKind)) return false;
+      return fnStart >= parentStart && fnEnd <= parentEnd;
+    });
+    if (!nestedUnderAncestor) kept.push(item);
+  }
+  return kept;
+}
+
+/**
+ * Assignment symbols from the parser plus best-effort import names from module-level changed lines.
+ * Used to score which function body references module edits most (word-boundary matches).
+ * @param {{ start: number, end: number }[]} moduleChangedRanges
+ * @param {string[]} sourceLines
+ * @param {string[]} [moduleChangedSymbols]
+ * @returns {string[]}
+ */
+function collectModuleRefSymbolsForScoring(moduleChangedRanges, sourceLines, moduleChangedSymbols) {
+  const set = new Set(moduleChangedSymbols || []);
+  for (const r of moduleChangedRanges || []) {
+    for (let ln = r.start; ln <= r.end; ln++) {
+      const line = sourceLines[ln - 1] ?? '';
+      if (/^\s+/.test(line)) continue;
+      if (/^\s*#/.test(line)) continue;
+      const fromImport = line.match(/^\s*from\s+[\w.]+\s+import\s+(.+)/);
+      if (fromImport) {
+        const tail = fromImport[1].split('#')[0];
+        for (const raw of tail.split(',')) {
+          const seg = raw.trim();
+          if (!seg || seg === '(' || seg === ')') continue;
+          const asPair = seg.match(/^(\w+)\s+as\s+(\w+)$/i);
+          if (asPair) {
+            set.add(asPair[1]);
+            set.add(asPair[2]);
+            continue;
+          }
+          const bare = seg.match(/^(\w+)$/);
+          if (bare && bare[1] !== '*') set.add(bare[1]);
+        }
+        continue;
+      }
+      const plainImport = line.match(/^\s*import\s+(.+)/);
+      if (plainImport) {
+        const tail = plainImport[1].split('#')[0];
+        for (const raw of tail.split(',')) {
+          const seg = raw.trim();
+          const asOnly = seg.match(/^[\w.]+\s+as\s+(\w+)$/i);
+          if (asOnly) {
+            set.add(asOnly[1]);
+            continue;
+          }
+          const first = seg.match(/^[\w.]+/);
+          if (first) {
+            const root = first[0].split('.')[0];
+            if (root) set.add(root);
+          }
+        }
+      }
+    }
+  }
+  return [...set].filter((s) => s && /^[A-Za-z_]\w*$/.test(String(s)));
+}
+
+/**
+ * @param {import('../flowSchema.js').FunctionMeta} fn
+ * @param {string[]} symbols
+ * @param {string[]} sourceLines
+ * @returns {number}
+ */
+function countModuleSymbolRefsInBody(fn, symbols, sourceLines) {
+  const start = Number(fn.startLine);
+  const end = Number(fn.endLine);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+  const body = sourceLines.slice(start - 1, end).join('\n');
+  let total = 0;
+  for (const sym of symbols) {
+    if (!sym || !/^[A-Za-z_]\w*$/.test(sym)) continue;
+    const escaped = sym.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`\\b${escaped}\\b`, 'g');
+    const m = body.match(re);
+    if (m) total += m.length;
+  }
+  return total;
+}
+
+/**
+ * Picks the single function/class id on a file that should show module-level (non-body) diff strips.
+ * Primary: max references to module symbols; tie: largest participating flow (by node count),
+ * then stable flow order, then first in that flow's DFS order among tied ids.
+ * @param {object} opts
+ * @param {import('../flowSchema.js').FunctionMeta[]} opts.candidates
+ * @param {{ start: number, end: number }[]} opts.moduleChangedRanges
+ * @param {string[]} opts.moduleChangedSymbols
+ * @param {string[]} opts.sourceLines
+ * @param {import('../flowSchema.js').FlowPayload} opts.payload
+ * @param {import('../flowSchema.js').Flow[]} opts.flows
+ * @param {import('../flowSchema.js').Flow | null} opts.selectedFlow
+ * @returns {string | null}
+ */
+function pickModuleContextHostFunctionId({
+  candidates,
+  moduleChangedRanges,
+  moduleChangedSymbols,
+  sourceLines,
+  payload,
+  flows,
+  selectedFlow
+}) {
+  if (!candidates?.length) return null;
+  const refSymbols = collectModuleRefSymbolsForScoring(
+    moduleChangedRanges,
+    sourceLines,
+    moduleChangedSymbols
+  );
+  let bestScore = -1;
+  /** @type {Map<string, number>} */
+  const scores = new Map();
+  for (const fn of candidates) {
+    const sc = refSymbols.length ? countModuleSymbolRefsInBody(fn, refSymbols, sourceLines) : 0;
+    scores.set(fn.id, sc);
+    if (sc > bestScore) bestScore = sc;
+  }
+  const T = new Set(candidates.filter((fn) => scores.get(fn.id) === bestScore).map((fn) => fn.id));
+
+  /** @type {{ flow: import('../flowSchema.js').Flow, size: number, index: number }[]} */
+  const qualifyingFlows = [];
+  const flowList = flows || [];
+  for (let i = 0; i < flowList.length; i++) {
+    const flow = flowList[i];
+    if (!flow?.rootId || !payload.functionsById[flow.rootId]) continue;
+    const flowIds = getFlowFunctionIds(flow, payload);
+    let hit = false;
+    for (const id of T) {
+      if (flowIds.has(id)) {
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) continue;
+    qualifyingFlows.push({ flow, size: flowIds.size, index: i });
+  }
+
+  /** @param {string} rootId */
+  function dfsFirstInSet(rootId) {
+    const order = collectFlowOrder(rootId, payload);
+    for (const { functionId } of order) {
+      if (T.has(functionId)) return functionId;
+    }
+    return null;
+  }
+
+  if (qualifyingFlows.length) {
+    const maxSize = Math.max(...qualifyingFlows.map((q) => q.size));
+    const largest = qualifyingFlows.filter((q) => q.size === maxSize);
+    largest.sort((a, b) => a.index - b.index);
+    const id = dfsFirstInSet(largest[0].flow.rootId);
+    if (id) return id;
+  }
+
+  if (selectedFlow?.rootId && payload.functionsById[selectedFlow.rootId]) {
+    const id = dfsFirstInSet(selectedFlow.rootId);
+    if (id) return id;
+  }
+
+  const metas = candidates.filter((fn) => T.has(fn.id));
+  metas.sort((a, b) => a.startLine - b.startLine || String(a.id).localeCompare(String(b.id)));
+  return metas[0]?.id ?? null;
 }
 
 /**
@@ -911,11 +1822,15 @@ function findCallSitesInLine(line, callees) {
   const sites = [];
   /** Same source range must not be claimed by multiple callees that share a short `name`. */
   const claimed = new Set();
+  const trimmed = String(line || '').trimStart();
+  const isDefinitionLine = /^(?:async\s+def|def|class)\b/.test(trimmed);
   for (const { calleeId, name } of callees) {
     const re = new RegExp(`\\b${name}\\s*\\(`, 'g');
     let m;
     while ((m = re.exec(line)) !== null) {
       const start = m.index;
+      // Never treat declarations (def/class signatures) as call sites.
+      if (isDefinitionLine) continue;
       const openParen = line.indexOf('(', start);
       const end = findCallEnd(line, openParen);
       const key = `${start}:${end}`;
@@ -925,6 +1840,49 @@ function findCallSitesInLine(line, callees) {
     }
   }
   return sites.sort((a, b) => a.start - b.start);
+}
+
+function findGenericCallNameSites(line, blockedRanges = []) {
+  const out = [];
+  const trimmed = String(line || '').trimStart();
+  if (/^(?:async\s+def|def|class)\b/.test(trimmed)) return out;
+  const re = /\b([A-Za-z_]\w*)\b(?=\s*\()/g;
+  let m;
+  while ((m = re.exec(line)) !== null) {
+    const name = m[1];
+    const start = m.index;
+    const end = start + name.length;
+    const blocked = blockedRanges.some((r) => start >= r.start && start < r.end);
+    if (blocked) continue;
+    out.push({ start, end, name });
+  }
+  return out;
+}
+
+function highlightPythonWithGenericCalls(line, blockedRanges = [], opts = {}) {
+  if (isPythonCommentLine(line) || opts.skipGenericCallParsing) return highlightPython(line);
+  const genericSites = findGenericCallNameSites(line, blockedRanges);
+  if (!genericSites.length) return highlightPython(line);
+  let composed = '';
+  let last = 0;
+  const placeholders = [];
+  for (let i = 0; i < genericSites.length; i++) {
+    const s = genericSites[i];
+    composed += line.slice(last, s.start);
+    const ph = `__flowdiff_generic_call_${i}__`;
+    composed += ph;
+    placeholders.push({ ph, name: s.name });
+    last = s.end;
+  }
+  composed += line.slice(last);
+  let html = highlightPython(composed);
+  for (const { ph, name } of placeholders) {
+    html = html.replace(
+      new RegExp(escapeRegex(ph), 'g'),
+      `<span class="flowdiff-generic-call">${escapeHtml(name)}</span>`
+    );
+  }
+  return html;
 }
 
 /**
@@ -965,7 +1923,9 @@ function appendFunctionBodyDiffLine(
       lastEnd = site.end;
     }
     lineWithPlaceholders += line.slice(lastEnd);
-    lineHtml = highlightPython(lineWithPlaceholders);
+    lineHtml = highlightPythonWithGenericCalls(lineWithPlaceholders, sites, {
+      skipGenericCallParsing: !!rowData._isDocstringLine
+    });
 
     for (let pi = 0; pi < placeholders.length; pi++) {
       const { placeholder, calleeId, start, end } = placeholders[pi];
@@ -990,19 +1950,32 @@ function appendFunctionBodyDiffLine(
   } else if (rowData.type === 'add') {
     lineHtml = hasMeaningfulIntraline(rowData.intraline)
       ? applyIntralineHighlight(indent + line, rowData.intraline, 'intraline intraline-add')
-      : highlightPython(indent + line);
+      : highlightPythonWithGenericCalls(indent + line, [], {
+          skipGenericCallParsing: !!rowData._isDocstringLine
+        });
   } else if (rowData.type === 'del') {
     lineHtml = hasMeaningfulIntraline(rowData.intraline)
       ? applyIntralineHighlight(indent + line, rowData.intraline, 'intraline intraline-del')
-      : highlightPython(indent + line);
+      : highlightPythonWithGenericCalls(indent + line, [], {
+          skipGenericCallParsing: !!rowData._isDocstringLine
+        });
   } else {
-    lineHtml = highlightPython(indent + line);
+    lineHtml = highlightPythonWithGenericCalls(indent + line, [], {
+      skipGenericCallParsing: !!rowData._isDocstringLine
+    });
+  }
+  if (rowData.type === 'add') {
+    lineHtml = emphasizeSignatureNameInHtml(line, lineHtml);
   }
 
   const oldNumHtml = rowData.oldLineNumber != null && rowData.oldLineNumber !== '' ? String(rowData.oldLineNumber) : '';
   const newNumHtml = rowData.newLineNumber != null ? String(rowData.newLineNumber) : '';
   const row = document.createElement('div');
   row.className = `diff-line diff-line-${rowData.type}`;
+  const isSig = !!getPythonSignatureName(line);
+  if (isSig && rowData.type === 'add') row.classList.add('diff-line-signature-change');
+  if (isPythonCommentLine(line)) row.classList.add('diff-line-comment');
+  if (rowData._isDocstringLine) row.classList.add('diff-line-docstring');
   if (rowData.newLineNumber != null) row.dataset.flowdiffNewLine = String(rowData.newLineNumber);
   if (rowData.anchorNewLineNumber != null) row.dataset.flowdiffAnchorNew = String(rowData.anchorNewLineNumber);
   if (rowData.oldLineNumber != null && rowData.oldLineNumber !== '')
@@ -1054,6 +2027,16 @@ function appendFunctionBodyDiffLine(
     });
   });
 
+  // Hovering a function/class definition line should also spotlight its node in the rhizome tree.
+  if (isSig && pathPrefix) {
+    row.addEventListener('mouseenter', () => {
+      setHoveredTreeNodeKey(pathPrefix);
+    });
+    row.addEventListener('mouseleave', () => {
+      setHoveredTreeNodeKey(null);
+    });
+  }
+
   container.appendChild(row);
 }
 
@@ -1083,27 +2066,122 @@ function moduleRangesAfterFunction(ranges, endLine) {
   return out.filter((x) => x.start <= x.end);
 }
 
-function moduleSymbolsInRanges(symbols, sourceLines, ranges) {
-  if (!symbols?.length || !ranges?.length) return [];
-  const hit = new Set();
+/**
+ * Remove [cutStart, cutEnd] (inclusive) from a list of line ranges. Used to avoid
+ * duplicating a class block in the module-level inline strip.
+ * @param {{ start: number, end: number }[] | null | undefined} ranges
+ * @param {number} cutStart
+ * @param {number} cutEnd
+ */
+function subtractIntervalFromModuleRanges(ranges, cutStart, cutEnd) {
+  if (!ranges?.length) return [];
+  if (cutStart > cutEnd) return ranges;
+  const out = [];
   for (const r of ranges) {
-    for (let ln = r.start; ln <= r.end; ln++) {
-      const text = sourceLines[ln - 1] ?? '';
-      if (/^\s+/.test(text)) continue;
-      const m = text.match(/^\s*([A-Za-z_]\w*)\s*=/);
-      if (m && symbols.includes(m[1])) hit.add(m[1]);
+    if (cutEnd < r.start || cutStart > r.end) {
+      out.push(r);
+      continue;
+    }
+    if (cutStart <= r.start && cutEnd >= r.end) {
+      continue;
+    }
+    if (cutStart > r.start) {
+      out.push({ start: r.start, end: Math.min(r.end, cutStart - 1) });
+    }
+    if (cutEnd < r.end) {
+      out.push({ start: Math.max(r.start, cutEnd + 1), end: r.end });
     }
   }
-  return [...hit].sort();
+  return out.filter((x) => x.start <= x.end);
 }
 
 /**
- * @param {'start' | 'end'} where - insert at start of container or append at end
- * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string, calleeTreeNodeKey: string } | null} [callSiteReturn]
+ * Line range of the enclosing class header (above a method def), for subtracting from module
+ * "before" ranges without mounting the class block.
+ * @param {import('../flowSchema.js').FlowPayload} payload
+ * @param {import('../flowSchema.js').FunctionMeta} methodFn
+ * @param {boolean} collapsedMode
+ * @returns {{ cut: { start: number, end: number } | null, classMeta: import('../flowSchema.js').FunctionMeta | null }}
  */
-function mountModuleContextSection(
+function getEnclosingClassContextForMethod(payload, methodFn, collapsedMode) {
+  if (collapsedMode || methodFn.kind !== 'method' || !payload.classDefAboveMethod) {
+    return { cut: null, classMeta: null };
+  }
+  const cId = payload.classDefAboveMethod[methodFn.id];
+  const cMeta = cId ? payload.functionsById[cId] : null;
+  if (!cMeta) return { cut: null, classMeta: null };
+  const rStart = cMeta.startLine;
+  const rEnd = methodFn.startLine - 1;
+  if (rEnd < rStart) return { cut: null, classMeta: null };
+  return { cut: { start: rStart, end: rEnd }, classMeta: cMeta };
+}
+
+/**
+ * Renders a changed `class` (lines above the current `def`, excluding earlier methods' bodies)
+ * inline in the method card—same block as the method diff, not a separate framed section.
+ * @returns {{ start: number, end: number } | null} line range removed from the module "before" panel
+ */
+function mountEnclosingClassDefinitionInBody(
   container,
-  where,
+  payload,
+  classMeta,
+  methodFn,
+  sourceLinesByFile,
+  diffLinesByFile,
+  prContext,
+  pathPrefix
+) {
+  const rStart = classMeta.startLine;
+  const rEnd = methodFn.startLine - 1;
+  if (rEnd < rStart) return null;
+
+  const excludedLineNumbers = new Set();
+  for (const fn of Object.values(payload.functionsById)) {
+    if (fn?.kind !== 'method' || fn.file !== methodFn.file || fn.className !== methodFn.className) continue;
+    if (fn.id === methodFn.id) continue;
+    if (fn.startLine < methodFn.startLine) {
+      for (let ln = fn.startLine; ln <= fn.endLine; ln++) excludedLineNumbers.add(ln);
+    }
+  }
+  const sourceLines = sourceLinesByFile[methodFn.file] || [];
+  const rows = buildRangeDisplayRows(
+    [{ start: rStart, end: rEnd }],
+    sourceLines,
+    diffLinesByFile[methodFn.file] || [],
+    excludedLineNumbers
+  );
+  if (!rows.length) {
+    return { start: rStart, end: rEnd };
+  }
+  // In rhizome method context, keep only changed rows and let progressive gaps handle unchanged spans.
+  const rowsForRender = rows.filter((r) => r.type !== 'ctx');
+
+  const wrap = document.createElement('div');
+  wrap.className = 'class-definition-above';
+  const expandedKey = `${pathPrefix}::enclosing-class::${classMeta.id}`;
+  renderDiffRows(
+    wrap,
+    methodFn.file,
+    rowsForRender,
+    prContext,
+    expandedKey,
+    null,
+    sourceLines,
+    { startLine: rStart, endLine: rEnd },
+    0,
+    null,
+    false
+  );
+  container.appendChild(wrap);
+  return { start: rStart, end: rEnd };
+}
+
+/**
+ * Module-level diff lines in the same scrolling block as the function body (not card chrome).
+ * @param {'before' | 'after'} slot
+ */
+function mountModuleContextInline(
+  container,
   fileMeta,
   ranges,
   fn,
@@ -1112,72 +2190,90 @@ function mountModuleContextSection(
   pathPrefix,
   prContext,
   slot,
-  buttonLabel,
-  titleText,
-  callSiteReturn
+  showCountLabel = true
 ) {
   if (!ranges?.length) return;
-  const expandedKey = `${pathPrefix}::${fn.file}::module-${slot}::${fn.id}`;
-  const ctxId = `module-ctx-${slot}-${String(fn.id).replace(/[^a-zA-Z0-9]+/g, '_').slice(0, 96)}`;
-  const baseName = fn.file.replace(/^.*\//, '');
   const sourceLines = sourceLinesByFile[fn.file] || [];
-  const syms = moduleSymbolsInRanges(fileMeta.moduleChangedSymbols || [], sourceLines, ranges);
-  const symText = syms.slice(0, 8).join(', ');
-  const more = syms.length > 8 ? ` (+${syms.length - 8} more)` : '';
+  const rows = buildRangeDisplayRows(
+    ranges,
+    sourceLines,
+    diffLinesByFile[fn.file] || [],
+    new Set(fileMeta.moduleExcludedLineNumbers || [])
+  );
+  if (!rows.length) return;
+  // For rhizome contexts, render changed rows and let gaps provide progressive expansion.
+  const rowsForRender = showCountLabel ? rows : rows.filter((r) => r.type !== 'ctx');
+  const wrap = document.createElement('div');
+  wrap.className = `module-context-inline module-context-inline--${slot}`;
+  const expandedKey = `${pathPrefix}::${fn.file}::module-inline-${slot}::${fn.id}`;
+  const moduleStart = Math.min(...ranges.map((r) => Number(r.start)).filter((n) => Number.isFinite(n)));
+  const moduleEnd = Math.max(...ranges.map((r) => Number(r.end)).filter((n) => Number.isFinite(n)));
+  const rangeStart =
+    slot === 'before'
+      ? moduleStart
+      : Number(fn.endLine) + 1;
+  const rangeEnd =
+    slot === 'before'
+      ? Number(fn.startLine) - 1
+      : moduleEnd;
+  renderDiffRows(
+    wrap,
+    fn.file,
+    rowsForRender,
+    prContext,
+    expandedKey,
+    null,
+    sourceLines,
+    Number.isFinite(rangeStart) && Number.isFinite(rangeEnd) && rangeStart <= rangeEnd
+      ? { startLine: rangeStart, endLine: rangeEnd }
+      : null,
+    showCountLabel ? CTX_GAP_INITIAL_EDGE_LINES : 0,
+    null,
+    showCountLabel
+  );
+  container.appendChild(wrap);
+}
 
-  const ctx = document.createElement('div');
-  ctx.className = `module-context module-context--${slot}`;
-  ctx.dataset.moduleContextSection = `${fn.file}::${fn.id}::${slot}`;
-  const showFileName = slot !== 'after';
-  ctx.innerHTML = `
-    <div class="module-context-header">
-      <button type="button" class="module-context-toggle" aria-expanded="false" aria-controls="${escapeHtml(ctxId)}" title="${escapeHtml(titleText)}">${escapeHtml(buttonLabel)}</button>
-      ${showFileName ? `<span class="module-context-file">${escapeHtml(baseName)}</span>` : ''}
-      ${symText ? `<span class="module-context-syms" title="${escapeHtml(syms.join(', '))}">${escapeHtml(symText)}${escapeHtml(more)}</span>` : ''}
-    </div>
-    <div class="module-context-body" id="${escapeHtml(ctxId)}" hidden></div>
-  `;
-  const body = ctx.querySelector('.module-context-body');
-  const toggle = ctx.querySelector('.module-context-toggle');
-  const headerRow = ctx.querySelector('.module-context-header');
-  // Only the top "before" panel gets the link; "after" sits below the body so a second link would be easy to miss.
-  if (callSiteReturn && headerRow && slot === 'before') {
-    headerRow.appendChild(createCallSiteBackButton(callSiteReturn));
-  }
+/**
+ * Mounts expandable file context around a function: everything above its start line
+ * and below its end line in the same file. Uses the same progressive expander rows.
+ * @param {'before' | 'after'} slot
+ */
+function mountFileContextAroundFunction(
+  container,
+  fn,
+  sourceLinesByFile,
+  pathPrefix,
+  prContext,
+  slot
+) {
+  const sourceLines = sourceLinesByFile[fn.file] || [];
+  if (!sourceLines.length) return;
+  const fileEnd = sourceLines.length;
+  const range =
+    slot === 'before'
+      ? { startLine: 1, endLine: Math.max(0, Number(fn.startLine) - 1) }
+      : { startLine: Number(fn.endLine) + 1, endLine: fileEnd };
+  if (!Number.isFinite(range.startLine) || !Number.isFinite(range.endLine)) return;
+  if (range.startLine > range.endLine) return;
 
-  const ensureModuleContextBodyPopulated = () => {
-    if (!body) return;
-    if (body.childElementCount > 0) return;
-    const rows = buildRangeDisplayRows(
-      ranges,
-      sourceLines,
-      diffLinesByFile[fn.file] || [],
-      new Set(fileMeta.moduleExcludedLineNumbers || [])
-    );
-    const lines = document.createElement('div');
-    lines.className = 'module-context-lines';
-    renderDiffRows(lines, fn.file, rows, prContext, expandedKey);
-    body.appendChild(lines);
-  };
-
-  const isInitiallyExpanded = moduleContextExpandedKeys.has(expandedKey);
-  toggle?.setAttribute('aria-expanded', isInitiallyExpanded ? 'true' : 'false');
-  if (body) body.hidden = !isInitiallyExpanded;
-  if (isInitiallyExpanded) ensureModuleContextBodyPopulated();
-
-  toggle?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const expanded = toggle.getAttribute('aria-expanded') === 'true';
-    const next = !expanded;
-    toggle.setAttribute('aria-expanded', next ? 'true' : 'false');
-    if (body) body.hidden = !next;
-    if (next) ensureModuleContextBodyPopulated();
-    if (next) moduleContextExpandedKeys.add(expandedKey);
-    else moduleContextExpandedKeys.delete(expandedKey);
-  });
-
-  if (where === 'start') container.insertBefore(ctx, container.firstChild);
-  else container.appendChild(ctx);
+  const wrap = document.createElement('div');
+  wrap.className = `function-file-context-inline function-file-context-inline--${slot}`;
+  const key = `${pathPrefix}::${fn.id}::file-context-${slot}`;
+  renderDiffRows(
+    wrap,
+    fn.file,
+    [],
+    prContext,
+    key,
+    null,
+    sourceLines,
+    range,
+    0,
+    slot,
+    false
+  );
+  container.appendChild(wrap);
 }
 
 /**
@@ -1187,6 +2283,7 @@ function mountModuleContextSection(
  * @param {Record<string, { type: string, oldLineNumber: number | null, newLineNumber: number | null, content: string }[]>} diffLinesByFile
  * @param {Set<string>} filesWithModuleContext - file paths that have module-scope changes
  * @param {Map<string, { moduleChangedRanges?: { start: number, end: number }[], moduleChangedSymbols?: string[] }>} moduleMetaByFile
+ * @param {Map<string, string>} moduleContextOwnerByFile - file path -> function id that alone shows module-level strips (empty map ok)
  * @param {{ callerId: string, parentTreeNodeKey: string | null, callerName: string, calleeTreeNodeKey: string } | null} [callSiteReturn]
  * @param {Map<string, string>} canonicalKeyByFunctionId - first DFS tree key per function (matches code cards)
  * @param {Set<string>} flowFnIds - all function ids in the selected flow (for call-site name scan)
@@ -1200,6 +2297,7 @@ function renderFunctionBody(
   diffLinesByFile,
   filesWithModuleContext,
   moduleMetaByFile,
+  moduleContextOwnerByFile,
   calleesByCaller,
   flowFnIds,
   indent,
@@ -1209,39 +2307,51 @@ function renderFunctionBody(
   collapsedMode = false,
   canonicalKeyByFunctionId = new Map()
 ) {
-  const fileBlock = container.closest('[data-file]') || container;
+  const { cut: classLineCut, classMeta: enclosingClassMeta } = getEnclosingClassContextForMethod(
+    payload,
+    fn,
+    collapsedMode
+  );
 
   const fileMeta = moduleMetaByFile.get(fn.file);
-  const rangesBefore =
-    filesWithModuleContext.has(fn.file) && fileMeta?.moduleChangedRanges?.length
+  const moduleStripHostId = moduleContextOwnerByFile.get(fn.file);
+  const showModuleStrips =
+    filesWithModuleContext.has(fn.file) &&
+    Boolean(fileMeta?.moduleChangedRanges?.length) &&
+    moduleStripHostId !== undefined &&
+    moduleStripHostId === fn.id;
+  let rangesBefore =
+    showModuleStrips && fileMeta?.moduleChangedRanges?.length
       ? moduleRangesBeforeFunction(fileMeta.moduleChangedRanges, fn.startLine)
       : [];
+  if (classLineCut) {
+    rangesBefore = subtractIntervalFromModuleRanges(
+      rangesBefore,
+      classLineCut.start,
+      classLineCut.end
+    );
+  }
   const rangesAfter =
-    filesWithModuleContext.has(fn.file) && fileMeta?.moduleChangedRanges?.length
+    showModuleStrips && fileMeta?.moduleChangedRanges?.length
       ? moduleRangesAfterFunction(fileMeta.moduleChangedRanges, fn.endLine)
       : [];
 
-  // Show file name when this file has no module panels in this block (panels include the file name).
-  const hasModulePanelHere = rangesBefore.length > 0 || rangesAfter.length > 0;
-  const hasFileHeader = fileBlock.querySelector?.('.file-name-header, [data-module-context-section]');
-  if (!hasFileHeader && !hasModulePanelHere && !filesWithModuleContext.has(fn.file) && fileBlock.dataset?.file === fn.file) {
-    const fileHeader = document.createElement('div');
-    fileHeader.className = 'file-name-header';
-    const baseName = fn.file.replace(/^.*\//, '');
-    const label = document.createElement('span');
-    label.className = 'file-name-header-label';
-    label.textContent = baseName;
-    fileHeader.appendChild(label);
-    if (callSiteReturn) {
-      fileHeader.appendChild(createCallSiteBackButton(callSiteReturn));
-    }
-    fileBlock.prepend(fileHeader);
+  mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
+
+  if (!collapsedMode) {
+    mountFileContextAroundFunction(
+      container,
+      fn,
+      sourceLinesByFile,
+      pathPrefix,
+      prContext,
+      'before'
+    );
   }
 
   if (rangesBefore.length && fileMeta) {
-    mountModuleContextSection(
+    mountModuleContextInline(
       container,
-      'start',
       fileMeta,
       rangesBefore,
       fn,
@@ -1250,9 +2360,20 @@ function renderFunctionBody(
       pathPrefix,
       prContext,
       'before',
-      'Module changes',
-      'Edits outside any function from the start of the file up to this function',
-      callSiteReturn
+      false
+    );
+  }
+
+  if (enclosingClassMeta && fn.kind === 'method' && !collapsedMode) {
+    mountEnclosingClassDefinitionInBody(
+      container,
+      payload,
+      enclosingClassMeta,
+      fn,
+      sourceLinesByFile,
+      diffLinesByFile,
+      prContext,
+      pathPrefix
     );
   }
 
@@ -1262,14 +2383,13 @@ function renderFunctionBody(
   if (collapsedMode) {
     const body = document.createElement('div');
     body.className = 'function-body';
-    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigSource = fn.snippet || (fn.kind === 'class' ? `class ${fn.name}:` : `def ${fn.name}(`);
     const sigHtml = highlightPython(sigSource);
     body.innerHTML = `<pre class="code-line"><code class="language-python">${sigHtml}</code></pre>`;
     container.appendChild(body);
     if (rangesAfter.length && fileMeta) {
-      mountModuleContextSection(
+      mountModuleContextInline(
         container,
-        'end',
         fileMeta,
         rangesAfter,
         fn,
@@ -1278,12 +2398,9 @@ function renderFunctionBody(
         pathPrefix,
         prContext,
         'after',
-        'Module changes',
-        'Edits outside any function from after this function through the end of the file',
-        callSiteReturn
+        false
       );
     }
-    mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
     return;
   }
 
@@ -1292,14 +2409,13 @@ function renderFunctionBody(
   if (!sourceLines.length && !(diffLinesByFile[fn.file] || []).length) {
     const body = document.createElement('div');
     body.className = 'function-body';
-    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigSource = fn.snippet || (fn.kind === 'class' ? `class ${fn.name}:` : `def ${fn.name}(`);
     const sigHtml = highlightPython(sigSource);
     body.innerHTML = `<pre class="code-line"><code class="language-python">${sigHtml}</code></pre>`;
     container.appendChild(body);
     if (rangesAfter.length && fileMeta) {
-      mountModuleContextSection(
+      mountModuleContextInline(
         container,
-        'end',
         fileMeta,
         rangesAfter,
         fn,
@@ -1308,12 +2424,9 @@ function renderFunctionBody(
         pathPrefix,
         prContext,
         'after',
-        'Module changes',
-        'Edits outside any function from after this function through the end of the file',
-        callSiteReturn
+        false
       );
     }
-    mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
     return;
   }
 
@@ -1321,14 +2434,13 @@ function renderFunctionBody(
   if (fnDiffLines.length === 0) {
     const body = document.createElement('div');
     body.className = 'function-body';
-    const sigSource = fn.snippet || `def ${fn.name}(`;
+    const sigSource = fn.snippet || (fn.kind === 'class' ? `class ${fn.name}:` : `def ${fn.name}(`);
     const sigHtml = highlightPython(sigSource);
     body.innerHTML = `<pre class="code-line"><code class="language-python">${sigHtml}</code></pre>`;
     container.appendChild(body);
     if (rangesAfter.length && fileMeta) {
-      mountModuleContextSection(
+      mountModuleContextInline(
         container,
-        'end',
         fileMeta,
         rangesAfter,
         fn,
@@ -1337,31 +2449,58 @@ function renderFunctionBody(
         pathPrefix,
         prContext,
         'after',
-        'Module changes',
-        'Edits outside any function from after this function through the end of the file',
-        callSiteReturn
+        false
       );
     }
-    mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
     return;
   }
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
   const calleesForFind = buildCalleesForFind(calleesWithIndex, fn.id, flowFnIds, payload.functionsById);
   attachCallSitesToRows(fnDiffLines, calleesWithIndex, calleesForFind);
-  const rowsToRender = expandContextCollapseRows(fnDiffLines);
+  const rowsToRender = expandContextCollapseRows(
+    fnDiffLines,
+    fn.changed && fn.changeType !== 'deleted' ? new Set([Number(fn.startLine)]) : null
+  );
+  markDocstringLines(rowsToRender);
 
   for (const rowData of rowsToRender) {
     if (rowData.type === 'ctx-collapse') {
-      const wrap = document.createElement('div');
-      wrap.className = 'diff-ctx-collapse';
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'diff-ctx-collapse-btn';
-      const body = document.createElement('div');
-      body.className = 'diff-ctx-collapse-body';
-      for (const hr of rowData.hiddenRows) {
+      const hiddenRows = rowData.hiddenRows || [];
+      const hiddenCount = Number(rowData.lineCount || hiddenRows.length || 0);
+      const startLine = Number(rowData.startLine || hiddenRows[0]?.newLineNumber || fn.startLine);
+      const endLine = Number(
+        rowData.endLine || hiddenRows[hiddenRows.length - 1]?.newLineNumber || fn.endLine
+      );
+      const scope = `${pathPrefix}::${fn.id}`;
+      const stateKey = `${scope}::ctx-gap::${startLine}-${endLine}`;
+      const saved = ctxGapRevealByKey.get(stateKey) || {};
+      let head = clampToInt(saved.head ?? 0, 0, hiddenCount);
+      let tail = clampToInt(saved.tail ?? 0, 0, hiddenCount);
+      if (head + tail > hiddenCount) {
+        if (head >= hiddenCount) {
+          head = hiddenCount;
+          tail = 0;
+        } else {
+          tail = Math.max(0, hiddenCount - head);
+        }
+      }
+      const remain = Math.max(0, hiddenCount - head - tail);
+      const hasExpanded = head > 0 || tail > 0;
+
+      function persistAndRerender(nextHead, nextTail) {
+        ctxGapRevealByKey.set(stateKey, {
+          head: clampToInt(nextHead, 0, hiddenCount),
+          tail: clampToInt(nextTail, 0, hiddenCount)
+        });
+        const codePane = document.getElementById('code-pane');
+        if (codePane) renderCodeView(codePane);
+      }
+
+      const revealHeadRows = hiddenRows.slice(0, head);
+      const revealTailRows = hiddenRows.slice(Math.max(head, hiddenRows.length - tail));
+      for (const hr of revealHeadRows) {
         appendFunctionBodyDiffLine(
-          body,
+          container,
           hr,
           indent,
           pathPrefix,
@@ -1373,11 +2512,99 @@ function renderFunctionBody(
           canonicalKeyByFunctionId
         );
       }
-      const persistenceKey = `${pathPrefix}::${fn.id}::ctx::${rowData.startLine}-${rowData.endLine}-${rowData.lineCount}`;
-      setupCtxCollapseToggle(btn, body, rowData, persistenceKey);
-      wrap.appendChild(btn);
-      wrap.appendChild(body);
-      container.appendChild(wrap);
+
+      if (remain > 0) {
+        const hiddenStartLine = startLine + head;
+        const hiddenEndLine = endLine - tail;
+        const expanderHeightPx = CTX_GAP_EXPANDER_HEIGHT_MINIMAL_PX;
+        const expanderRow = document.createElement('div');
+        expanderRow.className = 'diff-line diff-line-ctx-gap-expander';
+        expanderRow.classList.add('diff-line-ctx-gap-expander-minimal');
+        expanderRow.style.minHeight = `${expanderHeightPx}px`;
+        const gutterA = document.createElement('span');
+        gutterA.className = 'diff-num diff-num-ctx diff-num-gap-controls';
+        const gutterB = document.createElement('span');
+        gutterB.className = 'diff-num diff-num-ctx';
+        const sign = document.createElement('span');
+        sign.className = 'diff-sign diff-sign-ctx';
+        const meta = document.createElement('pre');
+        meta.className = 'diff-code diff-code-ctx diff-code-gap-meta';
+        const metaCode = document.createElement('code');
+        metaCode.className = 'language-python';
+
+        const showAbove = document.createElement('button');
+        showAbove.type = 'button';
+        showAbove.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
+        setGapCaretIcon(showAbove, 'up');
+        showAbove.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} above`;
+        showAbove.setAttribute('aria-label', showAbove.title);
+        showAbove.addEventListener('click', () => {
+          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
+          persistAndRerender(head, tail + n);
+        });
+
+        const showBelow = document.createElement('button');
+        showBelow.type = 'button';
+        showBelow.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
+        setGapCaretIcon(showBelow, 'down');
+        showBelow.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} below`;
+        showBelow.setAttribute('aria-label', showBelow.title);
+        showBelow.addEventListener('click', () => {
+          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
+          persistAndRerender(head + n, tail);
+        });
+
+        const showAll = document.createElement('button');
+        showAll.type = 'button';
+        showAll.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--all';
+        showAll.textContent = '⋯';
+        showAll.title = `Show all ${remain} lines`;
+        showAll.setAttribute('aria-label', showAll.title);
+        showAll.addEventListener('click', () => {
+          persistAndRerender(hiddenCount, 0);
+        });
+
+        const inlineControls = document.createElement('span');
+        inlineControls.className = 'diff-ctx-gap-controls-inline';
+        const resetView = document.createElement('button');
+        resetView.type = 'button';
+        resetView.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--reset';
+        resetView.textContent = '↺';
+        resetView.title = 'Reset to original view';
+        resetView.setAttribute('aria-label', resetView.title);
+        resetView.addEventListener('click', () => {
+          persistAndRerender(0, 0);
+        });
+        inlineControls.appendChild(showAbove);
+        if (remain > CTX_GAP_REVEAL_CHUNK_LINES) inlineControls.appendChild(showAll);
+        inlineControls.appendChild(showBelow);
+        if (hasExpanded) inlineControls.appendChild(resetView);
+        // Rhizome cards: keep this control very minimal — one-line controls + compact count.
+        meta.classList.add('diff-code-gap-meta-minimal', 'diff-code-gap-meta-minimal-inline');
+        metaCode.textContent = '';
+        gutterA.appendChild(inlineControls);
+        meta.appendChild(metaCode);
+        expanderRow.appendChild(gutterA);
+        expanderRow.appendChild(gutterB);
+        expanderRow.appendChild(sign);
+        expanderRow.appendChild(meta);
+        container.appendChild(expanderRow);
+      }
+
+      for (const hr of revealTailRows) {
+        appendFunctionBodyDiffLine(
+          container,
+          hr,
+          indent,
+          pathPrefix,
+          fn,
+          payload,
+          uiState,
+          pathFunctionIds,
+          calleesForFind,
+          canonicalKeyByFunctionId
+        );
+      }
       continue;
     }
     appendFunctionBodyDiffLine(
@@ -1395,9 +2622,8 @@ function renderFunctionBody(
   }
 
   if (rangesAfter.length && fileMeta) {
-    mountModuleContextSection(
+    mountModuleContextInline(
       container,
-      'end',
       fileMeta,
       rangesAfter,
       fn,
@@ -1405,17 +2631,250 @@ function renderFunctionBody(
       diffLinesByFile,
       pathPrefix,
       prContext,
-      'after',
-      'Module changes',
-      'Edits outside any function from after this function through the end of the file',
-      callSiteReturn
+      'after'
     );
   }
 
-  mountCallSiteReturnBarIfNeeded(container, callSiteReturn);
+  if (!collapsedMode) {
+    mountFileContextAroundFunction(
+      container,
+      fn,
+      sourceLinesByFile,
+      pathPrefix,
+      prContext,
+      'after'
+    );
+  }
+}
+
+/**
+ * Indent depth in the rhizome rail (matches flow-tree nesting).
+ * @param {string} treeNodeKey
+ */
+function treeNavDepth(treeNodeKey) {
+  if (!treeNodeKey) return 0;
+  let d = 0;
+  for (const seg of treeNodeKey.split('/')) {
+    if (seg.startsWith('e:')) d++;
+  }
+  return d;
+}
+
+/**
+ * @param {object} uiState
+ * @param {string} calleeTreeNodeKey
+ * @param {import('../flowSchema.js').FlowPayload} payload
+ */
+function callSiteReturnPayloadForCallee(uiState, calleeTreeNodeKey, payload) {
+  if (uiState.activeTreeNodeKey !== calleeTreeNodeKey) return null;
+  if (!uiState.callSiteCallerTreeNodeKey) return null;
+  if (uiState.callSiteReturnConsumedKeys.has(calleeTreeNodeKey)) return null;
+  const callerId = getCallerFromTreeNodeKey(calleeTreeNodeKey);
+  if (!callerId) return null;
+  const callerFn = payload.functionsById[callerId];
+  const callerName = getFunctionDisplayName(callerFn) || callerId;
+  return {
+    callerId,
+    parentTreeNodeKey: getParentTreeNodeKey(calleeTreeNodeKey),
+    callerName,
+    calleeTreeNodeKey
+  };
+}
+
+/**
+ * @param {HTMLElement} block
+ * @param {import('../flowSchema.js').FunctionMeta} fn
+ * @param {string} treeNodeKey
+ */
+function mountRhizomeFunctionBlock(
+  block,
+  fn,
+  treeNodeKey,
+  payload,
+  uiState,
+  sourceLinesByFile,
+  diffLinesByFile,
+  filesWithModuleContext,
+  moduleMetaByFile,
+  moduleContextOwnerByFile,
+  calleesByCaller,
+  flowFnIds,
+  prContext,
+  canonicalKeyByFunctionId,
+  collapsedMode
+) {
+  const changeType = fn.changeType || 'modified';
+  const isExactActive = uiState.activeTreeNodeKey === treeNodeKey;
+  const isFunctionMatchActive = uiState.activeFunctionId === fn.id && !isExactActive;
+  block.className =
+    'function-block' +
+    (isExactActive ? ' active' : '') +
+    (isFunctionMatchActive ? ' function-match-active' : '') +
+    (uiState.readFunctionIds?.has(fn.id) ? ' read' : '') +
+    (uiState.hoveredTreeNodeKey === treeNodeKey ? ' hovered' : '') +
+    (collapsedMode ? ' collapsed' : '');
+  block.dataset.treeNodeKey = treeNodeKey;
+  block.dataset.functionId = fn.id;
+  block.dataset.file = fn.file || '';
+  block.dataset.changeType = changeType;
+
+  const header = document.createElement('div');
+  header.className = 'function-block-head file-name-header full-file-diff-bar rhizome-file-sticky-header';
+  const fileLabel = fn.file || '';
+
+  header.innerHTML = `
+    <span class="file-name-header-label full-file-diff-bar-path" title="${escapeHtml(fileLabel)}">${escapeHtml(fileLabel)}</span>
+    <span class="function-block-header-controls"></span>
+  `;
+  const controls = header.querySelector('.function-block-header-controls');
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'function-block-toggle-btn';
+  toggle.textContent = collapsedMode ? '▸' : '▾';
+  toggle.title = collapsedMode ? 'Expand body' : 'Collapse body';
+  toggle.setAttribute('aria-expanded', collapsedMode ? 'false' : 'true');
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setFunctionCollapsedState(fn.id, !collapsedMode);
+  });
+
+  const done = document.createElement('button');
+  done.type = 'button';
+  done.className = 'function-block-done-btn' + (uiState.readFunctionIds?.has(fn.id) ? ' checked' : '');
+  done.textContent = '✓';
+  done.title = uiState.readFunctionIds?.has(fn.id) ? 'Mark not done' : 'Mark done';
+  done.setAttribute('aria-label', done.title);
+  done.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setFunctionReadState(fn.id);
+  });
+
+  const resetView = document.createElement('button');
+  resetView.type = 'button';
+  resetView.className = 'function-block-reset-view-btn';
+  resetView.textContent = '↺';
+  resetView.title = 'Reset surrounding view';
+  resetView.setAttribute('aria-label', resetView.title);
+  resetView.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const scopePrefix = `${treeNodeKey}::${fn.id}::`;
+    const changed = clearCtxGapRevealStateByPrefix(scopePrefix);
+    if (changed) {
+      const codePane = document.getElementById('code-pane');
+      if (codePane) renderCodeView(codePane);
+    }
+  });
+
+  if (controls) {
+    const scopePrefix = `${treeNodeKey}::${fn.id}::`;
+    const canResetView = hasCtxGapRevealStateByPrefix(scopePrefix);
+    controls.appendChild(toggle);
+    if (canResetView) controls.appendChild(resetView);
+    controls.appendChild(done);
+  }
+
+  const content = document.createElement('div');
+  content.className = 'function-block-content';
+
+  block.appendChild(header);
+
+  header.addEventListener('click', () => {
+    restoreCallSiteReturnTreeNode(treeNodeKey);
+    setActiveFunction(fn.id, treeNodeKey);
+  });
+
+  const callReturn = callSiteReturnPayloadForCallee(uiState, treeNodeKey, payload);
+  renderFunctionBody(
+    content,
+    payload,
+    uiState,
+    fn,
+    sourceLinesByFile,
+    diffLinesByFile,
+    filesWithModuleContext,
+    moduleMetaByFile,
+    moduleContextOwnerByFile,
+    calleesByCaller,
+    flowFnIds,
+    '',
+    treeNodeKey,
+    prContext,
+    callReturn,
+    collapsedMode,
+    canonicalKeyByFunctionId
+  );
+  block.appendChild(content);
+}
+
+/**
+ * Full-file diff (not split into rhizome function cards) for paths outside the current outline.
+ */
+function mountFullFileDiffPanel(
+  root,
+  filePath,
+  flowPayload,
+  sourceLinesByFile,
+  diffLinesByFile,
+  prContext
+) {
+  root.innerHTML = '';
+  root.className = 'code-files-root full-file-diff-root';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'full-file-diff-wrap';
+
+  const bar = document.createElement('div');
+  bar.className = 'full-file-diff-bar';
+  const title = document.createElement('div');
+  title.className = 'full-file-diff-bar-path';
+  title.textContent = filePath;
+  title.title = filePath;
+  bar.appendChild(title);
+
+  const scopePrefix = `full-file::${filePath}::`;
+  if (hasCtxGapRevealStateByPrefix(scopePrefix)) {
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'full-file-diff-reset-view-btn';
+    resetBtn.textContent = '↺';
+    resetBtn.title = 'Reset surrounding view';
+    resetBtn.setAttribute('aria-label', resetBtn.title);
+    resetBtn.addEventListener('click', () => {
+      const changed = clearCtxGapRevealStateByPrefix(scopePrefix);
+      if (!changed) return;
+      const codePane = document.getElementById('code-pane');
+      if (codePane) renderCodeView(codePane);
+    });
+    bar.appendChild(resetBtn);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'full-file-diff-body';
+  const sourceLines = sourceLinesByFile[filePath] || [];
+  let rows = diffLinesByFile[filePath] || [];
+  rows = includeChangedFunctionDefinitions(filePath, rows, flowPayload.functionsById, sourceLines);
+  renderDiffRows(
+    body,
+    filePath,
+    rows,
+    prContext,
+    `full-file::${filePath}`,
+    null,
+    sourceLines,
+    { startLine: 1, endLine: sourceLines.length }
+  );
+
+  wrap.appendChild(bar);
+  wrap.appendChild(body);
+  root.appendChild(wrap);
 }
 
 export function renderCodeView(container) {
+  const prevScroller = container.querySelector('.code-pane-content');
+  if (prevScroller) {
+    codePaneScrollTop = prevScroller.scrollTop;
+    codePaneScrollLeft = prevScroller.scrollLeft;
+  }
   const { flowPayload, uiState, prContext } = getState();
   if (
     callSiteReturnHighlightSpec &&
@@ -1430,250 +2889,510 @@ export function renderCodeView(container) {
     return;
   }
 
-  const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId);
-  const flowFnIds = selectedFlow ? getFlowFunctionIds(selectedFlow, flowPayload) : new Set();
-  if (selectedFlow?.id !== moduleContextFlowId) {
-    moduleContextFlowId = selectedFlow?.id ?? null;
-    moduleContextExpandedKeys = new Set();
-    ctxCollapseExpandedKeys = new Set();
-  }
-
-  if (flowFnIds.size === 0) {
-    container.textContent = 'Select a flow.';
+  const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId) || null;
+  const standaloneClass = uiState.selectedStandaloneClassId
+    ? flowPayload.functionsById[uiState.selectedStandaloneClassId]
+    : null;
+  if ((!selectedFlow?.rootId || !flowPayload.functionsById[selectedFlow.rootId]) && !standaloneClass) {
+    container.textContent = 'No rhizome to show.';
     return;
   }
 
+  const rhizomeViewKey = selectedFlow
+    ? `${prContext?.headSha ?? ''}::${selectedFlow.id}`
+    : `${prContext?.headSha ?? ''}::standalone-class::${standaloneClass?.id ?? ''}`;
+
+  const sourceLinesByFile = {};
+  const diffLinesByFile = {};
+  for (const file of flowPayload.files) {
+    sourceLinesByFile[file.path] = file.sourceLines || [];
+    diffLinesByFile[file.path] = buildDiffLines(file.hunks || []);
+  }
+
+  const flowFnIds = selectedFlow
+    ? getFlowFunctionIds(selectedFlow, flowPayload)
+    : new Set(standaloneClass ? [standaloneClass.id] : []);
+  const rhizomeOrderRaw = selectedFlow
+    ? collectFlowOrder(selectedFlow.rootId, flowPayload)
+    : (standaloneClass
+        ? [{ treeNodeKey: `standalone-class:${standaloneClass.id}`, functionId: standaloneClass.id }]
+        : []);
+  const rhizomeOrder = filterNestedFunctionCards(rhizomeOrderRaw, flowPayload);
+  const canonicalKeyByFunctionId = new Map();
+  for (const { treeNodeKey, functionId } of rhizomeOrder) {
+    if (!canonicalKeyByFunctionId.has(functionId)) canonicalKeyByFunctionId.set(functionId, treeNodeKey);
+  }
+
+  const unionFlowFnIds = collectUnionFlowFunctionIds(flowPayload);
+  if (!selectedFlow?.rootId && standaloneClass?.id) {
+    unionFlowFnIds.add(standaloneClass.id);
+  }
+  const rhizomeFilePaths = rhizomeParticipatingFilePathNorms(flowPayload, unionFlowFnIds);
+  const selectedFlowFileNorms = rhizomeParticipatingFilePathNorms(flowPayload, flowFnIds);
+  const outsideRequested = uiState.codePaneOutsideDiffPath;
+  const normRequested = outsideRequested ? normalizeNavFilePath(outsideRequested) : '';
+  const fileMetaForOutside =
+    normRequested && flowPayload.files?.find((f) => normalizeNavFilePath(f.path) === normRequested);
+  // Full-file pane only when the path is not part of the *selected* flow outline (includes
+  // “never in any flow” and “in another flow but not this one”).
+  const effectiveOutside =
+    outsideRequested &&
+    fileMetaForOutside &&
+    !selectedFlowFileNorms.has(normalizeNavFilePath(fileMetaForOutside.path))
+      ? fileMetaForOutside.path
+      : null;
+
+  const paneResetKey = `${rhizomeViewKey}::${effectiveOutside ?? ''}`;
+  if (paneResetKey !== lastRhizomeCodeViewKey) {
+    lastRhizomeCodeViewKey = paneResetKey;
+    lastScrolledToActiveKey = null;
+    codePaneScrollTop = 0;
+    codePaneScrollLeft = 0;
+    ctxGapRevealByKey = new Map();
+  }
+
   const calleesByCaller = new Map();
-  for (const e of flowPayload.edges) {
+  for (const e of flowPayload.edges || []) {
     if (!flowFnIds.has(e.callerId) || !flowFnIds.has(e.calleeId)) continue;
     const list = calleesByCaller.get(e.callerId) || [];
     list.push({ calleeId: e.calleeId, callIndex: e.callIndex });
     calleesByCaller.set(e.callerId, list);
   }
 
-  const sourceLinesByFile = {};
-  const diffLinesByFile = {};
-  const filesWithModuleContext = new Set();
   const moduleMetaByFile = new Map();
-  for (const file of flowPayload.files) {
-    sourceLinesByFile[file.path] = file.sourceLines || [];
-    diffLinesByFile[file.path] = buildDiffLines(file.hunks || []);
-    if (file.moduleChangedRanges?.length) filesWithModuleContext.add(file.path);
-    moduleMetaByFile.set(file.path, {
-      moduleChangedRanges: file.moduleChangedRanges,
-      moduleChangedSymbols: file.moduleChangedSymbols,
-      moduleExcludedLineNumbers: file.moduleExcludedLineNumbers
-    });
+  const filesWithModuleContext = new Set();
+  for (const file of flowPayload.files || []) {
+    if (file.moduleChangedRanges?.length) {
+      filesWithModuleContext.add(file.path);
+      moduleMetaByFile.set(file.path, {
+        moduleChangedRanges: file.moduleChangedRanges,
+        moduleChangedSymbols: file.moduleChangedSymbols || []
+      });
+    }
   }
 
-  const root = flowPayload.functionsById[selectedFlow.rootId];
-  if (!root) return;
-
-  const flowOrder = collectFlowOrder(selectedFlow.rootId, flowPayload);
-  /** First DFS key per function — matches each `.function-block[data-tree-node-key]`. */
-  const canonicalKeyByFunctionId = new Map(
-    flowOrder.map(({ functionId, treeNodeKey }) => [functionId, treeNodeKey])
-  );
-  const fileSection = document.createElement('div');
-  fileSection.className = 'file-section';
-
-  for (const { treeNodeKey, functionId } of flowOrder) {
-    const fn = flowPayload.functionsById[functionId];
-    if (!fn) continue;
-    const block = document.createElement('div');
-    block.className = 'function-block' + (functionId === root.id ? ' root' : '');
-    block.dataset.functionId = functionId;
-    block.dataset.treeNodeKey = treeNodeKey;
-    block.dataset.file = fn.file;
-    if (fn.changeType) block.dataset.changeType = fn.changeType;
-    const isActive =
-      uiState.activeFunctionId === functionId ||
-      uiState.activeTreeNodeKey === treeNodeKey;
-    const isRead = uiState.readFunctionIds?.has?.(functionId);
-    const isCollapsed = uiState.collapsedFunctionIds?.has?.(functionId);
-    if (isActive) block.classList.add('active');
-    if (isRead) block.classList.add('read');
-    if (isCollapsed) block.classList.add('collapsed');
-
-    // Collapsible content wrapper (function body and caller info).
-    const content = document.createElement('div');
-    content.className = 'function-block-content';
-    block.appendChild(content);
-
-    const toggleBtn = document.createElement('button');
-    toggleBtn.type = 'button';
-    toggleBtn.className = 'function-block-toggle-btn';
-    const updateToggleLabel = () => {
-      const nowCollapsed = uiState.collapsedFunctionIds?.has?.(functionId);
-      toggleBtn.textContent = nowCollapsed ? '+' : '–';
-      toggleBtn.title = nowCollapsed ? 'Expand function body' : 'Collapse function body';
-      toggleBtn.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
-    };
-    updateToggleLabel();
-    toggleBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      setFunctionCollapsedState(functionId);
+  /** @type {Map<string, string>} */
+  const moduleContextOwnerByFile = new Map();
+  for (const filePath of filesWithModuleContext) {
+    const meta = moduleMetaByFile.get(filePath);
+    if (!meta?.moduleChangedRanges?.length) continue;
+    const lines = sourceLinesByFile[filePath] || [];
+    const candidates = Object.values(flowPayload.functionsById).filter(
+      (f) =>
+        f &&
+        f.file === filePath &&
+        ['function', 'method', 'class'].includes(f.kind || 'function') &&
+        f.changeType !== 'deleted'
+    );
+    if (!candidates.length) continue;
+    const winner = pickModuleContextHostFunctionId({
+      candidates,
+      moduleChangedRanges: meta.moduleChangedRanges,
+      moduleChangedSymbols: meta.moduleChangedSymbols || [],
+      sourceLines: lines,
+      payload: flowPayload,
+      flows: flowPayload.flows || [],
+      selectedFlow
     });
+    if (winner) moduleContextOwnerByFile.set(filePath, winner);
+  }
 
-    const doneBtn = document.createElement('button');
-    doneBtn.type = 'button';
-    doneBtn.className = 'function-block-done-btn';
-    doneBtn.textContent = '✓';
-    const updateDoneLabel = () => {
-      const nowRead = uiState.readFunctionIds?.has?.(functionId);
-      if (nowRead) {
-        doneBtn.classList.add('checked');
-        doneBtn.title = 'Marked as done (click to mark as not done)';
-        doneBtn.setAttribute('aria-pressed', 'true');
-      } else {
-        doneBtn.classList.remove('checked');
-        doneBtn.title = 'Mark this function as done/read';
-        doneBtn.setAttribute('aria-pressed', 'false');
+  const contentShell = document.createElement('div');
+  contentShell.className = 'code-pane-shell';
+  const filesNav = document.createElement('aside');
+  filesNav.className = 'code-files-nav';
+  filesNav.style.width = `${clampFilesNavWidth(filesNavWidthPx)}px`;
+  const filesNavResizer = document.createElement('div');
+  filesNavResizer.className = 'code-files-nav-resizer';
+  filesNavResizer.title = 'Drag to resize outline panel';
+  filesNavResizer.setAttribute('role', 'separator');
+  filesNavResizer.setAttribute('aria-orientation', 'vertical');
+  const contentScroller = document.createElement('div');
+  contentScroller.className = 'code-pane-content';
+  const filesPanelToggleBtn = document.createElement('button');
+  filesPanelToggleBtn.type = 'button';
+  filesPanelToggleBtn.className = 'code-files-nav-toggle-btn';
+  const rhizomeRoot = document.createElement('div');
+  rhizomeRoot.className = 'code-files-root rhizome-code-root';
+
+  const navTitle = document.createElement('div');
+  navTitle.className = 'code-files-nav-title';
+  const activeFnFromSelection = flowPayload.functionsById[uiState.activeFunctionId];
+  const allChangedFiles = (flowPayload.files || []).map((f) => f.path).filter(Boolean).sort(filePathSort);
+  const otherChangedCount = allChangedFiles.filter((p) => !rhizomeFilePaths.has(normalizeNavFilePath(p))).length;
+  const hasOutsideRhizome = otherChangedCount > 0;
+  const activeFile = uiState.selectedFileInFlow || activeFnFromSelection?.file || null;
+  const navTitleText = document.createElement('div');
+  navTitleText.className = 'code-files-nav-rhizome-title';
+  navTitleText.innerHTML = `<span class="code-files-nav-rhizome-kicker">Files</span>`;
+  const navTitleName = document.createElement('div');
+  navTitleName.className = 'code-files-nav-rhizome-name';
+  navTitleName.textContent = `${allChangedFiles.length} files`;
+  navTitleName.title =
+    'Rhizome files: path touches at least one node in any flow in this PR (sort first). Muted: never in any flow—click for full file diff.';
+  const titleStack = document.createElement('div');
+  titleStack.className = 'code-files-nav-title-stack';
+  titleStack.appendChild(navTitleText);
+  titleStack.appendChild(navTitleName);
+  navTitle.appendChild(titleStack);
+  navTitle.appendChild(filesPanelToggleBtn);
+  filesNav.appendChild(navTitle);
+
+  const filterWrap = document.createElement('div');
+  filterWrap.className = 'code-files-nav-filter-wrap';
+  filterWrap.innerHTML = `
+    <span class="code-files-nav-filter-icon" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
+        <path d="M10.68 11.74a6 6 0 1 1 1.06-1.06l3.27 3.27a.75.75 0 1 1-1.06 1.06l-3.27-3.27ZM11 7a4.5 4.5 0 1 0-9 0 4.5 4.5 0 0 0 9 0Z"></path>
+      </svg>
+    </span>
+    <input type="search" class="code-files-nav-filter-input" placeholder="Filter files..." aria-label="Filter files" />
+  `;
+  filesNav.appendChild(filterWrap);
+  const navTree = document.createElement('div');
+  navTree.className = 'code-files-nav-tree';
+
+  function scrollToFile(filePath) {
+    setSelectedFileInFlow(filePath);
+    const norm = normalizeNavFilePath(filePath);
+    const inSomeRhizome = rhizomeFilePaths.has(norm);
+    const firstInSelectedFlow = rhizomeOrder.find(
+      ({ functionId }) => normalizeNavFilePath(flowPayload.functionsById[functionId]?.file || '') === norm
+    );
+    if (inSomeRhizome && firstInSelectedFlow) {
+      setCodePaneOutsideDiffPath(null);
+      const fn = flowPayload.functionsById[firstInSelectedFlow.functionId];
+      if (fn) {
+        restoreCallSiteReturnTreeNode(firstInSelectedFlow.treeNodeKey);
+        setActiveFunction(fn.id, firstInSelectedFlow.treeNodeKey);
       }
-    };
-    updateDoneLabel();
-    doneBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      setFunctionReadState(functionId);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const scroller = document.querySelector('#code-pane .code-pane-content');
+          if (!scroller) return;
+          const hit = flowPayload.files?.find((f) => normalizeNavFilePath(f.path) === norm);
+          const canonical = hit?.path ?? filePath;
+          const target = scroller.querySelector(`.function-block[data-file="${CSS.escape(canonical)}"]`);
+          if (target) scrollToVerticalCenter(scroller, target, { behavior: 'smooth' });
+        });
+      });
+    } else {
+      const hit = flowPayload.files?.find((f) => normalizeNavFilePath(f.path) === norm);
+      setCodePaneOutsideDiffPath(hit?.path ?? filePath);
+    }
+  }
+
+  const filterInput = filterWrap.querySelector('.code-files-nav-filter-input');
+
+  const rootNode = { folders: new Map(), files: [] };
+  for (const filePath of allChangedFiles) {
+    const parts = pathParts(filePath);
+    if (parts.length === 0) continue;
+    let node = rootNode;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const part = parts[i];
+      if (!node.folders.has(part)) node.folders.set(part, { folders: new Map(), files: [] });
+      node = node.folders.get(part);
+    }
+    node.files.push(filePath);
+  }
+
+  function hasVisibleDescendant(node, filterText) {
+    if (!filterText) return true;
+    if (node.files.some((filePath) => filePath.toLowerCase().includes(filterText))) return true;
+    return [...node.folders.values()].some((child) => hasVisibleDescendant(child, filterText));
+  }
+
+  /** Set in `rerenderNavTree` so file rows can reflect outside-diff vs rhizome selection without a full pane rebuild. */
+  let navOutsideDiffPath = null;
+  let navActiveMethodFile = null;
+
+  function renderTree(parentEl, node, depth = 0, filterText = '', parentPath = '') {
+    const folderEntries = [...node.folders.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    for (const [folderName, childNode] of folderEntries) {
+      let compactLabel = folderName;
+      let folderPath = parentPath ? `${parentPath}/${folderName}` : folderName;
+      let compactNode = childNode;
+      while (compactNode.files.length === 0 && compactNode.folders.size === 1) {
+        const [nextName, nextNode] = [...compactNode.folders.entries()][0];
+        compactLabel += `/${nextName}`;
+        folderPath += `/${nextName}`;
+        compactNode = nextNode;
+      }
+      if (!hasVisibleDescendant(compactNode, filterText)) continue;
+      const details = document.createElement('details');
+      details.className = 'code-files-nav-folder';
+      if (!filesNavFolderStateInitialized && !filesNavFolderOpenState.has(folderPath)) {
+        filesNavFolderOpenState.set(folderPath, true);
+      }
+      details.open = filesNavFolderOpenState.get(folderPath) ?? true;
+      const summary = document.createElement('summary');
+      summary.className = 'code-files-nav-folder-row';
+      summary.style.paddingLeft = `${depth * 14 + 8}px`;
+      summary.innerHTML = `
+        <span class="code-files-nav-folder-caret" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M12.78 5.22a.75.75 0 0 1 0 1.06L8.53 10.53a.75.75 0 0 1-1.06 0L3.22 6.28a.75.75 0 1 1 1.06-1.06L8 8.94l3.72-3.72a.75.75 0 0 1 1.06 0Z"></path></svg>
+        </span>
+        <span class="code-files-nav-folder-icon" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M1.75 2A1.75 1.75 0 0 0 0 3.75v8.5C0 13.216.784 14 1.75 14h12.5A1.75 1.75 0 0 0 16 12.25v-7.5A1.75 1.75 0 0 0 14.25 3H8.06l-.97-1.21A1.75 1.75 0 0 0 5.72 1H1.75ZM1.5 3.75a.25.25 0 0 1 .25-.25h3.97a.25.25 0 0 1 .2.095l1.37 1.71a.75.75 0 0 0 .59.28h6.37a.25.25 0 0 1 .25.25v6.42a.25.25 0 0 1-.25.25H1.75a.25.25 0 0 1-.25-.25v-8.5Z"></path></svg>
+        </span>
+        <span class="code-files-nav-folder-name">${escapeHtml(compactLabel)}</span>
+      `;
+      details.appendChild(summary);
+      const body = document.createElement('div');
+      body.className = 'code-files-nav-folder-body';
+      renderTree(body, compactNode, depth + 1, filterText, folderPath);
+      details.appendChild(body);
+      details.addEventListener('toggle', () => {
+        filesNavFolderOpenState.set(folderPath, details.open);
+      });
+      parentEl.appendChild(details);
+    }
+
+    const files = [...node.files].sort((a, b) => {
+      const aIn = rhizomeFilePaths.has(normalizeNavFilePath(a));
+      const bIn = rhizomeFilePaths.has(normalizeNavFilePath(b));
+      if (aIn !== bIn) return aIn ? -1 : 1;
+      return filePathSort(a, b);
     });
+    for (const filePath of files) {
+      if (filterText && !filePath.toLowerCase().includes(filterText)) continue;
+      const inRhizome = rhizomeFilePaths.has(normalizeNavFilePath(filePath));
+      const navItem = document.createElement(inRhizome ? 'div' : 'button');
+      if (!inRhizome) navItem.type = 'button';
+      navItem.className =
+        'code-files-nav-item' +
+        (inRhizome ? ' code-files-nav-item--rhizome-readonly' : '') +
+        (!inRhizome && hasOutsideRhizome ? ' code-files-nav-item--outside-rhizome' : '');
+      const showingOutside = Boolean(navOutsideDiffPath);
+      const isShownFileRow =
+        showingOutside &&
+        navOutsideDiffPath &&
+        normalizeNavFilePath(navOutsideDiffPath) === normalizeNavFilePath(filePath);
+      const isRhizomeContextRow =
+        !showingOutside &&
+        inRhizome &&
+        activeFile &&
+        normalizeNavFilePath(activeFile) === normalizeNavFilePath(filePath);
+      if (isShownFileRow || isRhizomeContextRow) navItem.classList.add('active');
+      navItem.style.paddingLeft = `${depth * 14 + 30}px`;
+      navItem.title = inRhizome
+        ? `${filePath} — in this rhizome (view via rhizome tree)`
+        : `${filePath} — full file diff (not in this outline)`;
+      navItem.innerHTML = `
+        <span class="code-files-nav-file-icon" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M2.75 1h5.5c.464 0 .909.184 1.237.513l3 3c.329.328.513.773.513 1.237v7.5A1.75 1.75 0 0 1 11.25 15h-8.5A1.75 1.75 0 0 1 1 13.25v-10.5C1 1.784 1.784 1 2.75 1Zm5.5 1.5h-5.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25V6H9.75A1.75 1.75 0 0 1 8 4.25V2.5h.25Zm1.25.31V4.25c0 .138.112.25.25.25h1.44L9.5 2.81Z"></path><path d="M8 8.25a.75.75 0 0 1 .75.75v.75h.75a.75.75 0 0 1 0 1.5h-.75V12a.75.75 0 0 1-1.5 0v-.75H6.5a.75.75 0 0 1 0-1.5h.75V9A.75.75 0 0 1 8 8.25Z"></path></svg>
+        </span>
+        <span class="code-files-nav-name">${escapeHtml(toBaseName(filePath))}</span>
+      `;
+      if (!inRhizome) navItem.addEventListener('click', () => scrollToFile(filePath));
+      parentEl.appendChild(navItem);
+    }
+  }
 
-    // Always derive the caller from this card's flow path. There is one code card per function
-    // (first DFS occurrence); mixing in activeTreeNodeKey caused null/mismatch when selection
-    // state and the card key diverged, so "Return to call site" was missing for some navigations.
-    const callerId = getCallerFromTreeNodeKey(treeNodeKey);
-    const baseCallSiteReturn =
-      callerId != null
-        ? {
-            callerId,
-            parentTreeNodeKey: getParentTreeNodeKey(treeNodeKey),
-            callerName:
-              getFunctionDisplayName(flowPayload.functionsById[callerId]) || callerId,
-            calleeTreeNodeKey: treeNodeKey
-          }
-        : null;
-    const callSiteReturn =
-      baseCallSiteReturn && !uiState.callSiteReturnConsumedKeys?.has?.(treeNodeKey)
-        ? baseCallSiteReturn
-        : null;
+  function rerenderNavTree() {
+    const filterText = (filterInput?.value || '').trim().toLowerCase();
+    const u = getState().uiState;
+    navOutsideDiffPath = u.codePaneOutsideDiffPath;
+    navActiveMethodFile = u.activeFunctionId ? flowPayload.functionsById[u.activeFunctionId]?.file : null;
+    navTree.innerHTML = '';
+    renderTree(navTree, rootNode, 0, filterText, '');
+    if (!navTree.querySelector('.code-files-nav-item')) {
+      navTree.innerHTML = '';
+      const empty = document.createElement('div');
+      empty.className = 'code-files-nav-empty';
+      empty.textContent = 'No matching files';
+      navTree.appendChild(empty);
+    }
+  }
+  filterInput?.addEventListener('input', rerenderNavTree);
+  rerenderNavTree();
+  filesNavFolderStateInitialized = true;
+  filesNav.appendChild(navTree);
 
-    renderFunctionBody(
-      content,
+  filesNavResizer.addEventListener('mousedown', (event) => {
+    event.preventDefault();
+    const shellRect = contentShell.getBoundingClientRect();
+    const shellLeft = shellRect.left;
+    const shellWidth = shellRect.width;
+    const minW = FILES_NAV_WIDTH_MIN;
+    const maxW = Math.min(FILES_NAV_WIDTH_MAX, Math.max(minW, shellWidth - 220));
+    document.body.classList.add('is-resizing-code-files-nav');
+    function onMove(e) {
+      const next = clampFilesNavWidth(e.clientX - shellLeft);
+      const bounded = Math.max(minW, Math.min(maxW, next));
+      filesNavWidthPx = bounded;
+      filesNav.style.width = `${bounded}px`;
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.classList.remove('is-resizing-code-files-nav');
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
+  function applyFilesNavCollapsed(collapsed) {
+    filesNavCollapsed = collapsed;
+    filesNav.classList.toggle('code-files-nav-collapsed', collapsed);
+    if (collapsed) {
+      savedFilesNavWidthPx = clampFilesNavWidth(filesNav.getBoundingClientRect().width || filesNavWidthPx);
+      filesNav.style.width = '44px';
+    } else {
+      filesNavWidthPx = clampFilesNavWidth(savedFilesNavWidthPx || filesNavWidthPx);
+      filesNav.style.width = `${filesNavWidthPx}px`;
+    }
+    filesNavResizer.style.display = collapsed ? 'none' : '';
+    filesPanelToggleBtn.innerHTML = collapsed
+      ? `
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+          <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 1 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"></path>
+        </svg>
+      `
+      : `
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+          <path d="M9.78 12.78a.75.75 0 0 1-1.06 0L4.47 8.53a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 1 1 1.06 1.06L6.06 8l3.72 3.72a.75.75 0 0 1 0 1.06Z"></path>
+        </svg>
+      `;
+    filesPanelToggleBtn.title = collapsed ? 'Show file panel' : 'Hide file panel';
+    filesPanelToggleBtn.setAttribute('aria-label', collapsed ? 'Show file panel' : 'Hide file panel');
+    filesPanelToggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+
+  filesPanelToggleBtn.addEventListener('click', () => {
+    applyFilesNavCollapsed(!filesNavCollapsed);
+  });
+  applyFilesNavCollapsed(filesNavCollapsed);
+
+  if (effectiveOutside) {
+    mountFullFileDiffPanel(
+      rhizomeRoot,
+      effectiveOutside,
       flowPayload,
-      uiState,
-      fn,
       sourceLinesByFile,
       diffLinesByFile,
-      filesWithModuleContext,
-      moduleMetaByFile,
-      calleesByCaller,
-      flowFnIds,
-      '',
-      treeNodeKey,
-      prContext,
-      callSiteReturn,
-      isCollapsed,
-      canonicalKeyByFunctionId
+      prContext
     );
-
-    // Attach checkbox-style "done/read" control into the existing header inside this block:
-    // prefer module-context header if present, otherwise file-name header.
-    const headerEl =
-      block.querySelector('.module-context-header') ||
-      block.querySelector('.file-name-header');
-    if (headerEl) {
-      const controls = document.createElement('div');
-      controls.className = 'function-block-header-controls';
-      const headerToggleBtn = toggleBtn.cloneNode(true);
-      const headerDoneBtn = doneBtn.cloneNode(true);
-      headerToggleBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        setFunctionCollapsedState(functionId);
-      });
-      headerDoneBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        setFunctionReadState(functionId);
-      });
-      controls.appendChild(headerToggleBtn);
-      controls.appendChild(headerDoneBtn);
-      headerEl.appendChild(controls);
+  } else {
+    rhizomeRoot.className = 'code-files-root rhizome-code-root';
+    for (const { treeNodeKey, functionId } of rhizomeOrder) {
+      const fn = flowPayload.functionsById[functionId];
+      if (!fn) continue;
+      const collapsedMode = uiState.collapsedFunctionIds.has(fn.id);
+      const block = document.createElement('div');
+      mountRhizomeFunctionBlock(
+        block,
+        fn,
+        treeNodeKey,
+        flowPayload,
+        uiState,
+        sourceLinesByFile,
+        diffLinesByFile,
+        filesWithModuleContext,
+        moduleMetaByFile,
+        moduleContextOwnerByFile,
+        calleesByCaller,
+        flowFnIds,
+        prContext,
+        canonicalKeyByFunctionId,
+        collapsedMode
+      );
+      rhizomeRoot.appendChild(block);
     }
-    fileSection.appendChild(block);
   }
-  container.appendChild(fileSection);
 
-  // Determine the current active code block, preferring the specific tree-node path
-  // when available so different occurrences of the same function scroll independently.
-  const activeTreeNodeKey = uiState.activeTreeNodeKey || null;
-  const activeFunctionId =
-    getFunctionIdFromTreeNodeKey(activeTreeNodeKey) || uiState.activeFunctionId;
+  contentScroller.appendChild(rhizomeRoot);
+  contentShell.appendChild(filesNav);
+  contentShell.appendChild(filesNavResizer);
+  contentShell.appendChild(contentScroller);
+  container.appendChild(contentShell);
+  contentScroller.scrollTop = codePaneScrollTop;
+  contentScroller.scrollLeft = codePaneScrollLeft;
 
-  // Build a stable key that distinguishes different occurrences of the same function.
-  const activeScrollKey = activeTreeNodeKey || (activeFunctionId ? `fn:${activeFunctionId}` : null);
+  const rawActiveKey =
+    uiState.activeTreeNodeKey ||
+    (uiState.activeFunctionId ? canonicalKeyByFunctionId.get(uiState.activeFunctionId) : null);
+  const scrollTargetKey =
+    rawActiveKey && !String(rawActiveKey).startsWith('flow:') ? rawActiveKey : null;
+  const nextScrollKey = scrollTargetKey ? `node:${scrollTargetKey}` : null;
+  const autoScrollSuppressed = Date.now() < suppressAutoScrollUntil;
 
-  const pendingReturnScroll = uiState.callSiteReturnScrollTarget;
-  const applyReturnScroll =
-    pendingReturnScroll &&
-    activeTreeNodeKey &&
-    pendingReturnScroll.callerTreeNodeKey === activeTreeNodeKey;
+  contentScroller.querySelectorAll('.diff-line-function-target').forEach((el) => {
+    el.classList.remove('diff-line-function-target');
+  });
 
-  // Only auto-center when the active target changes, so manual scrolling isn't
-  // constantly overridden on every store update (e.g., when updating "you are here").
-  if (applyReturnScroll) {
-    const lineOk = applyCallSiteReturnScroll(container, pendingReturnScroll);
-    clearCallSiteReturnScrollTarget();
-    lastScrolledToActiveKey = activeScrollKey;
-    if (!lineOk && activeTreeNodeKey) {
-      const block = container.querySelector(
-        `.function-block[data-tree-node-key="${CSS.escape(activeTreeNodeKey)}"]`
-      );
-      if (block) {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => scrollToVerticalCenter(container, block));
-        });
-      }
-    }
-  } else if (activeScrollKey && activeScrollKey !== lastScrolledToActiveKey) {
-    let el = null;
-    if (activeTreeNodeKey) {
-      el = container.querySelector(
-        `.function-block[data-tree-node-key="${CSS.escape(activeTreeNodeKey)}"]`
-      );
-    }
-    if (!el && activeFunctionId) {
-      el = container.querySelector(
-        `.function-block[data-function-id="${CSS.escape(activeFunctionId)}"]`
-      );
-    }
-    if (el) {
-      lastScrolledToActiveKey = activeScrollKey;
+  if (
+    !effectiveOutside &&
+    !autoScrollSuppressed &&
+    nextScrollKey &&
+    nextScrollKey !== lastScrolledToActiveKey
+  ) {
+    const block = contentScroller.querySelector(
+      `.function-block[data-tree-node-key="${CSS.escape(scrollTargetKey)}"]`
+    );
+    if (block) {
+      lastScrolledToActiveKey = nextScrollKey;
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => scrollToVerticalCenter(container, el));
+        requestAnimationFrame(() => {
+          scrollToVerticalCenter(contentScroller, block, { behavior: 'auto' });
+          setInViewTreeNodeKey(scrollTargetKey);
+        });
       });
     }
   }
-  if (!activeScrollKey) lastScrolledToActiveKey = null;
+  if (!nextScrollKey || effectiveOutside) lastScrolledToActiveKey = null;
 
-  // Explicitly mark the "you are here" function block in the code view,
-  // based on the function ID derived from the tree's inViewTreeNodeKey.
-  const inViewFnId =
-    getFunctionIdFromTreeNodeKey(uiState.inViewTreeNodeKey) || null;
-  if (inViewFnId) {
-    const inViewBlock = container.querySelector(
-      `.function-block[data-function-id="${CSS.escape(inViewFnId)}"]`
+  if (!contentScroller.dataset.scrollLinked) {
+    contentScroller.dataset.scrollLinked = '1';
+    let scrollRaf = 0;
+    contentScroller.addEventListener(
+      'scroll',
+      () => {
+        if (scrollRaf) return;
+        scrollRaf = requestAnimationFrame(() => {
+          scrollRaf = 0;
+          updateInViewFromScroll(contentScroller);
+        });
+      },
+      { passive: true }
     );
-    if (inViewBlock) inViewBlock.classList.add('in-view');
+    requestAnimationFrame(() => updateInViewFromScroll(contentScroller));
   }
 
-  if (!container.dataset.scrollLinked) {
-    container.dataset.scrollLinked = '1';
-    container.addEventListener('scroll', () => {
-      if (scrollRAF) return;
-      scrollRAF = requestAnimationFrame(() => {
-        scrollRAF = null;
-        updateInViewFromScroll(container);
-      });
-    });
+  const returnTarget = uiState.callSiteReturnScrollTarget;
+  if (returnTarget && applyCallSiteReturnScroll(contentScroller, returnTarget)) {
+    clearCallSiteReturnScrollTarget();
   }
-  updateInViewFromScroll(container);
-  reapplyCallSiteReturnHighlight(container);
+
+  reapplyCallSiteReturnHighlight(contentScroller);
+}
+
+/**
+ * Updates hover-only classes without rebuilding the pane (used when store notifies for pointer sync).
+ * @param {HTMLElement | null} codePane - `#code-pane`
+ */
+export function syncCodePanePointerStyles(codePane) {
+  const root = codePane?.querySelector?.('.code-pane-content');
+  if (!root) return;
+  const { uiState } = getState();
+  const hoverKey = uiState.hoveredTreeNodeKey;
+
+  for (const el of root.querySelectorAll('.function-block.hovered')) {
+    el.classList.remove('hovered');
+  }
+  if (hoverKey) {
+    root
+      .querySelector(`.function-block[data-tree-node-key="${CSS.escape(hoverKey)}"]`)
+      ?.classList.add('hovered');
+  }
+
+  for (const el of root.querySelectorAll('.call-site.hovered')) {
+    el.classList.remove('hovered');
+  }
+  if (hoverKey) {
+    for (const el of root.querySelectorAll('.call-site[data-tree-node-key]')) {
+      if (el.dataset.treeNodeKey === hoverKey) el.classList.add('hovered');
+    }
+  }
 }

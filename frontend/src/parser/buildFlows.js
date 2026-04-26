@@ -11,6 +11,7 @@
  * as the caller. For other calls (`super().asdict()`, `obj.foo()`, bare `foo()`), if several
  * changed symbols share a short name we only keep callees in the **caller's file**; otherwise we
  * add no edge (avoids linking `super().asdict()` to every `asdict` in the PR).
+ * Bare `ClassName(` (instantiation) is not treated as a call: changed `class` metas are excluded.
  */
 
 import { buildVisibleLines } from './buildVisibleLines.js';
@@ -26,11 +27,36 @@ const PY_DEF_OR_CLASS_LINE_REGEX = /^\s*(?:async\s+def|def|class)\b/;
 
 const PY_KEYWORDS = new Set(['def', 'if', 'elif', 'else', 'for', 'while', 'with', 'try', 'except', 'finally', 'class', 'return', 'raise', 'yield', 'assert', 'lambda', 'and', 'or', 'not', 'in', 'is']);
 
+/**
+ * Count unique nodes reachable from root (including root), cycle-safe.
+ * @param {string} rootId
+ * @param {Map<string, string[]>} adjacency
+ */
+function flowSizeFromRoot(rootId, adjacency) {
+  const visited = new Set([rootId]);
+  const stack = [rootId];
+  while (stack.length) {
+    const cur = stack.pop();
+    const outs = adjacency.get(cur) || [];
+    for (const nxt of outs) {
+      if (visited.has(nxt)) continue;
+      visited.add(nxt);
+      stack.push(nxt);
+    }
+  }
+  return visited.size;
+}
+
 /** All functions with a given name (across files). */
 function getFunctionsByName(functionsById, name) {
   return Object.entries(functionsById)
     .filter(([, fn]) => fn.name === name && fn.changeType !== 'deleted')
     .map(([id]) => id);
+}
+
+/** `Foo(` typically instantiates a class, not a call to a function; skip changed `class` metas. */
+function excludeClassMetaNodes(functionsById, calleeIds) {
+  return calleeIds.filter((id) => functionsById[id]?.kind !== 'class');
 }
 
 /**
@@ -59,7 +85,7 @@ function resolveNameCollisions(caller, calleeIds, functionsById) {
  * @param {Record<string, import('../flowSchema.js').FunctionMeta>} functionsById
  * @param {{ files: { path: string, hunks: { lines: string[] }[] }[] }} parsed
  * @param {Record<string, string>} [fileContentsByPath={}]
- * @returns {{ flows: import('../flowSchema.js').Flow[], edges: import('../flowSchema.js').Edge[] }}
+ * @returns {{ flows: import('../flowSchema.js').Flow[], edges: import('../flowSchema.js').Edge[], standaloneClassIds: string[], classDefAboveMethod: Record<string, string> }}
  */
 export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
   const edges = [];
@@ -116,6 +142,7 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
           let calleeIds = getFunctionsByName(functionsById, calleeName).filter(
             (id) => id !== caller.id && functionsById[id]?.changed !== false
           );
+          calleeIds = excludeClassMetaNodes(functionsById, calleeIds);
           if (caller.className) {
             const narrowed = calleeIds.filter((id) => functionsById[id]?.className === caller.className);
             calleeIds = narrowed;
@@ -133,76 +160,205 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
           let calleeIds = getFunctionsByName(functionsById, calleeName).filter(
             (id) => id !== caller.id && functionsById[id]?.changed !== false
           );
+          calleeIds = excludeClassMetaNodes(functionsById, calleeIds);
           calleeIds = resolveNameCollisions(caller, calleeIds, functionsById);
           pushCalleeEdges(calleeIds);
         }
       }
 
       for (const { calleeId, callIndex } of callOrder) {
-        edges.push({ callerId: caller.id, calleeId, callIndex });
+        edges.push({ callerId: caller.id, calleeId, callIndex, relationType: 'call' });
       }
     }
   }
 
-  const roots = new Set(Object.keys(functionsById));
+  // Two-stage rhizome grouping:
+  // 1) call rhizomes rooted by forward-call entry points (shared descendants allowed)
+  // 2) class-membership rhizomes only for methods with no call participation
+  const edgeKeys = new Set(edges.map((e) => `${e.callerId}->${e.calleeId}`));
+  const outgoingByCaller = new Map();
   for (const e of edges) {
-    const callerPath = functionsById[e.callerId]?.file;
-    // Tests often call production APIs (e.g. block.run); those edges must not
-    // strip production entrypoints from the root set.
-    if (isTestFile(callerPath ?? '')) continue;
-    roots.delete(e.calleeId);
+    const v = outgoingByCaller.get(e.callerId) || [];
+    v.push(e.callIndex);
+    outgoingByCaller.set(e.callerId, v);
   }
-
-  // Suppress “inner” roots that are already reachable from another (main) root.
-  // This avoids showing duplicated flows for functions that are already part of
-  // another flow’s call-tree in the UI.
-  const adjacency = new Map(); // callerId -> calleeIds[]
+  function nextCallIndex(callerId) {
+    const used = outgoingByCaller.get(callerId) || [];
+    const n = used.length ? Math.max(...used) + 1 : 0;
+    used.push(n);
+    outgoingByCaller.set(callerId, used);
+    return n;
+  }
+  const eligibleIds = Object.entries(functionsById)
+    .filter(([, fn]) => fn && fn.changeType !== 'deleted' && fn.kind !== 'class' && !isTestFunction(fn))
+    .map(([id]) => id);
+  const eligibleSet = new Set(eligibleIds);
+  function compareFnIds(a, b) {
+    const fa = functionsById[a];
+    const fb = functionsById[b];
+    if ((fa?.file || '') !== (fb?.file || '')) {
+      return String(fa?.file || '').localeCompare(String(fb?.file || ''));
+    }
+    if ((fa?.startLine || 0) !== (fb?.startLine || 0)) {
+      return (fa?.startLine || 0) - (fb?.startLine || 0);
+    }
+    if ((fa?.name || '') !== (fb?.name || '')) {
+      return String(fa?.name || '').localeCompare(String(fb?.name || ''));
+    }
+    return String(a).localeCompare(String(b));
+  }
+  const callAdjacency = new Map();
+  const callParticipants = new Set();
+  const callInDegree = new Map();
   for (const e of edges) {
-    const list = adjacency.get(e.callerId) || [];
-    list.push(e.calleeId);
-    adjacency.set(e.callerId, list);
+    if (e.relationType !== 'call') continue;
+    if (!eligibleSet.has(e.callerId) || !eligibleSet.has(e.calleeId)) continue;
+    const outs = callAdjacency.get(e.callerId) || new Set();
+    outs.add(e.calleeId);
+    callAdjacency.set(e.callerId, outs);
+    if (eligibleSet.has(e.callerId)) callParticipants.add(e.callerId);
+    if (eligibleSet.has(e.calleeId)) callParticipants.add(e.calleeId);
+    callInDegree.set(e.calleeId, (callInDegree.get(e.calleeId) || 0) + 1);
+    if (!callInDegree.has(e.callerId)) callInDegree.set(e.callerId, callInDegree.get(e.callerId) || 0);
   }
-
-  const rootIds = Array.from(roots);
-  const shownRootIds = rootIds.filter((rootId) => {
-    const root = functionsById[rootId];
-    return root && !isTestFunction(root);
-  });
-  const shownRootIdSet = new Set(shownRootIds);
-
-  const rootsToRemove = new Set();
-  for (const src of shownRootIds) {
-    const visited = new Set([src]);
-    const stack = [src];
+  function callReachableFrom(rootId) {
+    const reached = new Set([rootId]);
+    const stack = [rootId];
     while (stack.length) {
       const cur = stack.pop();
-      const outs = adjacency.get(cur) || [];
+      const outs = callAdjacency.get(cur) || new Set();
       for (const nxt of outs) {
-        if (visited.has(nxt)) continue;
-        visited.add(nxt);
+        if (reached.has(nxt)) continue;
+        reached.add(nxt);
         stack.push(nxt);
       }
     }
-    for (const maybeRoot of visited) {
-      if (maybeRoot !== src && shownRootIdSet.has(maybeRoot)) rootsToRemove.add(maybeRoot);
+    return reached;
+  }
+  const sortedCallParticipants = [...callParticipants].sort(compareFnIds);
+  const callRoots = sortedCallParticipants
+    .filter((id) => (callInDegree.get(id) || 0) === 0)
+    .sort(compareFnIds);
+  /** @type {{ rootId: string, members: Set<string> }[]} */
+  const callRhizomes = [];
+  const coveredByAnyCallRhizome = new Set();
+  for (const rootId of callRoots) {
+    const members = callReachableFrom(rootId);
+    callRhizomes.push({ rootId, members });
+    for (const id of members) coveredByAnyCallRhizome.add(id);
+  }
+  // Cycles can have no in-degree-zero root. Seed one deterministic call rhizome per remaining cycle.
+  for (const id of sortedCallParticipants) {
+    if (coveredByAnyCallRhizome.has(id)) continue;
+    const members = callReachableFrom(id);
+    callRhizomes.push({ rootId: id, members });
+    for (const mid of members) coveredByAnyCallRhizome.add(mid);
+  }
+
+  // Secondary grouping by class-membership, only for methods with no call relations.
+  const classBuckets = new Map(); // `${file}::${className}` -> [{id, fn}]
+  for (const [id, fn] of Object.entries(functionsById)) {
+    if (!eligibleSet.has(id)) continue;
+    if (callParticipants.has(id)) continue;
+    if (fn?.kind !== 'method' || !fn?.className) continue;
+    const k = `${fn.file}::${fn.className}`;
+    const list = classBuckets.get(k) || [];
+    list.push({ id, fn });
+    classBuckets.set(k, list);
+  }
+
+  const classOnlyComponents = [];
+  const classMembershipMethodIds = new Set();
+  for (const list of classBuckets.values()) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => a.fn.startLine - b.fn.startLine);
+    const comp = new Set(list.map((x) => x.id));
+    for (const mid of comp) classMembershipMethodIds.add(mid);
+    classOnlyComponents.push(comp);
+    const anchorId = list[0].id;
+    for (let i = 1; i < list.length; i++) {
+      const calleeId = list[i].id;
+      const key = `${anchorId}->${calleeId}`;
+      if (edgeKeys.has(key)) continue;
+      edgeKeys.add(key);
+      edges.push({
+        callerId: anchorId,
+        calleeId,
+        callIndex: nextCallIndex(anchorId),
+        relationType: 'class'
+      });
     }
   }
 
-  const filteredRootIds = rootIds.filter((id) => !rootsToRemove.has(id));
+  const classAssigned = new Set();
+  for (const comp of classOnlyComponents) {
+    for (const id of comp) classAssigned.add(id);
+  }
+  const singletonRhizomes = [];
+  for (const id of eligibleIds) {
+    if (callParticipants.has(id) || classAssigned.has(id)) continue;
+    singletonRhizomes.push({ rootId: id, members: new Set([id]) });
+  }
 
-  const flows = filteredRootIds
-    .map((rootId) => {
+  const flows = [...callRhizomes, ...classOnlyComponents.map((members) => {
+    const memberList = [...members].sort(compareFnIds);
+    return { rootId: memberList[0], members };
+  }), ...singletonRhizomes]
+    .map(({ rootId, members }) => {
       const root = functionsById[rootId];
       return {
         id: rootId,
         rootId,
-        name: root ? getFunctionDisplayName(root) : rootId.split(':').pop()
+        name: root ? getFunctionDisplayName(root) : rootId.split(':').pop(),
+        _size: members.size
       };
     })
-    .filter((f) => {
-      const root = functionsById[f.rootId];
-      return root && !isTestFunction(root);
-    });
+    .sort((a, b) => {
+      if (a._size !== b._size) return b._size - a._size;
+      return String(a.name || '').localeCompare(String(b.name || ''));
+    })
+    .map(({ _size, ...rest }) => rest);
 
-  return { flows, edges };
+  // Where to show a changed class definition in the code pane: above a method (not in the rhizome tree).
+  // — Class-membership rhizome: class diff only above the first method in that group (by source line).
+  // — Call-only: class diff only above the first method (by source line) for that class.
+  // — No changed methods: standaloneClassIds (tree section below rhizomes).
+  const classDefAboveMethod = {};
+  const standaloneClassIds = [];
+  const classNodes = Object.values(functionsById).filter(
+    (fn) => fn?.kind === 'class' && fn.changeType !== 'deleted'
+  );
+  for (const cls of classNodes) {
+    const methodIds = Object.entries(functionsById)
+      .filter(
+        ([, fn]) =>
+          fn?.kind === 'method' &&
+          fn?.className === cls.className &&
+          fn?.file === cls.file &&
+          fn.changeType !== 'deleted'
+      )
+      .map(([id]) => id);
+    if (methodIds.length === 0) {
+      standaloneClassIds.push(cls.id);
+      continue;
+    }
+
+    const members = methodIds.filter((id) => classMembershipMethodIds.has(id));
+    const hasMembership = members.length >= 2;
+    const idSort = (a, b) => {
+      const fa = functionsById[a];
+      const fb = functionsById[b];
+      if ((fa?.startLine || 0) !== (fb?.startLine || 0)) return (fa?.startLine || 0) - (fb?.startLine || 0);
+      return a.localeCompare(b);
+    };
+    if (hasMembership) {
+      const sortedMembers = [...members].sort(idSort);
+      if (sortedMembers[0]) classDefAboveMethod[sortedMembers[0]] = cls.id;
+    } else {
+      const sorted = [...methodIds].sort(idSort);
+      classDefAboveMethod[sorted[0]] = cls.id;
+    }
+  }
+
+  return { flows, edges, standaloneClassIds, classDefAboveMethod };
 }
