@@ -300,24 +300,33 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
     singletonRhizomes.push({ rootId: id, members: new Set([id]) });
   }
 
-  const flows = [...callRhizomes, ...classOnlyComponents.map((members) => {
+  const classRhizomes = classOnlyComponents.map((members) => {
     const memberList = [...members].sort(compareFnIds);
     return { rootId: memberList[0], members };
-  }), ...singletonRhizomes]
+  });
+  const flows = [...callRhizomes, ...classRhizomes, ...singletonRhizomes]
     .map(({ rootId, members }) => {
       const root = functionsById[rootId];
+      const size = members.size;
+      const isCallRhizome = callRhizomes.some((r) => r.rootId === rootId);
+      const isClassRhizome = classRhizomes.some((r) => r.rootId === rootId);
+      let groupRank = 2; // 0: call rhizome (>1), 1: class-membership rhizome, 2: singleton
+      if (isCallRhizome && size > 1) groupRank = 0;
+      else if (isClassRhizome) groupRank = 1;
       return {
         id: rootId,
         rootId,
         name: root ? getFunctionDisplayName(root) : rootId.split(':').pop(),
-        _size: members.size
+        _size: size,
+        _groupRank: groupRank
       };
     })
     .sort((a, b) => {
+      if (a._groupRank !== b._groupRank) return a._groupRank - b._groupRank;
       if (a._size !== b._size) return b._size - a._size;
       return String(a.name || '').localeCompare(String(b.name || ''));
     })
-    .map(({ _size, ...rest }) => rest);
+    .map(({ _size, _groupRank, ...rest }) => rest);
 
   // Where to show a changed class definition in the code pane: above a method (not in the rhizome tree).
   // — Class-membership rhizome: class diff only above the first method in that group (by source line).
