@@ -172,7 +172,7 @@ function initPaneToggles() {
   const flowToggle = document.createElement('button');
   flowToggle.type = 'button';
   flowToggle.className = 'pane-toggle pane-toggle-flow';
-  flowToggle.title = 'Collapse/expand flow panel';
+  flowToggle.title = 'Collapse/expand rhizome panel';
 
   function applyFlowPaneCollapsed(nextCollapsed) {
     flowPaneCollapsed = nextCollapsed;
@@ -188,8 +188,8 @@ function initPaneToggles() {
           <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 1 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"></path>
         </svg>
       `;
-      flowToggle.title = 'Show flow panel';
-      flowToggle.setAttribute('aria-label', 'Show flow panel');
+      flowToggle.title = 'Show rhizome panel';
+      flowToggle.setAttribute('aria-label', 'Show rhizome panel');
       flowToggle.setAttribute('aria-expanded', 'false');
     } else {
       flowTreePane.style.display = '';
@@ -201,8 +201,8 @@ function initPaneToggles() {
           <path d="M9.78 12.78a.75.75 0 0 1-1.06 0L4.47 8.53a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 1 1 1.06 1.06L6.06 8l3.72 3.72a.75.75 0 0 1 0 1.06Z"></path>
         </svg>
       `;
-      flowToggle.title = 'Hide flow panel';
-      flowToggle.setAttribute('aria-label', 'Hide flow panel');
+      flowToggle.title = 'Hide rhizome panel';
+      flowToggle.setAttribute('aria-label', 'Hide rhizome panel');
       flowToggle.setAttribute('aria-expanded', 'true');
     }
   }
@@ -219,6 +219,5 @@ export function renderLayout() {
   if (flowListPane) flowListPane.style.display = 'none';
   render();
   initHorizontalResizers();
-  initPaneToggles();
   subscribe(render);
 }

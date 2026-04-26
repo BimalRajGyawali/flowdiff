@@ -9,6 +9,7 @@ import {
   restoreCallSiteReturnTreeNode,
   setSelectedFlow,
   setSelectedStandaloneClass,
+  toggleFlowTreeSectionCollapsed,
   toggleExpandedTreeNode
 } from '../state/store.js';
 import { getFunctionDisplayName } from '../parser/functionDisplayName.js';
@@ -320,7 +321,7 @@ export function renderFlowTree(container) {
   const standaloneClassIds = (flowPayload.standaloneClassIds || []).filter((id) => flowPayload.functionsById[id]);
 
   if (!flowPayload.flows?.length && standaloneClassIds.length === 0) {
-    container.textContent = 'No flows.';
+    container.textContent = 'No rhizomes.';
     return;
   }
 
@@ -361,6 +362,11 @@ export function renderFlowTree(container) {
     if (flow.id === uiState.selectedFlowId) section.classList.add('active');
 
     const flowFnIds = new Set(flowFnIdsByFlowId.get(flow.id) || [flow.rootId]);
+    const flowEdges = (flowPayload.edges || []).filter(
+      (e) => flowFnIds.has(e.callerId) && flowFnIds.has(e.calleeId)
+    );
+    const isClassMembershipRhizome =
+      flowEdges.length > 0 && flowEdges.every((e) => e.relationType === 'class');
     const hasExpandableFlowTree = flowFnIds.size > 2;
     if (!hasExpandableFlowTree) section.classList.add('flow-tree-flow-section--single-node');
     const diffStats = getRhizomeLineDiffStats(
@@ -375,24 +381,60 @@ export function renderFlowTree(container) {
     tree.className = 'flow-tree';
     const pathFromRoot = new Set([root.id]);
     const pathKeysById = new Map([[root.id, rootKey]]);
-    renderNode(tree, flowPayload, root, false, rootKey, pathFromRoot, pathKeysById, flow.id, flow.rootId, false, 0);
+    renderNode(
+      tree,
+      flowPayload,
+      root,
+      false,
+      rootKey,
+      pathFromRoot,
+      pathKeysById,
+      flow.id,
+      flow.rootId,
+      isClassMembershipRhizome,
+      0
+    );
 
     const flowSelectKey = `flow:${flow.id}`;
     const rhizomeHeaderActive = uiState.activeTreeNodeKey === flowSelectKey;
+    const sectionCollapsed = uiState.flowTreeSectionCollapsedIds?.has(flow.id);
     const header = document.createElement('div');
     header.className =
       'flow-tree-flow-header' + (rhizomeHeaderActive ? ' flow-tree-flow-header--active' : '');
-    const spacer = document.createElement('span');
-    spacer.className = 'flow-tree-flow-section-caret-spacer';
-    spacer.setAttribute('aria-hidden', 'true');
-    header.appendChild(spacer);
+    if (isClassMembershipRhizome) {
+      const caret = document.createElement('button');
+      caret.type = 'button';
+      caret.className = 'flow-tree-node-caret flow-tree-flow-section-caret' + (sectionCollapsed ? ' is-collapsed' : '');
+      caret.setAttribute('aria-expanded', sectionCollapsed ? 'false' : 'true');
+      caret.setAttribute('aria-label', sectionCollapsed ? 'Expand class-membership rhizome' : 'Collapse class-membership rhizome');
+      caret.textContent = sectionCollapsed ? '›' : '⌄';
+      caret.title = sectionCollapsed ? 'Expand rhizome' : 'Collapse rhizome';
+      caret.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleFlowTreeSectionCollapsed(flow.id);
+      });
+      header.appendChild(caret);
+    } else {
+      const spacer = document.createElement('span');
+      spacer.className = 'flow-tree-flow-section-caret-spacer';
+      spacer.setAttribute('aria-hidden', 'true');
+      header.appendChild(spacer);
+    }
     const stats = document.createElement('div');
     stats.className = 'flow-tree-flow-diffstats';
     stats.innerHTML = `<span class="flow-tree-flow-diffstats-add">+${diffStats.added}</span><span class="flow-tree-flow-diffstats-del">-${diffStats.deleted}</span>`;
     header.appendChild(stats);
     section.appendChild(header);
 
-    section.appendChild(tree);
+    if (isClassMembershipRhizome) {
+      const bodyWrap = document.createElement('div');
+      bodyWrap.className = 'flow-tree-flow-body';
+      bodyWrap.hidden = sectionCollapsed;
+      bodyWrap.appendChild(tree);
+      section.appendChild(bodyWrap);
+    } else {
+      section.appendChild(tree);
+    }
     wrapper.appendChild(section);
 
     if (idx < flowPayload.flows.length - 1) {

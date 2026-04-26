@@ -803,26 +803,7 @@ body {
 }
 
 .flow-tree-flow-section-caret {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
   margin: 0;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.flow-tree-flow-section-caret:hover {
-  background: #e2e8f0;
-  color: #0f172a;
 }
 
 .flow-tree-flow-header--active .flow-tree-flow-section-caret {
