@@ -427,11 +427,47 @@ export function renderFlowTree(container) {
     section.appendChild(header);
 
     if (isClassMembershipRhizome) {
-      const bodyWrap = document.createElement('div');
-      bodyWrap.className = 'flow-tree-flow-body';
-      bodyWrap.hidden = sectionCollapsed;
-      bodyWrap.appendChild(tree);
-      section.appendChild(bodyWrap);
+      if (sectionCollapsed) {
+        // Keep class-membership rhizomes scannable while collapsed by showing
+        // the first method row instead of an empty body.
+        const previewWrap = document.createElement('div');
+        previewWrap.className = 'flow-tree-flow-body';
+        const previewTree = document.createElement('div');
+        previewTree.className = 'flow-tree';
+        const previewItem = document.createElement('div');
+        previewItem.className = 'flow-tree-item flow-tree-item-last';
+        previewItem.style.setProperty('--tree-indent', `${flowTreeIndentPx(0)}px`);
+        const previewRow = document.createElement('div');
+        const previewIsActive = uiState.activeTreeNodeKey === rootKey;
+        const previewFunctionMatchActive = uiState.activeFunctionId === root.id && !previewIsActive;
+        const previewIsRead = uiState.readFunctionIds?.has?.(root.id);
+        previewRow.className =
+          'flow-tree-node flow-tree-node-root' +
+          (previewIsActive ? ' active' : '') +
+          (previewFunctionMatchActive ? ' function-match-active' : '') +
+          (previewIsRead ? ' read' : '');
+        previewRow.style.paddingLeft = `${flowTreeIndentPx(0)}px`;
+        const previewIcon = flowTreeCallMarkerHtml(root, 0, 'class');
+        const previewChangeHint = previewIcon ? '' : flowTreeChangeHintHtml(root);
+        previewRow.innerHTML = `<span class="flow-tree-icon">${previewIcon}${previewChangeHint}</span><span class="flow-tree-label">${flowTreeLabelHtml(root, flowPayload)}</span>`;
+        previewRow.dataset.functionId = root.id;
+        previewRow.dataset.treeNodeKey = rootKey;
+        previewRow.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (uiState.selectedFlowId !== flow.id) setSelectedFlow(flow.id, flow.rootId);
+          restoreCallSiteReturnTreeNode(rootKey);
+          setActiveFunction(root.id, rootKey);
+        });
+        previewItem.appendChild(previewRow);
+        previewTree.appendChild(previewItem);
+        previewWrap.appendChild(previewTree);
+        section.appendChild(previewWrap);
+      } else {
+        const bodyWrap = document.createElement('div');
+        bodyWrap.className = 'flow-tree-flow-body';
+        bodyWrap.appendChild(tree);
+        section.appendChild(bodyWrap);
+      }
     } else {
       section.appendChild(tree);
     }
