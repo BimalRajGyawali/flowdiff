@@ -59,6 +59,12 @@ function excludeClassMetaNodes(functionsById, calleeIds) {
   return calleeIds.filter((id) => functionsById[id]?.kind !== 'class');
 }
 
+function topLevelClassName(className) {
+  const raw = String(className || '').trim();
+  if (!raw) return '';
+  return raw.split('.')[0];
+}
+
 /**
  * Many PRs touch the same method name on unrelated base classes (`asdict`, `dict`, …).
  * Without type info, only link same-name callees in the caller's file when there is ambiguity.
@@ -261,7 +267,7 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
     if (!eligibleSet.has(id)) continue;
     if (callParticipants.has(id)) continue;
     if (fn?.kind !== 'method' || !fn?.className) continue;
-    const k = `${fn.file}::${fn.className}`;
+    const k = `${fn.file}::${topLevelClassName(fn.className)}`;
     const list = classBuckets.get(k) || [];
     list.push({ id, fn });
     classBuckets.set(k, list);
@@ -304,29 +310,82 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
     const memberList = [...members].sort(compareFnIds);
     return { rootId: memberList[0], members };
   });
-  const flows = [...callRhizomes, ...classRhizomes, ...singletonRhizomes]
-    .map(({ rootId, members }) => {
-      const root = functionsById[rootId];
-      const size = members.size;
-      const isCallRhizome = callRhizomes.some((r) => r.rootId === rootId);
-      const isClassRhizome = classRhizomes.some((r) => r.rootId === rootId);
-      let groupRank = 2; // 0: call rhizome (>1), 1: class-membership rhizome, 2: singleton
-      if (isCallRhizome && size > 1) groupRank = 0;
-      else if (isClassRhizome) groupRank = 1;
-      return {
-        id: rootId,
-        rootId,
-        name: root ? getFunctionDisplayName(root) : rootId.split(':').pop(),
-        _size: size,
-        _groupRank: groupRank
-      };
-    })
-    .sort((a, b) => {
-      if (a._groupRank !== b._groupRank) return a._groupRank - b._groupRank;
-      if (a._size !== b._size) return b._size - a._size;
-      return String(a.name || '').localeCompare(String(b.name || ''));
-    })
-    .map(({ _size, _groupRank, ...rest }) => rest);
+
+  // Merge disconnected rhizomes that are all methods from the same class into one linear flow.
+  // Example: C.m1->C.m2, C.m4->C.m5, C.m7->C.m8 => one flow for class C.
+  function singleClassKeyForMembers(members) {
+    let key = null;
+    for (const id of members) {
+      const fn = functionsById[id];
+      if (!fn || fn.kind !== 'method' || !fn.className || !fn.file) return null;
+      const nextKey = `${fn.file}::${topLevelClassName(fn.className)}`;
+      if (key == null) key = nextKey;
+      else if (key !== nextKey) return null;
+    }
+    return key;
+  }
+  const rhizomes = [...callRhizomes, ...classRhizomes, ...singletonRhizomes];
+  const rhizomeByRootId = new Map(rhizomes.map((r) => [r.rootId, r]));
+  const singleClassRootsByKey = new Map();
+  for (const r of rhizomes) {
+    const classKey = singleClassKeyForMembers(r.members);
+    if (!classKey) continue;
+    const list = singleClassRootsByKey.get(classKey) || [];
+    list.push(r.rootId);
+    singleClassRootsByKey.set(classKey, list);
+  }
+  const mergeCandidateKeys = [...singleClassRootsByKey.entries()]
+    .filter(([, roots]) => roots.length >= 2)
+    .map(([key]) => key);
+  const removedRoots = new Set();
+  // Merge only when one class-key clearly dominates disconnected single-class rhizomes.
+  if (mergeCandidateKeys.length === 1) {
+    const roots = singleClassRootsByKey.get(mergeCandidateKeys[0]) || [];
+    if (roots.length >= 2) {
+      const sortedRoots = [...roots].sort(compareFnIds);
+      let primaryRoot = sortedRoots[0];
+      let bestStart = Number.POSITIVE_INFINITY;
+      for (const rootId of sortedRoots) {
+        const part = rhizomeByRootId.get(rootId);
+        if (!part) continue;
+        let minStartInRhizome = Number.POSITIVE_INFINITY;
+        for (const id of part.members) {
+          const fn = functionsById[id];
+          if (!fn || fn.kind !== 'method' || fn.changeType === 'deleted') continue;
+          const s = Number(fn.startLine) || Number.POSITIVE_INFINITY;
+          if (s < minStartInRhizome) minStartInRhizome = s;
+        }
+        if (minStartInRhizome < bestStart) {
+          bestStart = minStartInRhizome;
+          primaryRoot = rootId;
+        } else if (minStartInRhizome === bestStart && compareFnIds(rootId, primaryRoot) < 0) {
+          primaryRoot = rootId;
+        }
+      }
+      const primary = rhizomeByRootId.get(primaryRoot);
+      if (primary) {
+        const effectivePrimary = primary;
+        for (const rootId of sortedRoots) {
+          if (rootId === primaryRoot) continue;
+          const part = rhizomeByRootId.get(rootId);
+          if (!part) continue;
+          for (const id of part.members) effectivePrimary.members.add(id);
+          const key = `${primaryRoot}->${rootId}`;
+          if (!edgeKeys.has(key)) {
+            edgeKeys.add(key);
+            edges.push({
+              callerId: primaryRoot,
+              calleeId: rootId,
+              callIndex: nextCallIndex(primaryRoot),
+              relationType: 'class'
+            });
+          }
+          removedRoots.add(rootId);
+        }
+      }
+    }
+  }
+  const mergedRhizomes = rhizomes.filter((r) => !removedRoots.has(r.rootId));
 
   // Where to show a changed class definition in the code pane: above a method (not in the rhizome tree).
   // — Class-membership rhizome: class diff only above the first method in that group (by source line).
@@ -342,7 +401,7 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
       .filter(
         ([, fn]) =>
           fn?.kind === 'method' &&
-          fn?.className === cls.className &&
+          topLevelClassName(fn?.className) === topLevelClassName(cls.className) &&
           fn?.file === cls.file &&
           fn.changeType !== 'deleted'
       )
@@ -368,6 +427,96 @@ export function buildFlows(functionsById, parsed, fileContentsByPath = {}) {
       classDefAboveMethod[sorted[0]] = cls.id;
     }
   }
+  const flowMemberIdsByRoot = new Map(mergedRhizomes.map((r) => [r.rootId, r.members]));
+
+  // Flow ordering prefers class-linear reading:
+  // 1) flow containing a method with class-def badge ("C")
+  // 2) other flows touching methods of that same class
+  // then fallback to existing group/size/name sorting.
+  const classOrderByKey = new Map();
+  const classKeys = Object.values(functionsById)
+    .filter((fn) => fn?.kind === 'class' && fn.changeType !== 'deleted')
+    .sort(compareFnIds)
+    .map((fn) => `${fn.file}::${topLevelClassName(fn.className)}`);
+  for (const key of classKeys) {
+    if (!classOrderByKey.has(key)) classOrderByKey.set(key, classOrderByKey.size);
+  }
+
+  const anchorClassKeyByFlowRoot = new Map();
+  for (const [methodId, classId] of Object.entries(classDefAboveMethod)) {
+    const methodMeta = functionsById[methodId];
+    const classMeta = functionsById[classId];
+    if (!methodMeta || !classMeta) continue;
+    const classKey = `${classMeta.file}::${topLevelClassName(classMeta.className)}`;
+    for (const [rootId, memberIds] of flowMemberIdsByRoot.entries()) {
+      if (!memberIds.has(methodId)) continue;
+      const prevKey = anchorClassKeyByFlowRoot.get(rootId);
+      if (!prevKey) {
+        anchorClassKeyByFlowRoot.set(rootId, classKey);
+        continue;
+      }
+      const prevOrder = classOrderByKey.get(prevKey) ?? Number.POSITIVE_INFINITY;
+      const nextOrder = classOrderByKey.get(classKey) ?? Number.POSITIVE_INFINITY;
+      if (nextOrder < prevOrder) anchorClassKeyByFlowRoot.set(rootId, classKey);
+    }
+  }
+
+  const dependentClassKeyByFlowRoot = new Map();
+  for (const [rootId, memberIds] of flowMemberIdsByRoot.entries()) {
+    if (anchorClassKeyByFlowRoot.has(rootId)) continue;
+    let bestKey = null;
+    let bestOrder = Number.POSITIVE_INFINITY;
+    for (const id of memberIds) {
+      const fn = functionsById[id];
+      if (!fn || fn.kind !== 'method' || !fn.className) continue;
+      const classKey = `${fn.file}::${topLevelClassName(fn.className)}`;
+      if (!classOrderByKey.has(classKey)) continue;
+      const ord = classOrderByKey.get(classKey) ?? Number.POSITIVE_INFINITY;
+      if (ord < bestOrder) {
+        bestOrder = ord;
+        bestKey = classKey;
+      }
+    }
+    if (bestKey) dependentClassKeyByFlowRoot.set(rootId, bestKey);
+  }
+
+  const flows = mergedRhizomes
+    .map(({ rootId, members }) => {
+      const root = functionsById[rootId];
+      const size = members.size;
+      const isCallRhizome = callRhizomes.some((r) => r.rootId === rootId);
+      const isClassRhizome = classRhizomes.some((r) => r.rootId === rootId);
+      let groupRank = 2; // 0: call rhizome (>1), 1: class-membership rhizome, 2: singleton
+      if (isCallRhizome && size > 1) groupRank = 0;
+      else if (isClassRhizome) groupRank = 1;
+
+      const anchorClassKey = anchorClassKeyByFlowRoot.get(rootId) ?? null;
+      const dependentClassKey = dependentClassKeyByFlowRoot.get(rootId) ?? null;
+      const classClusterKey = anchorClassKey || dependentClassKey;
+      const classClusterOrder =
+        classClusterKey != null
+          ? (classOrderByKey.get(classClusterKey) ?? Number.POSITIVE_INFINITY)
+          : Number.POSITIVE_INFINITY;
+      const classRole = anchorClassKey ? 0 : dependentClassKey ? 1 : 2; // 0 anchor, 1 dependent, 2 unrelated
+
+      return {
+        id: rootId,
+        rootId,
+        name: root ? getFunctionDisplayName(root) : rootId.split(':').pop(),
+        _size: size,
+        _groupRank: groupRank,
+        _classClusterOrder: classClusterOrder,
+        _classRole: classRole
+      };
+    })
+    .sort((a, b) => {
+      if (a._classClusterOrder !== b._classClusterOrder) return a._classClusterOrder - b._classClusterOrder;
+      if (a._classRole !== b._classRole) return a._classRole - b._classRole;
+      if (a._groupRank !== b._groupRank) return a._groupRank - b._groupRank;
+      if (a._size !== b._size) return b._size - a._size;
+      return String(a.name || '').localeCompare(String(b.name || ''));
+    })
+    .map(({ _size, _groupRank, _classClusterOrder, _classRole, ...rest }) => rest);
 
   return { flows, edges, standaloneClassIds, classDefAboveMethod };
 }

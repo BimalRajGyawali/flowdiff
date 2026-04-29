@@ -35,6 +35,61 @@ function flowTreeIndentPx(depth) {
   return FLOW_TREE_BASE_INDENT_PX + shallow * FLOW_TREE_STEP_INDENT_PX + deep * FLOW_TREE_DEEP_STEP_INDENT_PX;
 }
 
+function topLevelClassName(className) {
+  const raw = String(className || '').trim();
+  if (!raw) return '';
+  return raw.split('.')[0];
+}
+
+function singleClassNameForFlow(flowFnIds, payload) {
+  let classKey = null;
+  let className = null;
+  for (const id of flowFnIds) {
+    const fn = payload.functionsById[id];
+    if (!fn || fn.kind !== 'method' || !fn.className || !fn.file) return null;
+    const top = topLevelClassName(fn.className);
+    const key = `${fn.file}::${top}`;
+    if (classKey == null) {
+      classKey = key;
+      className = top;
+      continue;
+    }
+    if (classKey !== key) return null;
+  }
+  return className;
+}
+
+function classToneForFlow(flowFnIds, payload, singleClassName) {
+  if (!singleClassName || !flowFnIds?.size) return 'neutral';
+  const firstId = flowFnIds.values().next().value;
+  const firstFn = firstId ? payload.functionsById[firstId] : null;
+  const classMeta = Object.values(payload.functionsById || {}).find(
+    (fn) =>
+      fn &&
+      fn.kind === 'class' &&
+      topLevelClassName(fn.className) === singleClassName &&
+      fn.file === firstFn?.file &&
+      fn.changeType !== 'deleted'
+  );
+  const changeType = classMeta?.changeType;
+  if (changeType === 'added') return 'added';
+  if (changeType === 'modified') return 'modified';
+  if (changeType === 'deleted') return 'deleted';
+  return 'neutral';
+}
+
+function changedClassAnchorMethodForFlow(flowFnIds, payload, singleClassName) {
+  if (!singleClassName || !flowFnIds?.size || !payload?.classDefAboveMethod) return null;
+  for (const id of flowFnIds) {
+    const fn = payload.functionsById[id];
+    if (!fn || fn.kind !== 'method' || topLevelClassName(fn.className) !== singleClassName) continue;
+    const classId = payload.classDefAboveMethod[id];
+    const classMeta = classId ? payload.functionsById[classId] : null;
+    if (classMeta && classMeta.changeType !== 'deleted') return { methodId: id, classId };
+  }
+  return null;
+}
+
 /** @param {string | null | undefined} treeNodeKey */
 function parentTreeNodeKey(treeNodeKey) {
   if (!treeNodeKey) return null;
@@ -362,12 +417,21 @@ export function renderFlowTree(container) {
     if (flow.id === uiState.selectedFlowId) section.classList.add('active');
 
     const flowFnIds = new Set(flowFnIdsByFlowId.get(flow.id) || [flow.rootId]);
+    const singleClassName = singleClassNameForFlow(flowFnIds, flowPayload);
+    if (singleClassName) section.classList.add('flow-tree-flow-section--single-class');
+    const singleClassTone = classToneForFlow(flowFnIds, flowPayload, singleClassName);
+    const changedClassAnchor = changedClassAnchorMethodForFlow(flowFnIds, flowPayload, singleClassName);
+    const labelMode = { compactMethodLabels: Boolean(singleClassName) };
     const flowEdges = (flowPayload.edges || []).filter(
       (e) => flowFnIds.has(e.callerId) && flowFnIds.has(e.calleeId)
     );
     const isClassMembershipRhizome =
       flowEdges.length > 0 && flowEdges.every((e) => e.relationType === 'class');
+    const rootHasCallChildren = (flowPayload.edges || []).some(
+      (e) => e.callerId === root.id && e.relationType === 'call'
+    );
     const hasExpandableFlowTree = flowFnIds.size > 2;
+    const showInlineStatsOnRoot = flowFnIds.size === 1 && !singleClassName;
     if (!hasExpandableFlowTree) section.classList.add('flow-tree-flow-section--single-node');
     const diffStats = getRhizomeLineDiffStats(
       flowFnIds,
@@ -392,24 +456,61 @@ export function renderFlowTree(container) {
       flow.id,
       flow.rootId,
       isClassMembershipRhizome,
-      0
+      0,
+      'call',
+      labelMode
     );
 
     const flowSelectKey = `flow:${flow.id}`;
     const rhizomeHeaderActive = uiState.activeTreeNodeKey === flowSelectKey;
     const sectionCollapsed = uiState.flowTreeSectionCollapsedIds?.has(flow.id);
-    const header = document.createElement('div');
-    header.className =
-      'flow-tree-flow-header' + (rhizomeHeaderActive ? ' flow-tree-flow-header--active' : '');
-    const spacer = document.createElement('span');
-    spacer.className = 'flow-tree-flow-section-caret-spacer';
-    spacer.setAttribute('aria-hidden', 'true');
-    header.appendChild(spacer);
-    const stats = document.createElement('div');
-    stats.className = 'flow-tree-flow-diffstats';
-    stats.innerHTML = `<span class="flow-tree-flow-diffstats-add">+${diffStats.added}</span><span class="flow-tree-flow-diffstats-del">-${diffStats.deleted}</span>`;
-    header.appendChild(stats);
-    section.appendChild(header);
+    const useHeaderCaret = Boolean(singleClassName);
+    if (!showInlineStatsOnRoot) {
+      const header = document.createElement('div');
+      header.className =
+        'flow-tree-flow-header' + (rhizomeHeaderActive ? ' flow-tree-flow-header--active' : '');
+      if (useHeaderCaret) {
+        const classHead = document.createElement('div');
+        classHead.className = 'flow-tree-flow-class-head';
+        const caret = document.createElement('button');
+        caret.type = 'button';
+        caret.className = 'flow-tree-node-caret flow-tree-flow-section-caret' + (sectionCollapsed ? ' is-collapsed' : '');
+        caret.setAttribute('aria-expanded', sectionCollapsed ? 'false' : 'true');
+        caret.setAttribute('aria-label', sectionCollapsed ? 'Expand class flow' : 'Collapse class flow');
+        caret.textContent = sectionCollapsed ? '›' : '⌄';
+        caret.title = sectionCollapsed ? 'Expand flow' : 'Collapse flow';
+        caret.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleFlowTreeSectionCollapsed(flow.id);
+        });
+        classHead.appendChild(caret);
+        const classTitle = document.createElement('div');
+        classTitle.className = 'flow-tree-flow-class-title';
+        classTitle.innerHTML = `<span class="flow-tree-class-def-badge flow-tree-class-def-badge-${singleClassTone}" aria-hidden="true"></span>Class ${escapeHtml(singleClassName)}`;
+        if (changedClassAnchor) {
+          classTitle.classList.add('flow-tree-flow-class-title-clickable');
+          classTitle.title = 'Open class change context';
+          classTitle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (uiState.selectedFlowId !== flow.id) setSelectedFlow(flow.id, flow.rootId);
+            restoreCallSiteReturnTreeNode(rootKey);
+            setActiveFunction(changedClassAnchor.methodId, rootKey);
+          });
+        }
+        classHead.appendChild(classTitle);
+        header.appendChild(classHead);
+      } else {
+        const spacer = document.createElement('span');
+        spacer.className = 'flow-tree-flow-section-caret-spacer';
+        spacer.setAttribute('aria-hidden', 'true');
+        header.appendChild(spacer);
+      }
+      const stats = document.createElement('div');
+      stats.className = 'flow-tree-flow-diffstats';
+      stats.innerHTML = `<span class="flow-tree-flow-diffstats-add">+${diffStats.added}</span><span class="flow-tree-flow-diffstats-del">-${diffStats.deleted}</span>`;
+      header.appendChild(stats);
+      section.appendChild(header);
+    }
 
     function mountSectionCaretOnRow(rowEl) {
       if (!rowEl) return;
@@ -427,7 +528,14 @@ export function renderFlowTree(container) {
       rowEl.prepend(caret);
     }
 
-    if (isClassMembershipRhizome) {
+    if (useHeaderCaret) {
+      if (!sectionCollapsed) {
+        const bodyWrap = document.createElement('div');
+        bodyWrap.className = 'flow-tree-flow-body';
+        bodyWrap.appendChild(tree);
+        section.appendChild(bodyWrap);
+      }
+    } else if (isClassMembershipRhizome) {
       if (sectionCollapsed) {
         // Keep class-membership rhizomes scannable while collapsed by showing
         // the first method row instead of an empty body.
@@ -450,7 +558,7 @@ export function renderFlowTree(container) {
         previewRow.style.paddingLeft = `${flowTreeIndentPx(0)}px`;
         const previewIcon = flowTreeCallMarkerHtml(root, 0, 'class');
         const previewChangeHint = previewIcon ? '' : flowTreeChangeHintHtml(root);
-        previewRow.innerHTML = `<span class="flow-tree-icon">${previewIcon}${previewChangeHint}</span><span class="flow-tree-label">${flowTreeLabelHtml(root, flowPayload)}</span>`;
+        previewRow.innerHTML = `<span class="flow-tree-icon">${previewIcon}${previewChangeHint}</span><span class="flow-tree-label">${flowTreeLabelHtml(root, flowPayload, labelMode)}</span>`;
         previewRow.dataset.functionId = root.id;
         previewRow.dataset.treeNodeKey = rootKey;
         previewRow.addEventListener('click', (e) => {
@@ -459,7 +567,7 @@ export function renderFlowTree(container) {
           restoreCallSiteReturnTreeNode(rootKey);
           setActiveFunction(root.id, rootKey);
         });
-        mountSectionCaretOnRow(previewRow);
+        if (rootHasCallChildren) mountSectionCaretOnRow(previewRow);
         previewItem.appendChild(previewRow);
         previewTree.appendChild(previewItem);
         previewWrap.appendChild(previewTree);
@@ -470,10 +578,19 @@ export function renderFlowTree(container) {
         bodyWrap.appendChild(tree);
         section.appendChild(bodyWrap);
         const rootRow = tree.querySelector(`[data-tree-node-key="${CSS.escape(rootKey)}"]`);
-        mountSectionCaretOnRow(rootRow);
+        if (rootHasCallChildren) mountSectionCaretOnRow(rootRow);
       }
     } else {
       section.appendChild(tree);
+    }
+    if (showInlineStatsOnRoot) {
+      const rootRow = tree.querySelector(`[data-tree-node-key="${CSS.escape(rootKey)}"]`);
+      if (rootRow) {
+        const stats = document.createElement('span');
+        stats.className = 'flow-tree-node-inline-diffstats';
+        stats.innerHTML = `<span class="flow-tree-flow-diffstats-add">+${diffStats.added}</span><span class="flow-tree-flow-diffstats-del">-${diffStats.deleted}</span>`;
+        rootRow.appendChild(stats);
+      }
     }
     wrapper.appendChild(section);
 
@@ -503,7 +620,8 @@ export function renderFlowTree(container) {
       const isActive = uiState.selectedStandaloneClassId === classId;
       row.className = `flow-tree-node flow-tree-node-root${isActive ? ' active' : ''}`;
       row.style.paddingLeft = '16px';
-      row.innerHTML = `<span class="flow-tree-icon"></span><span class="flow-tree-label">${flowTreeLabelHtml(cls, flowPayload)}</span>`;
+      const classChangeHint = flowTreeChangeHintHtml(cls);
+      row.innerHTML = `<span class="flow-tree-icon">${classChangeHint}</span><span class="flow-tree-label">${flowTreeLabelHtml(cls, flowPayload)}</span>`;
       row.dataset.functionId = cls.id;
       row.dataset.treeNodeKey = `standalone-class:${cls.id}`;
       row.addEventListener('click', (e) => {
@@ -553,14 +671,24 @@ function renderNode(
   flowRootId,
   forceExpanded = false,
   callDepth = 0,
-  incomingRelation = 'call'
+  incomingRelation = 'call',
+  labelMode = null
 ) {
   const { uiState } = getState();
   const expanded = forceExpanded || uiState.flowTreeExpandedIds.has(treeNodeKey);
   const isActive = uiState.activeTreeNodeKey === treeNodeKey;
-  const childEdges = payload.edges
+  const allChildEdges = payload.edges
     .filter((e) => e.callerId === fn.id)
     .sort((a, b) => a.callIndex - b.callIndex);
+  const callChildEdges = allChildEdges.filter((e) => e.relationType === 'call');
+  const classChildEdges = allChildEdges.filter((e) => e.relationType === 'class');
+  // Keep class-membership edges only for class-only nodes. If a node has real call children,
+  // render just the call chain to avoid misplacing class siblings under methods.
+  // Exception: on flow roots, keep class-membership siblings visible so disconnected methods
+  // in a merged class rhizome still appear in the flow.
+  const childEdges = callChildEdges.length > 0
+    ? (callDepth === 0 ? [...callChildEdges, ...classChildEdges] : callChildEdges)
+    : allChildEdges;
   const children = childEdges.map((e) => payload.functionsById[e.calleeId]).filter(Boolean);
 
   const item = document.createElement('div');
@@ -586,11 +714,14 @@ function renderNode(
     (isRead ? ' read' : '');
   const leadingIcon = flowTreeCallMarkerHtml(fn, callDepth, incomingRelation);
   const changeHint = leadingIcon ? '' : flowTreeChangeHintHtml(fn);
-  const labelHtml = flowTreeLabelHtml(fn, payload);
+  const labelHtml = flowTreeLabelHtml(fn, payload, labelMode);
   row.classList.add(callDepth === 0 ? 'flow-tree-node-root' : 'flow-tree-node-child');
   row.style.paddingLeft = `${flowTreeIndentPx(callDepth)}px`;
   row.innerHTML = `<span class="flow-tree-icon">${leadingIcon}${changeHint}</span><span class="flow-tree-label">${labelHtml}</span>`;
-  if (!forceExpanded && hasChildren) {
+  const hasCallChildren = childEdges.some((e) => e.relationType === 'call');
+  const showCaret = !forceExpanded && hasCallChildren;
+  const needsCaretSlot = Boolean(labelMode?.compactMethodLabels && callDepth === 0);
+  if (showCaret) {
     const caret = document.createElement('button');
     caret.type = 'button';
     caret.className = 'flow-tree-node-caret';
@@ -602,6 +733,11 @@ function renderNode(
       toggleExpandedTreeNode(treeNodeKey);
     });
     row.prepend(caret);
+  } else if (needsCaretSlot) {
+    const spacer = document.createElement('span');
+    spacer.className = 'flow-tree-node-caret-spacer';
+    spacer.setAttribute('aria-hidden', 'true');
+    row.prepend(spacer);
   }
   row.dataset.functionId = fn.id;
   row.dataset.treeNodeKey = treeNodeKey;
@@ -627,14 +763,30 @@ function renderNode(
     branch.className = classSiblingBranch
       ? 'flow-tree-branch flow-tree-branch--class-siblings'
       : 'flow-tree-branch';
+    const childEntries = childEdges.map((e, idx) => ({ edge: e, child: children[idx] })).filter((x) => x.child);
+    if (classSiblingBranch) {
+      childEntries.sort((a, b) => {
+        const aHasCalls = (payload.edges || []).some(
+          (e) => e.callerId === a.child.id && e.relationType === 'call'
+        );
+        const bHasCalls = (payload.edges || []).some(
+          (e) => e.callerId === b.child.id && e.relationType === 'call'
+        );
+        if (aHasCalls !== bHasCalls) return aHasCalls ? 1 : -1;
+        const aStart = Number(a.child.startLine) || Number.POSITIVE_INFINITY;
+        const bStart = Number(b.child.startLine) || Number.POSITIVE_INFINITY;
+        if (aStart !== bStart) return aStart - bStart;
+        return String(a.child.id).localeCompare(String(b.child.id));
+      });
+    }
     const pathIncludingThis = new Set(pathFromRoot);
     pathIncludingThis.add(fn.id);
     const pathKeysIncludingThis = new Map(pathKeysById);
     pathKeysIncludingThis.set(fn.id, treeNodeKey);
-    for (let i = 0; i < children.length; i++) {
-      const e = childEdges[i];
+    for (let i = 0; i < childEntries.length; i++) {
+      const e = childEntries[i].edge;
       const childKey = `${treeNodeKey}/e:${e.callerId}:${e.callIndex}:${e.calleeId}`;
-      const child = children[i];
+      const child = childEntries[i].child;
       const rel = e.relationType === 'call' ? 'call' : 'class';
       const isRecursive = pathIncludingThis.has(child.id);
       const firstKey = firstTreeNodeKeyByFunctionId.get(child.id);
@@ -664,7 +816,7 @@ function renderNode(
         recRow.style.paddingLeft = `${flowTreeIndentPx(recDepth)}px`;
         const recIcon = flowTreeCallMarkerHtml(child, recDepth, rel);
         const recChangeHint = recIcon ? '' : flowTreeChangeHintHtml(child);
-        recRow.innerHTML = `<span class="flow-tree-icon">${recIcon}${recChangeHint}</span><span class="flow-tree-label">${flowTreeLabelHtml(child, payload)}</span>`;
+        recRow.innerHTML = `<span class="flow-tree-icon">${recIcon}${recChangeHint}</span><span class="flow-tree-label">${flowTreeLabelHtml(child, payload, labelMode)}</span>`;
         recRow.title = 'Click to jump to where this function is shown above';
         recRow.dataset.functionId = child.id;
         recRow.dataset.treeNodeKey = originalKey;
@@ -685,7 +837,7 @@ function renderNode(
           branch,
           payload,
           child,
-          i === children.length - 1,
+          i === childEntries.length - 1,
           childKey,
           pathIncludingThis,
           pathKeysIncludingThis,
@@ -693,7 +845,8 @@ function renderNode(
           flowRootId,
           forceExpanded,
           callDepth + (rel === 'call' ? 1 : 0),
-          rel
+          rel,
+          labelMode
         );
       }
     }
@@ -708,21 +861,30 @@ function renderNode(
  * @param {import('../flowSchema.js').FunctionMeta} fn
  * @param {import('../flowSchema.js').FlowPayload | null} [payload] when set, method rows can show a class-def hint
  */
-function flowTreeLabelHtml(fn, payload = null) {
-  const hasEnclosingClassDef = Boolean(
-    payload?.classDefAboveMethod && fn.id && payload.classDefAboveMethod[fn.id]
-  );
+function flowTreeLabelHtml(fn, payload = null, labelMode = null) {
+  const classDefId =
+    payload?.classDefAboveMethod && fn.id ? payload.classDefAboveMethod[fn.id] : null;
+  const classDefMeta = classDefId ? payload?.functionsById?.[classDefId] : null;
+  let classDefTone = 'neutral';
+  if (classDefMeta?.changeType === 'added') classDefTone = 'added';
+  else if (classDefMeta?.changeType === 'modified') classDefTone = 'modified';
+  else if (classDefMeta?.changeType === 'deleted') classDefTone = 'deleted';
+  const hasEnclosingClassDef = Boolean(classDefId);
   const classDefBadge = hasEnclosingClassDef
-    ? `<span class="flow-tree-class-def-badge" title="This method’s class definition is included above the method in the code view" aria-label="Class definition included above in code">C</span>`
+    ? `<span class="flow-tree-class-def-badge flow-tree-class-def-badge-${classDefTone}" title="This method’s class definition is included above the method in the code view" aria-label="Class definition included above in code"></span>`
     : '';
   const deletedPrefix = fn.changeType === 'deleted'
     ? '<span class="flow-tree-deleted-tag" title="Deleted function">Deleted</span>'
     : '';
   if (fn.kind === 'method' && fn.className) {
-    const cls = escapeHtml(fn.className);
     const nm = escapeHtml(fn.name);
+    if (labelMode?.compactMethodLabels) {
+      const title = fn.changeType === 'deleted' ? `Deleted method ${nm}` : `Method ${nm}`;
+      return `${deletedPrefix}<span class="flow-tree-method${fn.changeType === 'deleted' ? ' flow-tree-method-deleted' : ''}" title="${title}"><span class="flow-tree-method-name">${nm}</span></span>`;
+    }
+    const cls = escapeHtml(fn.className);
     const title = fn.changeType === 'deleted' ? `Deleted method of class ${cls}` : `Method of class ${cls}`;
-    return `${deletedPrefix}${classDefBadge}<span class="flow-tree-method${fn.changeType === 'deleted' ? ' flow-tree-method-deleted' : ''}" title="${title}"><span class="flow-tree-class-name">${cls}</span><span class="flow-tree-method-dot">.</span><span class="flow-tree-method-name">${nm}</span></span>`;
+    return `${deletedPrefix}<span class="flow-tree-method${fn.changeType === 'deleted' ? ' flow-tree-method-deleted' : ''}" title="${title}"><span class="flow-tree-class-name">${cls}</span><span class="flow-tree-method-dot">.</span><span class="flow-tree-method-name">${nm}</span></span>`;
   }
   if (fn.kind === 'class') {
     const label = escapeHtml(fn.className || fn.name || getFunctionDisplayName(fn));

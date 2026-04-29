@@ -836,6 +836,32 @@ body {
   user-select: none;
 }
 
+.flow-tree-flow-class-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flow-tree-flow-class-title-clickable {
+  cursor: pointer;
+}
+
+.flow-tree-flow-class-title-clickable:hover {
+  color: #0f172a;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.flow-tree-flow-class-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .flow-tree-flow-diffstats-add {
   color: #1a7f37;
 }
@@ -844,8 +870,28 @@ body {
   color: #cf222e;
 }
 
+.flow-tree-node-inline-diffstats {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  letter-spacing: 0.01em;
+  user-select: none;
+}
+
 .flow-tree-flow-body {
   padding: 0;
+}
+
+.flow-tree-flow-section--single-class .flow-tree-flow-body {
+  margin-top: 16px;
+}
+
+.flow-tree-flow-section--single-class {
+  padding-top: 10px;
 }
 
 .flow-tree-flow-dot {
@@ -958,6 +1004,13 @@ body {
 
 .flow-tree-node-caret:hover {
   color: #334155;
+}
+
+.flow-tree-node-caret-spacer {
+  width: 12px;
+  height: 14px;
+  display: inline-flex;
+  flex-shrink: 0;
 }
 
 /* After you click a callee, dashed outline on its immediate caller (who-called-what) */
@@ -1074,25 +1127,33 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 10px;
+  height: 10px;
   margin-right: 4px;
   border-radius: 50%;
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: -0.02em;
-  color: #0550ae;
-  background: #ddf4ff;
-  border: 1px solid #54aeff;
-  box-shadow: 0 0 0 1px rgba(5, 80, 174, 0.06);
+  border: 1px solid rgba(15, 23, 42, 0.12);
   flex-shrink: 0;
   vertical-align: middle;
-  font-family: ui-sans-serif, system-ui, sans-serif;
 }
 
 .flow-tree-node.read .flow-tree-class-def-badge {
   opacity: 0.7;
+}
+
+.flow-tree-class-def-badge-added {
+  background: #2da44e;
+}
+
+.flow-tree-class-def-badge-modified {
+  background: #b7791f;
+}
+
+.flow-tree-class-def-badge-deleted {
+  background: #cf222e;
+}
+
+.flow-tree-class-def-badge-neutral {
+  background: #9ca3af;
 }
 
 .flow-tree-call-marker {
@@ -1218,10 +1279,20 @@ body {
   margin-left: 0;
   padding-left: 0;
   border-left: none;
+  margin-top: 0;
+  padding-top: 0;
 }
 
 .flow-tree-branch--class-siblings > .flow-tree-item > .flow-tree-node::before {
   display: none;
+}
+
+.flow-tree-branch--class-siblings > .flow-tree-item {
+  margin-top: 12px;
+}
+
+.flow-tree-branch--class-siblings > .flow-tree-item:first-child {
+  margin-top: 12px;
 }
 
 .flow-list-item {
@@ -1238,26 +1309,6 @@ body {
 .flow-list-item-body {
   flex: 1;
   min-width: 0;
-}
-
-.flow-list-flow-complete-label {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  padding-top: 2px;
-  cursor: pointer;
-}
-
-.flow-list-flow-complete-check {
-  width: 14px;
-  height: 14px;
-  cursor: pointer;
-  accent-color: #16a34a;
-}
-
-.flow-list-item-flow-complete:not(.selected) {
-  border-left: 3px solid #22c55e;
-  padding-left: 9px;
 }
 
 .flow-list-item:hover {
