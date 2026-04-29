@@ -321,7 +321,7 @@ export function renderFlowTree(container) {
   const standaloneClassIds = (flowPayload.standaloneClassIds || []).filter((id) => flowPayload.functionsById[id]);
 
   if (!flowPayload.flows?.length && standaloneClassIds.length === 0) {
-    container.textContent = 'No rhizomes.';
+    container.textContent = 'No flows.';
     return;
   }
 
@@ -346,7 +346,7 @@ export function renderFlowTree(container) {
 
   const title = document.createElement('div');
   title.className = 'flow-tree-pane-title';
-  title.textContent = 'RHIZOMES';
+  title.textContent = 'FLOWS';
   wrapper.appendChild(title);
 
   for (let idx = 0; idx < flowPayload.flows.length; idx++) {
@@ -401,30 +401,31 @@ export function renderFlowTree(container) {
     const header = document.createElement('div');
     header.className =
       'flow-tree-flow-header' + (rhizomeHeaderActive ? ' flow-tree-flow-header--active' : '');
-    if (isClassMembershipRhizome) {
-      const caret = document.createElement('button');
-      caret.type = 'button';
-      caret.className = 'flow-tree-node-caret flow-tree-flow-section-caret' + (sectionCollapsed ? ' is-collapsed' : '');
-      caret.setAttribute('aria-expanded', sectionCollapsed ? 'false' : 'true');
-      caret.setAttribute('aria-label', sectionCollapsed ? 'Expand class-membership rhizome' : 'Collapse class-membership rhizome');
-      caret.textContent = sectionCollapsed ? '›' : '⌄';
-      caret.title = sectionCollapsed ? 'Expand rhizome' : 'Collapse rhizome';
-      caret.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleFlowTreeSectionCollapsed(flow.id);
-      });
-      header.appendChild(caret);
-    } else {
-      const spacer = document.createElement('span');
-      spacer.className = 'flow-tree-flow-section-caret-spacer';
-      spacer.setAttribute('aria-hidden', 'true');
-      header.appendChild(spacer);
-    }
+    const spacer = document.createElement('span');
+    spacer.className = 'flow-tree-flow-section-caret-spacer';
+    spacer.setAttribute('aria-hidden', 'true');
+    header.appendChild(spacer);
     const stats = document.createElement('div');
     stats.className = 'flow-tree-flow-diffstats';
     stats.innerHTML = `<span class="flow-tree-flow-diffstats-add">+${diffStats.added}</span><span class="flow-tree-flow-diffstats-del">-${diffStats.deleted}</span>`;
     header.appendChild(stats);
     section.appendChild(header);
+
+    function mountSectionCaretOnRow(rowEl) {
+      if (!rowEl) return;
+      const caret = document.createElement('button');
+      caret.type = 'button';
+      caret.className = 'flow-tree-node-caret flow-tree-flow-section-caret' + (sectionCollapsed ? ' is-collapsed' : '');
+      caret.setAttribute('aria-expanded', sectionCollapsed ? 'false' : 'true');
+      caret.setAttribute('aria-label', sectionCollapsed ? 'Expand class-membership flow' : 'Collapse class-membership flow');
+      caret.textContent = sectionCollapsed ? '›' : '⌄';
+      caret.title = sectionCollapsed ? 'Expand flow' : 'Collapse flow';
+      caret.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleFlowTreeSectionCollapsed(flow.id);
+      });
+      rowEl.prepend(caret);
+    }
 
     if (isClassMembershipRhizome) {
       if (sectionCollapsed) {
@@ -458,6 +459,7 @@ export function renderFlowTree(container) {
           restoreCallSiteReturnTreeNode(rootKey);
           setActiveFunction(root.id, rootKey);
         });
+        mountSectionCaretOnRow(previewRow);
         previewItem.appendChild(previewRow);
         previewTree.appendChild(previewItem);
         previewWrap.appendChild(previewTree);
@@ -467,6 +469,8 @@ export function renderFlowTree(container) {
         bodyWrap.className = 'flow-tree-flow-body';
         bodyWrap.appendChild(tree);
         section.appendChild(bodyWrap);
+        const rootRow = tree.querySelector(`[data-tree-node-key="${CSS.escape(rootKey)}"]`);
+        mountSectionCaretOnRow(rootRow);
       }
     } else {
       section.appendChild(tree);
@@ -488,7 +492,7 @@ export function renderFlowTree(container) {
     }
     const title = document.createElement('div');
     title.className = 'flow-tree-pane-title';
-    title.textContent = 'CLASSES WITHOUT RHIZOMES';
+    title.textContent = 'CLASSES WITHOUT FLOWS';
     wrapper.appendChild(title);
     const section = document.createElement('section');
     section.className = 'flow-tree-flow-section';
@@ -506,7 +510,6 @@ export function renderFlowTree(container) {
         e.stopPropagation();
         setSelectedStandaloneClass(cls.id);
         restoreCallSiteReturnTreeNode(`standalone-class:${cls.id}`);
-        setActiveFunction(cls.id, `standalone-class:${cls.id}`);
       });
       section.appendChild(row);
     }
