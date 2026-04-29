@@ -403,8 +403,9 @@ function highlightPython(code) {
 
 function getPythonSignatureName(line) {
   if (!line) return null;
-  const m = String(line).match(/^\s*(?:async\s+def|def)\s+([A-Za-z_]\w*)\s*\(/);
-  return m ? m[1] : null;
+  const m = String(line).match(/^\s*(?:async\s+def|def)\s+([A-Za-z_]\w*)\s*\(|^\s*class\s+([A-Za-z_]\w*)\s*(?:\(|:)/);
+  if (!m) return null;
+  return m[1] || m[2] || null;
 }
 
 function isPythonCommentLine(line) {
@@ -2890,17 +2891,25 @@ export function renderCodeView(container) {
   }
 
   const selectedFlow = flowPayload.flows?.find((f) => f.id === uiState.selectedFlowId) || null;
-  const standaloneClass = uiState.selectedStandaloneClassId
-    ? flowPayload.functionsById[uiState.selectedStandaloneClassId]
-    : null;
-  if ((!selectedFlow?.rootId || !flowPayload.functionsById[selectedFlow.rootId]) && !standaloneClass) {
-    container.textContent = 'No rhizome to show.';
+  const standaloneClasses = (flowPayload.standaloneClassIds || [])
+    .map((id) => flowPayload.functionsById[id])
+    .filter(Boolean)
+    .sort((a, b) => {
+      const fa = String(a.file || '');
+      const fb = String(b.file || '');
+      if (fa !== fb) return filePathSort(fa, fb);
+      if ((a.startLine || 0) !== (b.startLine || 0)) return (a.startLine || 0) - (b.startLine || 0);
+      return String(a.id).localeCompare(String(b.id));
+    });
+  const showStandaloneClasses = !selectedFlow?.rootId && standaloneClasses.length > 0;
+  if ((!selectedFlow?.rootId || !flowPayload.functionsById[selectedFlow.rootId]) && !showStandaloneClasses) {
+    container.textContent = 'No flow to show.';
     return;
   }
 
   const rhizomeViewKey = selectedFlow
     ? `${prContext?.headSha ?? ''}::${selectedFlow.id}`
-    : `${prContext?.headSha ?? ''}::standalone-class::${standaloneClass?.id ?? ''}`;
+    : `${prContext?.headSha ?? ''}::standalone-classes`;
 
   const sourceLinesByFile = {};
   const diffLinesByFile = {};
@@ -2911,12 +2920,13 @@ export function renderCodeView(container) {
 
   const flowFnIds = selectedFlow
     ? getFlowFunctionIds(selectedFlow, flowPayload)
-    : new Set(standaloneClass ? [standaloneClass.id] : []);
+    : new Set(standaloneClasses.map((fn) => fn.id));
   const rhizomeOrderRaw = selectedFlow
     ? collectFlowOrder(selectedFlow.rootId, flowPayload)
-    : (standaloneClass
-        ? [{ treeNodeKey: `standalone-class:${standaloneClass.id}`, functionId: standaloneClass.id }]
-        : []);
+    : standaloneClasses.map((fn) => ({
+        treeNodeKey: `standalone-class:${fn.id}`,
+        functionId: fn.id
+      }));
   const rhizomeOrder = filterNestedFunctionCards(rhizomeOrderRaw, flowPayload);
   const canonicalKeyByFunctionId = new Map();
   for (const { treeNodeKey, functionId } of rhizomeOrder) {
@@ -2924,8 +2934,8 @@ export function renderCodeView(container) {
   }
 
   const unionFlowFnIds = collectUnionFlowFunctionIds(flowPayload);
-  if (!selectedFlow?.rootId && standaloneClass?.id) {
-    unionFlowFnIds.add(standaloneClass.id);
+  if (!selectedFlow?.rootId) {
+    for (const cls of standaloneClasses) unionFlowFnIds.add(cls.id);
   }
   const rhizomeFilePaths = rhizomeParticipatingFilePathNorms(flowPayload, unionFlowFnIds);
   const selectedFlowFileNorms = rhizomeParticipatingFilePathNorms(flowPayload, flowFnIds);
@@ -3029,7 +3039,7 @@ export function renderCodeView(container) {
   navTitleName.className = 'code-files-nav-rhizome-name';
   navTitleName.textContent = `${allChangedFiles.length} files`;
   navTitleName.title =
-    'Rhizome files: path touches at least one node in any flow in this PR (sort first). Muted: never in any flow—click for full file diff.';
+    'Flow files: path touches at least one node in any flow in this PR (sort first). Muted: never in any flow; click for full file diff.';
   const titleStack = document.createElement('div');
   titleStack.className = 'code-files-nav-title-stack';
   titleStack.appendChild(navTitleText);
@@ -3177,7 +3187,7 @@ export function renderCodeView(container) {
       if (isShownFileRow || isRhizomeContextRow) navItem.classList.add('active');
       navItem.style.paddingLeft = `${depth * 14 + 30}px`;
       navItem.title = inRhizome
-        ? `${filePath} — in this rhizome (view via rhizome tree)`
+        ? `${filePath} — in this flow (view via flow tree)`
         : `${filePath} — full file diff (not in this outline)`;
       navItem.innerHTML = `
         <span class="code-files-nav-file-icon" aria-hidden="true">

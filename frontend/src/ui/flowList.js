@@ -46,7 +46,7 @@ export function renderFlowList(container) {
   container.innerHTML = '';
 
   if (!flowPayload.flows?.length) {
-    container.textContent = 'No rhizomes.';
+    container.textContent = 'No flows.';
     return;
   }
 
@@ -63,7 +63,7 @@ export function renderFlowList(container) {
   list.className = 'flow-list';
 
   if (flowsWithMeta.length === 0) {
-    list.textContent = 'No rhizomes.';
+    list.textContent = 'No flows.';
     container.appendChild(list);
     return;
   }
@@ -77,12 +77,12 @@ export function renderFlowList(container) {
 
     const completeLabel = document.createElement('label');
     completeLabel.className = 'flow-list-flow-complete-label';
-    completeLabel.title = 'Mark entire rhizome as complete';
+    completeLabel.title = 'Mark entire flow as complete';
     const completeCheck = document.createElement('input');
     completeCheck.type = 'checkbox';
     completeCheck.className = 'flow-list-flow-complete-check';
     completeCheck.checked = uiState.completedFlowIds?.has(flow.id) ?? false;
-    completeCheck.setAttribute('aria-label', 'Mark entire rhizome as complete');
+    completeCheck.setAttribute('aria-label', 'Mark entire flow as complete');
     completeCheck.addEventListener('click', (e) => e.stopPropagation());
     completeCheck.addEventListener('mousedown', (e) => e.stopPropagation());
     completeCheck.addEventListener('change', (e) => {
