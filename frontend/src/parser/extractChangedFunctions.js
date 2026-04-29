@@ -16,6 +16,35 @@ import { getQualifiedClassPrefix, getEnclosingClassHeaderLines } from './pythonC
 const PY_DEF_LINE_REGEX = /^(\s*)(?:async\s+)?def\s+(\w+)\b/;
 const PY_CLASS_LINE_REGEX = /^(\s*)class\s+(\w+)\b/;
 
+function topLevelClassName(className) {
+  const raw = String(className || '').trim();
+  if (!raw) return '';
+  return raw.split('.')[0];
+}
+
+/**
+ * True when the `def` is nested under any function scope (directly or transitively).
+ * Such defs should not become separate flow entities.
+ * @param {string[]} sourceLines
+ * @param {number} defLineNum
+ * @param {number} defIndent
+ * @returns {boolean}
+ */
+function isFunctionNestedDef(sourceLines, defLineNum, defIndent) {
+  let threshold = defIndent;
+  for (let ln = defLineNum - 1; ln >= 1; ln--) {
+    const text = sourceLines[ln - 1] ?? '';
+    const m = text.match(/^(\s*)(?:async\s+def|def|class)\s+\w+\b/);
+    if (!m) continue;
+    const ind = m[1].length;
+    if (ind >= threshold) continue;
+    const isClass = /^\s*class\b/.test(text);
+    if (!isClass) return true;
+    threshold = ind;
+  }
+  return false;
+}
+
 /**
  * @param {string[]} sourceLines
  * @returns {{ name: string, startLine: number, endLine: number, indent: number, snippet: string, qualifiedName: string }[]}
@@ -29,6 +58,19 @@ function listAllPythonClassMetas(sourceLines) {
     const m = line.match(PY_CLASS_LINE_REGEX);
     if (!m) continue;
     const indent = m[1].length;
+    // Classes nested inside a function scope should not be treated as standalone class flows.
+    let nestedInFunction = false;
+    for (let ln = i; ln >= 0; ln--) {
+      const t = sourceLines[ln] ?? '';
+      const mm = t.match(/^(\s*)(?:async\s+def|def|class)\s+(\w+)\b/);
+      if (!mm) continue;
+      const ind = mm[1].length;
+      if (ind >= indent) continue;
+      const isClass = /^\s*class\b/.test(t);
+      if (!isClass) nestedInFunction = true;
+      break;
+    }
+    if (nestedInFunction) continue;
     while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
     const name = m[2];
     const qualifiedName = stack.length
@@ -145,6 +187,15 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
     const sourceText = fileContentsByPath[pf.path] ?? visibleLines.map((line) => line.content).join('\n');
     const sourceLines = sourceText.split('\n');
     const fileEndLine = sourceLines.length;
+    const topLevelClassNames = new Set(
+      sourceLines
+        .map((line) => {
+          const m = line.match(PY_CLASS_LINE_REGEX);
+          if (!m) return null;
+          return m[1].length === 0 ? m[2] : null;
+        })
+        .filter(Boolean)
+    );
 
     // Keep every changed file in payload for file-nav + outside-rhizome full-file diff views.
     // Function/rhizome extraction remains Python-only.
@@ -192,6 +243,7 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
         });
       }
     }
+    defs = defs.filter((d) => !isFunctionNestedDef(sourceLines, d.lineNum, d.indent));
 
     /** @type {import('../flowSchema.js').FunctionMeta[]} */
     const changedFnsInFile = [];
@@ -259,8 +311,17 @@ export function extractChangedFunctions(parsed, fileContentsByPath = {}) {
         computePythonFunctionEndLine(sourceLines, lineNum, indent, fileEndLine);
       endLine = clampEndToNextSiblingDef(defs, i, endLine, fileEndLine);
 
-      const className = getQualifiedClassPrefix(sourceLines, lineNum, indent);
-      const isMethod = Boolean(className);
+      let className = getQualifiedClassPrefix(sourceLines, lineNum, indent);
+      let isMethod = Boolean(className);
+      // Guardrail: local classes inside function scope should not become separate class flows.
+      // When full source is available, only honor class methods whose top-level class exists at module scope.
+      if (hasFullFile && isMethod) {
+        const top = topLevelClassName(className);
+        if (!topLevelClassNames.has(top)) {
+          isMethod = false;
+          className = '';
+        }
+      }
       const classHeaderLines = isMethod
         ? getEnclosingClassHeaderLines(sourceLines, lineNum, indent)
         : [];

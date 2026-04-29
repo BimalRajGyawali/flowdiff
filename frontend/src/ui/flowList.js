@@ -3,7 +3,7 @@
  * Test-only roots are omitted (see buildFlows); this list is production flows only.
  */
 
-import { getState, selectRhizomeFlow, setFlowCompletedState } from '../state/store.js';
+import { getState, selectRhizomeFlow } from '../state/store.js';
 
 /**
  * Compute flow metadata: depth, node count, files.
@@ -72,25 +72,7 @@ export function renderFlowList(container) {
     const item = document.createElement('div');
     item.className = 'flow-list-item';
     if (flow.id === uiState.selectedFlowId) item.classList.add('selected');
-    if (uiState.completedFlowIds?.has(flow.id)) item.classList.add('flow-list-item-flow-complete');
     item.dataset.flowId = flow.id;
-
-    const completeLabel = document.createElement('label');
-    completeLabel.className = 'flow-list-flow-complete-label';
-    completeLabel.title = 'Mark entire flow as complete';
-    const completeCheck = document.createElement('input');
-    completeCheck.type = 'checkbox';
-    completeCheck.className = 'flow-list-flow-complete-check';
-    completeCheck.checked = uiState.completedFlowIds?.has(flow.id) ?? false;
-    completeCheck.setAttribute('aria-label', 'Mark entire flow as complete');
-    completeCheck.addEventListener('click', (e) => e.stopPropagation());
-    completeCheck.addEventListener('mousedown', (e) => e.stopPropagation());
-    completeCheck.addEventListener('change', (e) => {
-      e.stopPropagation();
-      setFlowCompletedState(flow.id, completeCheck.checked);
-    });
-    completeLabel.addEventListener('click', (e) => e.stopPropagation());
-    completeLabel.appendChild(completeCheck);
 
     const changeType = root?.changeType;
     const badge = changeType ? `<span class="flow-list-badge flow-list-badge-${changeType}" title="${changeType}"></span>` : '';
@@ -143,7 +125,6 @@ export function renderFlowList(container) {
     body.appendChild(nameEl);
     body.appendChild(metaEl);
 
-    item.appendChild(completeLabel);
     item.appendChild(body);
 
     item.addEventListener('click', () => selectRhizomeFlow(flow.id));
