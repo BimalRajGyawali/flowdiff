@@ -21,6 +21,8 @@ const FLOW_TREE_BASE_INDENT_PX = 6;
 const FLOW_TREE_STEP_INDENT_PX = 6;
 const FLOW_TREE_DEEP_STEP_INDENT_PX = 1;
 const FLOW_TREE_COMPACT_DEPTH_THRESHOLD = 2;
+const FLOW_TREE_COMPACT_FLOW_COUNT_THRESHOLD = 16;
+const FLOW_TREE_COMPACT_FLOW_NODE_THRESHOLD = 30;
 
 /**
  * Compressed indent scale: normal spacing for early levels, tighter spacing for deeper levels.
@@ -33,6 +35,15 @@ function flowTreeIndentPx(depth) {
   const shallow = Math.min(d, FLOW_TREE_COMPACT_DEPTH_THRESHOLD);
   const deep = Math.max(0, d - FLOW_TREE_COMPACT_DEPTH_THRESHOLD);
   return FLOW_TREE_BASE_INDENT_PX + shallow * FLOW_TREE_STEP_INDENT_PX + deep * FLOW_TREE_DEEP_STEP_INDENT_PX;
+}
+
+/**
+ * @param {string | null} selectedFlowId
+ * @param {Map<string, Set<string>>} flowFnIdsByFlowId
+ */
+function selectedFlowNodeCount(selectedFlowId, flowFnIdsByFlowId) {
+  if (!selectedFlowId) return 0;
+  return flowFnIdsByFlowId.get(selectedFlowId)?.size || 0;
 }
 
 function topLevelClassName(className) {
@@ -398,6 +409,13 @@ export function renderFlowTree(container) {
     }
     flowFnIdsByFlowId.set(f.id, ids);
   }
+
+  const totalFlowCount = flowPayload.flows?.length || 0;
+  const selectedNodeCount = selectedFlowNodeCount(uiState.selectedFlowId, flowFnIdsByFlowId);
+  const compactByFlowCount = totalFlowCount >= FLOW_TREE_COMPACT_FLOW_COUNT_THRESHOLD;
+  const compactByNodeCount = selectedNodeCount >= FLOW_TREE_COMPACT_FLOW_NODE_THRESHOLD;
+  const useCompactTree = compactByFlowCount || compactByNodeCount;
+  if (useCompactTree) wrapper.classList.add('flow-tree-wrapper--compact');
 
   const title = document.createElement('div');
   title.className = 'flow-tree-pane-title';

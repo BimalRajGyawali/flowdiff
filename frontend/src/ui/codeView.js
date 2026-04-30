@@ -34,6 +34,7 @@ let filesNavCollapsed = false;
 let savedFilesNavWidthPx = filesNavWidthPx;
 let suppressAutoScrollUntil = 0;
 const AUTO_SCROLL_SUPPRESS_MS = 450;
+let preferSmoothScrollForNextActiveSelection = false;
 let codePaneScrollTop = 0;
 let codePaneScrollLeft = 0;
 /** When PR head or selected rhizome changes, reset scroll + scroll-to-active bookkeeping. */
@@ -219,11 +220,22 @@ function diffLineScrollMeta(rowData) {
 
 function navigateFromInlineCallSite(calleeId, calleeNavKey, callerPathPrefix, rowData, calleeOrdinalOnLine) {
   clearPersistentCallSiteReturnHighlight();
-  if (calleeNavKey) restoreCallSiteReturnTreeNode(calleeNavKey);
+  // Inline call-site clicks should always re-center the callee card, even when clicking
+  // the same callee repeatedly (e.g. A -> B, C, B).
+  lastScrolledToActiveKey = null;
+  preferSmoothScrollForNextActiveSelection = true;
+  let resolvedNavKey = calleeNavKey;
+  if (!resolvedNavKey && typeof document !== 'undefined') {
+    const card = document.querySelector(
+      `#code-pane .function-block[data-function-id="${CSS.escape(String(calleeId || ''))}"]`
+    );
+    resolvedNavKey = card?.dataset?.treeNodeKey || null;
+  }
+  if (resolvedNavKey) restoreCallSiteReturnTreeNode(resolvedNavKey);
   const meta = diffLineScrollMeta(rowData);
   const returnScroll =
     meta && callerPathPrefix ? { ...meta, calleeId, calleeOrdinalOnLine } : null;
-  setActiveFunctionFromInlineCallSite(calleeId, calleeNavKey || null, callerPathPrefix, returnScroll);
+  setActiveFunctionFromInlineCallSite(calleeId, resolvedNavKey || null, callerPathPrefix, returnScroll);
 }
 
 /**
@@ -737,23 +749,17 @@ function setupCtxCollapseToggle(btn, body, rowData, persistenceKey) {
 }
 
 /**
- * Names to scan for in each line: edge callees first (for callIndex alignment), then any other
- * in-flow function so links appear even when the global edge list missed a call (regex / name ambiguity).
+ * Names to scan for in each line: only direct edge callees for this caller.
+ * This keeps call-site links precise so clicking a call always navigates to
+ * the intended card instead of a same-name function elsewhere in the flow.
  * @param {{ calleeId: string, callIndex: number }[]} calleesWithIndex
- * @param {string} callerFnId
- * @param {Set<string>} flowFnIds
  * @param {Record<string, import('../flowSchema.js').FunctionMeta>} functionsById
  */
-function buildCalleesForFind(calleesWithIndex, callerFnId, flowFnIds, functionsById) {
+function buildCalleesForFind(calleesWithIndex, functionsById) {
   const map = new Map();
   for (const { calleeId } of calleesWithIndex) {
     const meta = functionsById[calleeId];
     if (meta?.name) map.set(calleeId, { calleeId, name: meta.name });
-  }
-  for (const id of flowFnIds) {
-    if (id === callerFnId || map.has(id)) continue;
-    const meta = functionsById[id];
-    if (meta?.name) map.set(id, { calleeId: id, name: meta.name });
   }
   return [...map.values()];
 }
@@ -2016,6 +2022,7 @@ function appendFunctionBodyDiffLine(
     if (isActive) el.classList.add('active');
     el.title = `Go to ${getFunctionDisplayName(callee) || calleeId}`;
     el.addEventListener('click', (e) => {
+      e.preventDefault();
       e.stopPropagation();
       const ord = el.dataset.fdCalleeOrd != null ? Number(el.dataset.fdCalleeOrd) : 0;
       navigateFromInlineCallSite(calleeId, treeNodeKey || null, pathPrefix, rowData, ord);
@@ -2456,7 +2463,7 @@ function renderFunctionBody(
     return;
   }
   const calleesWithIndex = (calleesByCaller.get(fn.id) || []).sort((a, b) => a.callIndex - b.callIndex);
-  const calleesForFind = buildCalleesForFind(calleesWithIndex, fn.id, flowFnIds, payload.functionsById);
+  const calleesForFind = buildCalleesForFind(calleesWithIndex, payload.functionsById);
   attachCallSitesToRows(fnDiffLines, calleesWithIndex, calleesForFind);
   const rowsToRender = expandContextCollapseRows(
     fnDiffLines,
@@ -3345,13 +3352,18 @@ export function renderCodeView(container) {
       lastScrolledToActiveKey = nextScrollKey;
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          scrollToVerticalCenter(contentScroller, block, { behavior: 'auto' });
+          const behavior = preferSmoothScrollForNextActiveSelection ? 'smooth' : 'auto';
+          preferSmoothScrollForNextActiveSelection = false;
+          scrollToVerticalCenter(contentScroller, block, { behavior });
           setInViewTreeNodeKey(scrollTargetKey);
         });
       });
     }
   }
-  if (!nextScrollKey || effectiveOutside) lastScrolledToActiveKey = null;
+  if (!nextScrollKey || effectiveOutside) {
+    lastScrolledToActiveKey = null;
+    preferSmoothScrollForNextActiveSelection = false;
+  }
 
   if (!contentScroller.dataset.scrollLinked) {
     contentScroller.dataset.scrollLinked = '1';
@@ -3371,7 +3383,17 @@ export function renderCodeView(container) {
   }
 
   const returnTarget = uiState.callSiteReturnScrollTarget;
-  if (returnTarget && applyCallSiteReturnScroll(contentScroller, returnTarget)) {
+  const returnTargetCallerId = returnTarget
+    ? getFunctionIdFromTreeNodeKey(returnTarget.callerTreeNodeKey)
+    : null;
+  // Only apply "return to call site" scroll when the caller card is active.
+  // This prevents forward callee navigation from immediately jumping back to the call site line.
+  if (
+    returnTarget &&
+    returnTargetCallerId &&
+    uiState.activeFunctionId === returnTargetCallerId &&
+    applyCallSiteReturnScroll(contentScroller, returnTarget)
+  ) {
     clearCallSiteReturnScrollTarget();
   }
 
