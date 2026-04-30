@@ -34,6 +34,7 @@ let filesNavCollapsed = false;
 let savedFilesNavWidthPx = filesNavWidthPx;
 let suppressAutoScrollUntil = 0;
 const AUTO_SCROLL_SUPPRESS_MS = 450;
+let preferSmoothScrollForNextActiveSelection = false;
 let codePaneScrollTop = 0;
 let codePaneScrollLeft = 0;
 /** When PR head or selected rhizome changes, reset scroll + scroll-to-active bookkeeping. */
@@ -222,6 +223,7 @@ function navigateFromInlineCallSite(calleeId, calleeNavKey, callerPathPrefix, ro
   // Inline call-site clicks should always re-center the callee card, even when clicking
   // the same callee repeatedly (e.g. A -> B, C, B).
   lastScrolledToActiveKey = null;
+  preferSmoothScrollForNextActiveSelection = true;
   let resolvedNavKey = calleeNavKey;
   if (!resolvedNavKey && typeof document !== 'undefined') {
     const card = document.querySelector(
@@ -2020,6 +2022,7 @@ function appendFunctionBodyDiffLine(
     if (isActive) el.classList.add('active');
     el.title = `Go to ${getFunctionDisplayName(callee) || calleeId}`;
     el.addEventListener('click', (e) => {
+      e.preventDefault();
       e.stopPropagation();
       const ord = el.dataset.fdCalleeOrd != null ? Number(el.dataset.fdCalleeOrd) : 0;
       navigateFromInlineCallSite(calleeId, treeNodeKey || null, pathPrefix, rowData, ord);
@@ -3349,13 +3352,18 @@ export function renderCodeView(container) {
       lastScrolledToActiveKey = nextScrollKey;
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          scrollToVerticalCenter(contentScroller, block, { behavior: 'auto' });
+          const behavior = preferSmoothScrollForNextActiveSelection ? 'smooth' : 'auto';
+          preferSmoothScrollForNextActiveSelection = false;
+          scrollToVerticalCenter(contentScroller, block, { behavior });
           setInViewTreeNodeKey(scrollTargetKey);
         });
       });
     }
   }
-  if (!nextScrollKey || effectiveOutside) lastScrolledToActiveKey = null;
+  if (!nextScrollKey || effectiveOutside) {
+    lastScrolledToActiveKey = null;
+    preferSmoothScrollForNextActiveSelection = false;
+  }
 
   if (!contentScroller.dataset.scrollLinked) {
     contentScroller.dataset.scrollLinked = '1';

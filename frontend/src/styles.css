@@ -757,6 +757,10 @@ body {
   padding-bottom: 56px;
 }
 
+.flow-tree-wrapper--compact {
+  padding-bottom: 44px;
+}
+
 .flow-tree-wrapper::after {
   content: '';
   display: block;
@@ -783,6 +787,10 @@ body {
   margin: 0;
 }
 
+.flow-tree-wrapper--compact .flow-tree-flow-section {
+  padding: 3px 0 8px;
+}
+
 /* Single-node rhizomes don't need as much vertical breathing room. */
 .flow-tree-flow-section--single-node {
   padding: 4px 0 10px;
@@ -796,6 +804,10 @@ body {
   gap: 8px;
   padding: 0 10px 2px 12px;
   margin: 0;
+}
+
+.flow-tree-wrapper--compact .flow-tree-flow-header {
+  padding: 0 9px 2px 11px;
 }
 
 .flow-tree-flow-section--single-node .flow-tree-flow-header {
@@ -836,6 +848,12 @@ body {
   user-select: none;
 }
 
+.flow-tree-wrapper--compact .flow-tree-flow-diffstats,
+.flow-tree-wrapper--compact .flow-tree-node-inline-diffstats {
+  gap: 6px;
+  font-size: 10px;
+}
+
 .flow-tree-flow-class-title {
   font-size: 12px;
   font-weight: 600;
@@ -843,6 +861,10 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.flow-tree-wrapper--compact .flow-tree-flow-class-title {
+  font-size: 11px;
 }
 
 .flow-tree-flow-class-title-clickable {
@@ -925,6 +947,10 @@ body {
   margin: 4px 0;
 }
 
+.flow-tree-wrapper--compact .flow-tree-flow-separator {
+  margin: 2px 0;
+}
+
 .flow-tree-toolbar {
   display: flex;
   align-items: center;
@@ -967,6 +993,11 @@ body {
   letter-spacing: 0.002em;
 }
 
+.flow-tree-wrapper--compact .flow-tree {
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
 .flow-tree-item {
   position: relative;
 }
@@ -982,6 +1013,11 @@ body {
   border-radius: 4px;
   position: relative;
   transition: background 120ms ease, box-shadow 120ms ease, outline-color 120ms ease;
+}
+
+.flow-tree-wrapper--compact .flow-tree-node {
+  gap: 5px;
+  padding: 3px 7px;
 }
 
 .flow-tree-node-caret {
@@ -1067,6 +1103,12 @@ body {
   text-align: center;
   color: #4b5563;
   font-size: 12px;
+}
+
+.flow-tree-wrapper--compact .flow-tree-icon {
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
 }
 
 .flow-tree-node.active .flow-tree-icon {
@@ -1262,6 +1304,11 @@ body {
   border-left: 1px solid #d0d7de;
 }
 
+.flow-tree-wrapper--compact .flow-tree-branch {
+  margin-left: 10px;
+  padding-left: 11px;
+}
+
 /* Horizontal connector from vertical line to each node */
 .flow-tree-branch > .flow-tree-item > .flow-tree-node::before {
   content: '';
@@ -1272,6 +1319,11 @@ body {
   height: 1px;
   background: #d0d7de;
   margin-top: -1px;
+}
+
+.flow-tree-wrapper--compact .flow-tree-branch > .flow-tree-item > .flow-tree-node::before {
+  left: -11px;
+  width: 11px;
 }
 
 /* Class-membership-only rows use a flat list appearance (no connector lines). */
