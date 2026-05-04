@@ -1936,6 +1936,14 @@ body {
   background: rgba(140, 149, 159, 0.16);
 }
 
+/* Controls live in `.diff-num-gap-controls`, not under `.diff-code-gap-meta-*` */
+.diff-line-ctx-gap-expander-minimal .diff-num-gap-controls .diff-ctx-gap-controls-inline {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
 .diff-code-gap-meta-minimal-inline .diff-ctx-gap-controls-inline {
   display: inline-flex;
   align-items: center;

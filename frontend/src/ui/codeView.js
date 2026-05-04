@@ -574,7 +574,7 @@ function newFileLineOneShownBeforeRowIndex(toRender, idx) {
 }
 
 /**
- * Stable sort by new-file anchor so `injectProgressiveContextGaps` sees monotonic line numbers.
+ * Stable sort by new-file anchor before merging progressive gaps and final stream sort.
  * Merged hunks or other reordering can otherwise place a row with anchor > 1 before line-1
  * `+`/`-` rows, inserting a bogus leading `ctx-gap` (and stacked expanders) above line 1.
  * @param {any[]} rows
@@ -589,6 +589,52 @@ function sortDiffRowsByNewFileAnchor(rows) {
     const na = la != null && Number.isFinite(la) ? la : Infinity;
     const nb = lb != null && Number.isFinite(lb) ? lb : Infinity;
     if (na !== nb) return na - nb;
+    return a.i - b.i;
+  });
+  return indexed.map((x) => x.row);
+}
+
+/** File-order key for ordering a stream that may contain `ctx-gap`, `ctx-collapse`, and patch rows. */
+function diffRowFileOrderKey(row) {
+  if (!row) return Infinity;
+  if (row.type === 'ctx-gap') {
+    const n = Number(row.startLine);
+    return Number.isFinite(n) ? n : Infinity;
+  }
+  if (row.type === 'ctx-collapse') {
+    const hidden = row.hiddenRows;
+    const n = Number(row.startLine ?? hidden?.[0]?.newLineNumber ?? hidden?.[0]?.oldLineNumber);
+    return Number.isFinite(n) ? n : Infinity;
+  }
+  const a = rowDisplayAnchorLine(row);
+  return a != null && Number.isFinite(a) ? a : Infinity;
+}
+
+/** Lower rank sorts earlier when `diffRowFileOrderKey` ties (keeps `ctx-gap` after patch rows at same line). */
+function diffRowStreamSecondaryRank(row) {
+  if (!row) return 99;
+  if (row.type === 'ctx') return 0;
+  if (row.type === 'add') return 1;
+  if (row.type === 'del') return 2;
+  if (row.type === 'ctx-collapse') return 3;
+  if (row.type === 'ctx-gap') return 4;
+  return 5;
+}
+
+/**
+ * Re-sort a mixed stream (`ctx` / `+`/`-` / `ctx-gap` / `ctx-collapse`) by new-file line.
+ * Secondary rank keeps patch rows before `ctx-gap` when the primary key ties.
+ */
+function sortDiffRowsStreamForFileOrder(rows) {
+  if (!Array.isArray(rows) || rows.length <= 1) return rows;
+  const indexed = rows.map((row, i) => ({ row, i }));
+  indexed.sort((a, b) => {
+    const ka = diffRowFileOrderKey(a.row);
+    const kb = diffRowFileOrderKey(b.row);
+    if (ka !== kb) return ka - kb;
+    const ra = diffRowStreamSecondaryRank(a.row);
+    const rb = diffRowStreamSecondaryRank(b.row);
+    if (ra !== rb) return ra - rb;
     return a.i - b.i;
   });
   return indexed.map((x) => x.row);
@@ -619,58 +665,200 @@ function setGapCaretIcon(button, direction) {
 }
 
 /**
- * Inserts `ctx-gap` rows for source lines omitted from patch hunks so the user can reveal them progressively.
+ * New-file line numbers in [rangeStart, rangeEnd] that already have a `ctx` / `add` / `del` row
+ * (the diff hunk as we render it). Progressive gaps only target lines *not* in this set.
  * @param {any[]} rows
- * @param {string[]} sourceLines
- * @param {{ startLine?: number, endLine?: number, implicitContextBeforeFirstAnchor?: boolean }} [opts]
- *   When `implicitContextBeforeFirstAnchor` is true, callers removed patch `ctx` rows but unchanged
- *   lines still exist in the file — seed `prevLine` to `min(anchor)-1` so a bogus leading gap is not
- *   inserted before the first `+`/`-` (e.g. expander between lines 8 and 9 instead of below line 9).
+ * @param {number} rangeStart
+ * @param {number} rangeEnd
+ * @returns {Set<number>}
+ */
+function coveredNewFileLinesFromPatchRows(rows, rangeStart, rangeEnd) {
+  const covered = new Set();
+  if (!Array.isArray(rows)) return covered;
+  for (const row of rows) {
+    if (!row || row.type === 'ctx-gap' || row.type === 'ctx-collapse') continue;
+    const a = rowDisplayAnchorLine(row);
+    if (a != null && Number.isFinite(a) && a >= rangeStart && a <= rangeEnd) covered.add(a);
+    if (row.newLineNumber != null && Number.isFinite(Number(row.newLineNumber))) {
+      const n = Number(row.newLineNumber);
+      if (n >= rangeStart && n <= rangeEnd) covered.add(n);
+    }
+  }
+  return covered;
+}
+
+/**
+ * Maximal contiguous runs of line numbers inside [rangeStart, rangeEnd] that are not in `covered`.
+ * @param {number} rangeStart
+ * @param {number} rangeEnd
+ * @param {Set<number>} covered
+ * @returns {{ start: number, end: number }[]}
+ */
+function uncoveredLineIntervalsInRange(rangeStart, rangeEnd, covered) {
+  const ranges = [];
+  let runStart = null;
+  for (let ln = rangeStart; ln <= rangeEnd; ln++) {
+    if (covered.has(ln)) {
+      if (runStart !== null) {
+        ranges.push({ start: runStart, end: ln - 1 });
+        runStart = null;
+      }
+    } else if (runStart === null) {
+      runStart = ln;
+    }
+  }
+  if (runStart !== null) ranges.push({ start: runStart, end: rangeEnd });
+  return ranges;
+}
+
+function ctxGapPositionForInterval(ivStart, ivEnd, rangeStart, rangeEnd) {
+  if (ivStart <= rangeStart && ivEnd >= rangeEnd) return 'middle';
+  if (ivStart <= rangeStart) return 'start';
+  if (ivEnd >= rangeEnd) return 'end';
+  return 'middle';
+}
+
+/**
+ * Inserts `ctx-gap` rows before patch rows in file order. Each gap covers only lines absent from
+ * the patch stream (true "not in the hunk" regions inside the clip range).
+ * @param {any[]} sortedBandRows - `ctx` / `add` / `del` only, anchors in [rangeStart, rangeEnd]
+ * @param {{ start: number, end: number }[]} uncoveredIntervals
+ * @param {number} rangeStart
+ * @param {number} rangeEnd
  * @returns {any[]}
  */
-function injectProgressiveContextGaps(rows, sourceLines, opts = {}) {
-  if (!Array.isArray(rows) || !Array.isArray(sourceLines) || sourceLines.length === 0) return rows;
-  const startLine = clampToInt(opts.startLine ?? 1, 1, sourceLines.length);
-  const endLine = clampToInt(opts.endLine ?? sourceLines.length, startLine, sourceLines.length);
-  if (startLine > endLine) return rows;
-
+function mergeProgressiveGapsIntoSortedPatchStream(sortedBandRows, uncoveredIntervals, rangeStart, rangeEnd) {
+  const gaps = uncoveredIntervals.map((iv) => ({
+    type: 'ctx-gap',
+    startLine: iv.start,
+    endLine: iv.end,
+    position: ctxGapPositionForInterval(iv.start, iv.end, rangeStart, rangeEnd)
+  }));
+  gaps.sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
   const out = [];
-  let prevLine = startLine - 1;
-  if (opts.implicitContextBeforeFirstAnchor === true && Array.isArray(rows) && rows.length > 0) {
-    const inBand = rows
-      .map(rowDisplayAnchorLine)
-      .filter((n) => n != null && Number.isFinite(n) && n >= startLine && n <= endLine);
-    if (inBand.length) {
-      prevLine = Math.max(prevLine, Math.min(...inBand) - 1);
-    }
-  }
-  for (const row of rows) {
+  let gi = 0;
+  for (const row of sortedBandRows) {
     const line = rowDisplayAnchorLine(row);
-    if (line != null && line >= startLine && line <= endLine && line > prevLine + 1) {
-      out.push({
-        type: 'ctx-gap',
-        startLine: prevLine + 1,
-        endLine: line - 1,
-        position:
-          prevLine + 1 <= startLine
-            ? 'start'
-            : line - 1 >= endLine
-              ? 'end'
-              : 'middle'
-      });
+    const anchor = line != null && Number.isFinite(line) ? line : Infinity;
+    while (gi < gaps.length && gaps[gi].endLine < anchor) {
+      out.push(gaps[gi++]);
     }
     out.push(row);
-    if (line != null && line >= startLine && line <= endLine) {
-      prevLine = Math.max(prevLine, line);
+  }
+  while (gi < gaps.length) out.push(gaps[gi++]);
+  return out;
+}
+
+function rowAnchoredInGapRange(row, rangeStart, rangeEnd) {
+  const a = rowDisplayAnchorLine(row);
+  return a != null && Number.isFinite(a) && a >= rangeStart && a <= rangeEnd;
+}
+
+/**
+ * Progressive file context: for the clip [gapRange], show `ctx-gap` only for new-file lines that
+ * have no `ctx` / `add` / `del` row in this render (lines outside the visible hunk). Patch rows
+ * outside the clip are appended after a final sort.
+ * @param {any[]} rows
+ * @param {string[]} sourceLines
+ * @param {{ startLine?: number, endLine?: number } | null} gapRange
+ * @returns {any[]}
+ */
+function insertProgressiveFileGaps(rows, sourceLines, gapRange) {
+  if (!Array.isArray(sourceLines) || sourceLines.length === 0) return rows;
+  const rangeStart = clampToInt(gapRange?.startLine ?? 1, 1, sourceLines.length);
+  const rangeEnd = clampToInt(gapRange?.endLine ?? sourceLines.length, rangeStart, sourceLines.length);
+  if (rangeStart > rangeEnd) return rows;
+
+  const raw = (rows || []).filter((r) => r && r.type !== 'ctx-gap' && r.type !== 'ctx-collapse');
+  const sortedAll = sortDiffRowsStreamForFileOrder(sortDiffRowsByNewFileAnchor(raw.length ? raw : []));
+
+  const inBand = [];
+  const outOfBand = [];
+  for (const row of sortedAll) {
+    if (rowAnchoredInGapRange(row, rangeStart, rangeEnd)) inBand.push(row);
+    else outOfBand.push(row);
+  }
+
+  const covered = coveredNewFileLinesFromPatchRows(inBand, rangeStart, rangeEnd);
+  const intervals = uncoveredLineIntervalsInRange(rangeStart, rangeEnd, covered);
+  const merged = mergeProgressiveGapsIntoSortedPatchStream(inBand, intervals, rangeStart, rangeEnd);
+  if (!outOfBand.length) return merged;
+  return sortDiffRowsStreamForFileOrder([...merged, ...outOfBand]);
+}
+
+/**
+ * Every new-file line number that already has a visible patch row in this stream (used to strip
+ * `ctx-gap` rows that still overlap a line after placement / sort quirks).
+ * @param {any[]} rows
+ * @returns {Set<number>}
+ */
+function patchNewFileLinesWithRowPresence(rows) {
+  const covered = new Set();
+  if (!Array.isArray(rows)) return covered;
+  for (const row of rows) {
+    if (!row || row.type === 'ctx-gap' || row.type === 'ctx-collapse') continue;
+    const a = rowDisplayAnchorLine(row);
+    if (a != null && Number.isFinite(a)) covered.add(a);
+    if (row.newLineNumber != null && Number.isFinite(Number(row.newLineNumber))) {
+      covered.add(Number(row.newLineNumber));
+    }
+    if (row.anchorNewLineNumber != null && Number.isFinite(Number(row.anchorNewLineNumber))) {
+      covered.add(Number(row.anchorNewLineNumber));
     }
   }
-  if (prevLine < endLine) {
-    out.push({
-      type: 'ctx-gap',
-      startLine: prevLine + 1,
-      endLine,
-      position: prevLine + 1 <= startLine ? 'start' : 'end'
-    });
+  return covered;
+}
+
+/**
+ * @param {number} gapStart
+ * @param {number} gapEnd
+ * @param {Set<number>} covered
+ * @returns {{ start: number, end: number }[]}
+ */
+function ctxGapIntervalsMinusCoveredLines(gapStart, gapEnd, covered) {
+  const out = [];
+  let runStart = null;
+  for (let ln = gapStart; ln <= gapEnd; ln++) {
+    if (covered.has(ln)) {
+      if (runStart !== null) {
+        out.push({ start: runStart, end: ln - 1 });
+        runStart = null;
+      }
+    } else if (runStart === null) {
+      runStart = ln;
+    }
+  }
+  if (runStart !== null) out.push({ start: runStart, end: gapEnd });
+  return out;
+}
+
+/**
+ * Post-pass: remove or shrink `ctx-gap` intervals so no claimed line already has a patch row.
+ * Catches placement bugs, duplicate anchors, and sort tie artifacts.
+ * @param {any[]} rows
+ * @returns {any[]}
+ */
+function sanitizeCtxGapsAfterPlacement(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+  const covered = patchNewFileLinesWithRowPresence(rows);
+  const out = [];
+  for (const row of rows) {
+    if (row?.type !== 'ctx-gap') {
+      out.push(row);
+      continue;
+    }
+    const s = Number(row.startLine);
+    const e = Number(row.endLine);
+    if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) continue;
+    const parts = ctxGapIntervalsMinusCoveredLines(s, e, covered);
+    for (const p of parts) {
+      out.push({
+        type: 'ctx-gap',
+        startLine: p.start,
+        endLine: p.end,
+        position: row.position || 'middle'
+      });
+    }
   }
   return out;
 }
@@ -1175,7 +1363,6 @@ function appendPlainDiffRow(container, rowData) {
 /**
  * @param {string | null} [collapseScopeKey] - prefix for persisting expand state (e.g. module-context scope)
  * @param {boolean} [fileLineOneVisibleAbove] - sibling blocks above this mount already showed new-file line 1
- * @param {boolean} [implicitContextBeforeFirstAnchor] - pass true when patch `ctx` rows were removed before render (see `injectProgressiveContextGaps`)
  */
 function renderDiffRows(
   container,
@@ -1188,19 +1375,16 @@ function renderDiffRows(
   gapRange = null,
   gapInitialEdgeLines = CTX_GAP_INITIAL_EDGE_LINES,
   showCountLabel = true,
-  fileLineOneVisibleAbove = false,
-  implicitContextBeforeFirstAnchor = false
+  fileLineOneVisibleAbove = false
 ) {
-  const rowsForGaps =
-    Array.isArray(rows) && rows.length > 0 ? sortDiffRowsByNewFileAnchor(rows) : rows;
-  const withGaps =
+  const bandRows = Array.isArray(rows) ? rows : [];
+  let withGaps =
     Array.isArray(sourceLines) && sourceLines.length > 0
-      ? injectProgressiveContextGaps(rowsForGaps, sourceLines, {
-          startLine: gapRange?.startLine,
-          endLine: gapRange?.endLine,
-          implicitContextBeforeFirstAnchor
-        })
-      : rowsForGaps;
+      ? insertProgressiveFileGaps(bandRows, sourceLines, gapRange)
+      : bandRows;
+  withGaps = sortDiffRowsStreamForFileOrder(withGaps || []);
+  withGaps = sanitizeCtxGapsAfterPlacement(withGaps);
+  withGaps = sortDiffRowsStreamForFileOrder(withGaps);
   const toRender = expandContextCollapseRows(withGaps, preserveNewLines);
   markDocstringLines(toRender);
   for (let ri = 0; ri < toRender.length; ri++) {
@@ -1234,6 +1418,16 @@ function renderDiffRows(
       }
       if (gapStart === 1 && position === 'start' && lineCount > 1 && head === 0 && tail === 0) {
         head = Math.min(CTX_GAP_INITIAL_EDGE_LINES, lineCount);
+        if (head + tail > lineCount) {
+          tail = Math.max(0, lineCount - head);
+        }
+      }
+      // Never leave only an expander above "nothing" when the gap includes line 1: head=0 would
+      // paint carets before the first source line in the file. Force at least one top line (or a
+      // sensible edge) whenever the hidden region is non-empty.
+      if (gapStart === 1 && head + tail < lineCount && head === 0) {
+        const edgeHint = defaultEdge > 0 ? defaultEdge : CTX_GAP_INITIAL_EDGE_LINES;
+        head = Math.min(Math.max(1, edgeHint), lineCount - tail);
         if (head + tail > lineCount) {
           tail = Math.max(0, lineCount - head);
         }
@@ -1307,38 +1501,33 @@ function renderDiffRows(
         metaCode.className = 'language-python';
 
         if (hiddenCount > 0) {
-          const showAbove = document.createElement('button');
-          showAbove.type = 'button';
-          showAbove.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
-          setGapCaretIcon(showAbove, 'up');
-          showAbove.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount)} above`;
-          showAbove.setAttribute('aria-label', showAbove.title);
-          showAbove.addEventListener('click', () => {
+          // ▲ expands upward (toward the line below the gap — grows `tail`). ▼ expands downward
+          // from the line above the gap (grows `head`). Order: ▲ ⋯ ▼.
+          const expandUpward = document.createElement('button');
+          expandUpward.type = 'button';
+          expandUpward.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
+          setGapCaretIcon(expandUpward, 'up');
+          expandUpward.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount)} lines upward (before the next line below)`;
+          expandUpward.setAttribute('aria-label', expandUpward.title);
+          expandUpward.addEventListener('click', () => {
             const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount);
-            // "Above" should reveal from the bottom boundary upward.
             persistAndRerender(head, tail + n);
           });
-          // No up/down carets when the gap touches file line 1 and the view already includes line 1
-          // (this mount starts at line 1, or a prior row / sibling block showed it) — nothing to
-          // expand toward above line 1; keep only "show all" (⋯) when needed.
           const suppressDirectionalCarets =
             gapStart === 1 && (position === 'start' || lineOneSeenAbove);
-          const canShowAbove =
-            !suppressDirectionalCarets && (position === 'middle' || position === 'end');
+          const canRevealEarlier = !suppressDirectionalCarets && hiddenCount > 0;
+          const canRevealLater = !suppressDirectionalCarets && hiddenCount > 0;
 
-          const showBelow = document.createElement('button');
-          showBelow.type = 'button';
-          showBelow.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
-          setGapCaretIcon(showBelow, 'down');
-          showBelow.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount)} below`;
-          showBelow.setAttribute('aria-label', showBelow.title);
-          showBelow.addEventListener('click', () => {
+          const expandDownward = document.createElement('button');
+          expandDownward.type = 'button';
+          expandDownward.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
+          setGapCaretIcon(expandDownward, 'down');
+          expandDownward.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount)} lines downward (after the line above)`;
+          expandDownward.setAttribute('aria-label', expandDownward.title);
+          expandDownward.addEventListener('click', () => {
             const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, hiddenCount);
-            // "Below" should reveal from the top boundary downward.
             persistAndRerender(head + n, tail);
           });
-          const canShowBelow =
-            !suppressDirectionalCarets && (position === 'middle' || position === 'start');
           const showAll = document.createElement('button');
           showAll.type = 'button';
           showAll.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--all';
@@ -1349,18 +1538,17 @@ function renderDiffRows(
             persistAndRerender(lineCount, 0);
           });
 
-          // GitHub-like vertical gutter controls: down (top), all (middle), up (bottom).
-          const canExpandBothWays = canShowAbove && canShowBelow;
+          const canExpandBothWays = canRevealEarlier && canRevealLater;
           if (suppressDirectionalCarets) {
             inlineControls.appendChild(showAll);
           } else if (canExpandBothWays) {
-            inlineControls.appendChild(showAbove);
+            inlineControls.appendChild(expandUpward);
             if (hiddenCount > CTX_GAP_REVEAL_CHUNK_LINES) inlineControls.appendChild(showAll);
-            inlineControls.appendChild(showBelow);
-          } else if (canShowAbove) {
-            inlineControls.appendChild(showAbove);
-          } else if (canShowBelow) {
-            inlineControls.appendChild(showBelow);
+            inlineControls.appendChild(expandDownward);
+          } else if (canRevealEarlier) {
+            inlineControls.appendChild(expandUpward);
+          } else if (canRevealLater) {
+            inlineControls.appendChild(expandDownward);
           }
         }
         if (hasExpanded) inlineControls.appendChild(resetView);
@@ -1446,26 +1634,26 @@ function renderDiffRows(
         const metaCode = document.createElement('code');
         metaCode.className = 'language-python';
 
-        const showAbove = document.createElement('button');
-        showAbove.type = 'button';
-        showAbove.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
-        setGapCaretIcon(showAbove, 'up');
-        showAbove.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} above`;
-        showAbove.setAttribute('aria-label', showAbove.title);
-        showAbove.addEventListener('click', () => {
-          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
-          persistAndRerender(head, tail + n);
-        });
-
-        const showBelow = document.createElement('button');
-        showBelow.type = 'button';
-        showBelow.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
-        setGapCaretIcon(showBelow, 'down');
-        showBelow.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} below`;
-        showBelow.setAttribute('aria-label', showBelow.title);
-        showBelow.addEventListener('click', () => {
+        const expandDownward = document.createElement('button');
+        expandDownward.type = 'button';
+        expandDownward.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
+        setGapCaretIcon(expandDownward, 'down');
+        expandDownward.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} lines downward (after the line above)`;
+        expandDownward.setAttribute('aria-label', expandDownward.title);
+        expandDownward.addEventListener('click', () => {
           const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
           persistAndRerender(head + n, tail);
+        });
+
+        const expandUpward = document.createElement('button');
+        expandUpward.type = 'button';
+        expandUpward.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
+        setGapCaretIcon(expandUpward, 'up');
+        expandUpward.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} lines upward (before the next line below)`;
+        expandUpward.setAttribute('aria-label', expandUpward.title);
+        expandUpward.addEventListener('click', () => {
+          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
+          persistAndRerender(head, tail + n);
         });
 
         const showAll = document.createElement('button');
@@ -1485,10 +1673,10 @@ function renderDiffRows(
           hiddenFirstLn <= 1 &&
           (lineOneSeenAbove || sliceStartsAtFileLineOne);
         if (!suppressCollapseShowAbove) {
-          inlineControls.appendChild(showAbove);
+          inlineControls.appendChild(expandUpward);
         }
         if (remain > CTX_GAP_REVEAL_CHUNK_LINES) inlineControls.appendChild(showAll);
-        inlineControls.appendChild(showBelow);
+        inlineControls.appendChild(expandDownward);
         if (hasExpanded) inlineControls.appendChild(resetView);
         meta.classList.add('diff-code-gap-meta-minimal', 'diff-code-gap-meta-minimal-inline');
         metaCode.textContent = '';
@@ -2309,7 +2497,8 @@ function mountEnclosingClassDefinitionInBody(
 
   const wrap = document.createElement('div');
   wrap.className = 'class-definition-above';
-  const expandedKey = `${pathPrefix}::enclosing-class::${classMeta.id}`;
+  // Prefix must match `mountFunctionBlock` reset scope `${treeNodeKey}::${fn.id}::` so ↺ appears.
+  const expandedKey = `${pathPrefix}::${methodFn.id}::enclosing-class::${classMeta.id}`;
   renderDiffRows(
     wrap,
     methodFn.file,
@@ -2321,8 +2510,7 @@ function mountEnclosingClassDefinitionInBody(
     { startLine: rStart, endLine: rEnd },
     rStart === 1 ? CTX_GAP_INITIAL_EDGE_LINES : 0,
     false,
-    fileLineOneVisibleAbove,
-    true
+    fileLineOneVisibleAbove
   );
   container.appendChild(wrap);
   return { start: rStart, end: rEnd };
@@ -2358,7 +2546,8 @@ function mountModuleContextInline(
   const rowsForRender = showCountLabel ? rows : rows.filter((r) => r.type !== 'ctx');
   const wrap = document.createElement('div');
   wrap.className = `module-context-inline module-context-inline--${slot}`;
-  const expandedKey = `${pathPrefix}::${fn.file}::module-inline-${slot}::${fn.id}`;
+  // Prefix must match card reset `${treeNodeKey}::${fn.id}::` (do not insert `fn.file` before `fn.id`).
+  const expandedKey = `${pathPrefix}::${fn.id}::module-inline-${slot}`;
   const moduleStart = Math.min(...ranges.map((r) => Number(r.start)).filter((n) => Number.isFinite(n)));
   const moduleEnd = Math.max(...ranges.map((r) => Number(r.end)).filter((n) => Number.isFinite(n)));
   const rangeStart =
@@ -2382,8 +2571,7 @@ function mountModuleContextInline(
       : null,
     showCountLabel ? CTX_GAP_INITIAL_EDGE_LINES : 0,
     showCountLabel,
-    fileLineOneVisibleAbove,
-    !showCountLabel
+    fileLineOneVisibleAbove
   );
   container.appendChild(wrap);
 }
@@ -2443,8 +2631,7 @@ function mountFileContextAroundFunction(
         range,
         range.startLine === 1 ? CTX_GAP_INITIAL_EDGE_LINES : 0,
         false,
-        fileLineOneVA,
-        false
+        fileLineOneVA
       );
       container.appendChild(wrap);
     }
@@ -2480,8 +2667,7 @@ function mountFileContextAroundFunction(
         range,
         range.startLine === 1 ? CTX_GAP_INITIAL_EDGE_LINES : 0,
         false,
-        fileLineOneVA,
-        false
+        fileLineOneVA
       );
       container.appendChild(wrap);
     }
@@ -2515,8 +2701,7 @@ function mountFileContextAroundFunction(
     range,
     slot === 'before' ? CTX_GAP_INITIAL_EDGE_LINES : 0,
     false,
-    fileLineOneVA,
-    false
+    fileLineOneVA
   );
   container.appendChild(wrap);
 }
@@ -2804,26 +2989,26 @@ function renderFunctionBody(
         const metaCode = document.createElement('code');
         metaCode.className = 'language-python';
 
-        const showAbove = document.createElement('button');
-        showAbove.type = 'button';
-        showAbove.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
-        setGapCaretIcon(showAbove, 'up');
-        showAbove.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} above`;
-        showAbove.setAttribute('aria-label', showAbove.title);
-        showAbove.addEventListener('click', () => {
-          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
-          persistAndRerender(head, tail + n);
-        });
-
-        const showBelow = document.createElement('button');
-        showBelow.type = 'button';
-        showBelow.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
-        setGapCaretIcon(showBelow, 'down');
-        showBelow.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} below`;
-        showBelow.setAttribute('aria-label', showBelow.title);
-        showBelow.addEventListener('click', () => {
+        const expandDownward = document.createElement('button');
+        expandDownward.type = 'button';
+        expandDownward.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--down';
+        setGapCaretIcon(expandDownward, 'down');
+        expandDownward.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} lines downward (after the line above)`;
+        expandDownward.setAttribute('aria-label', expandDownward.title);
+        expandDownward.addEventListener('click', () => {
           const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
           persistAndRerender(head + n, tail);
+        });
+
+        const expandUpward = document.createElement('button');
+        expandUpward.type = 'button';
+        expandUpward.className = 'diff-ctx-gap-btn diff-ctx-gap-btn--up';
+        setGapCaretIcon(expandUpward, 'up');
+        expandUpward.title = `Show ${Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain)} lines upward (before the next line below)`;
+        expandUpward.setAttribute('aria-label', expandUpward.title);
+        expandUpward.addEventListener('click', () => {
+          const n = Math.min(CTX_GAP_REVEAL_CHUNK_LINES, remain);
+          persistAndRerender(head, tail + n);
         });
 
         const showAll = document.createElement('button');
@@ -2853,10 +3038,10 @@ function renderFunctionBody(
           hiddenFirstLnBody <= 1 &&
           (fileLineOneVisibleAbove || Number(fn.startLine) <= 1);
         if (!suppressBodyCtxCollapseAbove) {
-          inlineControls.appendChild(showAbove);
+          inlineControls.appendChild(expandUpward);
         }
         if (remain > CTX_GAP_REVEAL_CHUNK_LINES) inlineControls.appendChild(showAll);
-        inlineControls.appendChild(showBelow);
+        inlineControls.appendChild(expandDownward);
         if (hasExpanded) inlineControls.appendChild(resetView);
         // Rhizome cards: keep this control very minimal — one-line controls + compact count.
         meta.classList.add('diff-code-gap-meta-minimal', 'diff-code-gap-meta-minimal-inline');
