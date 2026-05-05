@@ -297,6 +297,25 @@ function scrollToVerticalCenter(container, el, opts = {}) {
   }
 }
 
+/**
+ * Prefer the function definition row so navigation lands at the declaration.
+ * Falls back to block centering when a matching row is unavailable.
+ * @param {HTMLElement} block
+ * @param {import('../flowSchema.js').FunctionMeta | null | undefined} fn
+ * @returns {HTMLElement | null}
+ */
+function getDefinitionScrollTarget(block, fn) {
+  if (!block || !fn) return null;
+  const startLine = Number(fn.startLine);
+  if (!Number.isFinite(startLine) || startLine <= 0) return null;
+  return (
+    block.querySelector(`.diff-line[data-flowdiff-new-line="${startLine}"]`) ||
+    block.querySelector(`.diff-line[data-flowdiff-anchor-new="${startLine}"]`) ||
+    block.querySelector(`.diff-line[data-flowdiff-old-line="${startLine}"]`) ||
+    null
+  );
+}
+
 function elementOffsetTopInScroller(scroller, el) {
   let offsetTop = 0;
   /** @type {HTMLElement | null} */
@@ -3847,7 +3866,14 @@ export function renderCodeView(container) {
         requestAnimationFrame(() => {
           const behavior = preferSmoothScrollForNextActiveSelection ? 'smooth' : 'auto';
           preferSmoothScrollForNextActiveSelection = false;
-          scrollToVerticalCenter(contentScroller, block, { behavior });
+          const activeFn = flowPayload.functionsById[uiState.activeFunctionId];
+          const targetLine = getDefinitionScrollTarget(block, activeFn);
+          if (targetLine) {
+            targetLine.classList.add('diff-line-function-target');
+            targetLine.scrollIntoView({ block: 'center', behavior, inline: 'nearest' });
+          } else {
+            scrollToVerticalCenter(contentScroller, block, { behavior });
+          }
           setInViewTreeNodeKey(scrollTargetKey);
         });
       });
