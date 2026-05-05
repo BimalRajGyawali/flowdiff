@@ -7,6 +7,7 @@ import {
   getState,
   setActiveFunction,
   restoreCallSiteReturnTreeNode,
+  setFlowCompletedState,
   setSelectedFlow,
   setSelectedStandaloneClass,
   toggleFlowTreeSectionCollapsed,
@@ -35,6 +36,32 @@ function flowTreeIndentPx(depth) {
   const shallow = Math.min(d, FLOW_TREE_COMPACT_DEPTH_THRESHOLD);
   const deep = Math.max(0, d - FLOW_TREE_COMPACT_DEPTH_THRESHOLD);
   return FLOW_TREE_BASE_INDENT_PX + shallow * FLOW_TREE_STEP_INDENT_PX + deep * FLOW_TREE_DEEP_STEP_INDENT_PX;
+}
+
+/**
+ * @param {string} flowId
+ * @param {boolean} isComplete
+ */
+function flowDoneCheckbox(flowId, isComplete) {
+  const wrap = document.createElement('span');
+  wrap.className = 'flow-tree-flow-done-wrap';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.className = 'flow-tree-flow-done-checkbox';
+  input.checked = isComplete;
+  const title = isComplete
+    ? 'Unmark flow as done (read marks clear when no other completed flow still covers them)'
+    : 'Mark entire flow as done (marks every function in this flow as read)';
+  input.title = title;
+  input.setAttribute('aria-label', title);
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('change', (e) => {
+    e.stopPropagation();
+    const el = /** @type {HTMLInputElement} */ (e.target);
+    setFlowCompletedState(flowId, el.checked);
+  });
+  wrap.appendChild(input);
+  return wrap;
 }
 
 /**
@@ -433,6 +460,7 @@ export function renderFlowTree(container) {
     const section = document.createElement('section');
     section.className = 'flow-tree-flow-section';
     if (flow.id === uiState.selectedFlowId) section.classList.add('active');
+    if (uiState.completedFlowIds?.has(flow.id)) section.classList.add('flow-tree-flow-section--completed');
 
     const flowFnIds = new Set(flowFnIdsByFlowId.get(flow.id) || [flow.rootId]);
     const singleClassName = singleClassNameForFlow(flowFnIds, flowPayload);
@@ -523,10 +551,14 @@ export function renderFlowTree(container) {
         spacer.setAttribute('aria-hidden', 'true');
         header.appendChild(spacer);
       }
+      const headerActions = document.createElement('div');
+      headerActions.className = 'flow-tree-flow-header-actions';
       const stats = document.createElement('div');
       stats.className = 'flow-tree-flow-diffstats';
       stats.innerHTML = `<span class="flow-tree-flow-diffstats-add">+${diffStats.added}</span><span class="flow-tree-flow-diffstats-del">-${diffStats.deleted}</span>`;
-      header.appendChild(stats);
+      headerActions.appendChild(stats);
+      headerActions.appendChild(flowDoneCheckbox(flow.id, uiState.completedFlowIds.has(flow.id)));
+      header.appendChild(headerActions);
       section.appendChild(header);
     }
 
@@ -604,10 +636,14 @@ export function renderFlowTree(container) {
     if (showInlineStatsOnRoot) {
       const rootRow = tree.querySelector(`[data-tree-node-key="${CSS.escape(rootKey)}"]`);
       if (rootRow) {
+        const rootActions = document.createElement('span');
+        rootActions.className = 'flow-tree-flow-root-actions';
         const stats = document.createElement('span');
         stats.className = 'flow-tree-node-inline-diffstats';
         stats.innerHTML = `<span class="flow-tree-flow-diffstats-add">+${diffStats.added}</span><span class="flow-tree-flow-diffstats-del">-${diffStats.deleted}</span>`;
-        rootRow.appendChild(stats);
+        rootActions.appendChild(stats);
+        rootActions.appendChild(flowDoneCheckbox(flow.id, uiState.completedFlowIds.has(flow.id)));
+        rootRow.appendChild(rootActions);
       }
     }
     wrapper.appendChild(section);
@@ -738,7 +774,6 @@ function renderNode(
   row.innerHTML = `<span class="flow-tree-icon">${leadingIcon}${changeHint}</span><span class="flow-tree-label">${labelHtml}</span>`;
   const hasCallChildren = childEdges.some((e) => e.relationType === 'call');
   const showCaret = !forceExpanded && hasCallChildren;
-  const needsCaretSlot = Boolean(labelMode?.compactMethodLabels && callDepth === 0);
   if (showCaret) {
     const caret = document.createElement('button');
     caret.type = 'button';
@@ -751,7 +786,8 @@ function renderNode(
       toggleExpandedTreeNode(treeNodeKey);
     });
     row.prepend(caret);
-  } else if (needsCaretSlot) {
+  } else {
+    // Reserve the same width as expand carets so labels/icons line up with sibling rows.
     const spacer = document.createElement('span');
     spacer.className = 'flow-tree-node-caret-spacer';
     spacer.setAttribute('aria-hidden', 'true');
@@ -835,6 +871,10 @@ function renderNode(
         const recIcon = flowTreeCallMarkerHtml(child, recDepth, rel);
         const recChangeHint = recIcon ? '' : flowTreeChangeHintHtml(child);
         recRow.innerHTML = `<span class="flow-tree-icon">${recIcon}${recChangeHint}</span><span class="flow-tree-label">${flowTreeLabelHtml(child, payload, labelMode)}</span>`;
+        const recCaretSpacer = document.createElement('span');
+        recCaretSpacer.className = 'flow-tree-node-caret-spacer';
+        recCaretSpacer.setAttribute('aria-hidden', 'true');
+        recRow.prepend(recCaretSpacer);
         recRow.title = 'Click to jump to where this function is shown above';
         recRow.dataset.functionId = child.id;
         recRow.dataset.treeNodeKey = originalKey;
